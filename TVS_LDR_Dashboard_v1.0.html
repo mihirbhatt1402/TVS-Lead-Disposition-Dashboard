@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TVS Lead Disposition Dashboard v1.0</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --blue:#003087;--blue-d:#001F5B;--blue-m:#0044B4;
+  --blue-50:#F0F4FF;--blue-100:#DBEAFE;--blue-200:#93C5FD;
+  --red:#E31837;--red-d:#B01229;--red-light:#FEE2E6;
+  --gold:#F5A623;--gold-light:#FEF3C7;
+  --teal:#0D9488;--green:#16A34A;
+  --dur-fast:120ms;--dur-base:200ms;
+  --shadow-1:0 2px 8px rgba(0,0,0,.08),0 0 0 1px rgba(0,48,135,.10);
+  --shadow-card:0 4px 16px rgba(0,0,0,.07),0 1px 3px rgba(0,0,0,.05)
+}
+body{font-family:'Inter',system-ui,sans-serif;background:#f8fafc;color:#0f172a;min-height:100vh}
+.fade-up{animation:fadeUp .25s ease both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+/* ── KPI cards ── */
+.kpi{position:relative;background:#fff;border-radius:14px;padding:16px 18px 14px;box-shadow:var(--shadow-card);overflow:hidden;border:1px solid #E2E8F0}
+.kpi-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:#64748B;margin-bottom:6px}
+.kpi-value{font-size:24px;font-weight:800;color:#0f172a;letter-spacing:-.03em;font-family:'DM Mono',monospace}
+.kpi-sub{font-size:10px;color:var(--blue);margin-top:4px;font-family:'DM Mono',monospace;font-weight:600}
+.card{background:#fff;border-radius:14px;border:1px solid #E2E8F0;box-shadow:var(--shadow-card)}
+/* ── Tab nav ── */
+.tab-pill{padding:10px 22px;font-size:12px;font-weight:600;border:none;background:none;cursor:pointer;border-bottom:3px solid transparent;color:#64748B;transition:all var(--dur-fast);font-family:inherit;white-space:nowrap}
+.tab-pill.active{color:var(--blue-d);border-bottom-color:var(--blue)}
+.tab-pill:hover:not(.active){color:#0f172a;background:var(--blue-50)}
+/* ── Tables ── */
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{padding:9px 12px;font-weight:700;font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:#fff;background:linear-gradient(135deg,#001F5B 0%,#003087 100%);text-align:center;border:1px solid rgba(255,255,255,.15);white-space:nowrap;position:sticky;top:0;z-index:2}
+th.left{text-align:left}
+th.sub{background:linear-gradient(90deg,#0044B4,#003087);font-size:8.5px;color:#DBEAFE;position:sticky;top:33px;z-index:1;font-weight:600;letter-spacing:.06em}
+td{padding:7px 12px;border:1px solid #E2E8F0;font-size:11.5px;text-align:center;font-family:'DM Mono',monospace;background:#fff;vertical-align:middle}
+td.label{text-align:left;font-family:'Inter',system-ui,sans-serif;font-weight:600;font-size:12px;color:#0f172a;background:#fff;position:sticky;left:0;z-index:1;border-right:2px solid #E2E8F0}
+tr:hover td{background:#F0F4FF}
+tr:hover td.label{background:#F0F4FF}
+tr.total-row td{background:linear-gradient(90deg,#001F5B,#003087);color:#DBEAFE;font-weight:700;border-color:rgba(255,255,255,.15)}
+tr.total-row td.label{background:linear-gradient(90deg,#001F5B,#0044B4);color:#93C5FD;font-family:'Inter',system-ui,sans-serif}
+tr.section-row td{background:#F0F4FF;font-weight:700;color:#003087;border-top:2px solid #93C5FD}
+/* ── Badges ── */
+.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;font-family:'DM Mono',monospace;white-space:nowrap}
+.badge-green{background:#DCFCE7;color:#166534}
+.badge-amber{background:#FEF3C7;color:#92400E}
+.badge-red{background:#FEE2E2;color:#B91C1C}
+.badge-blue{background:#DBEAFE;color:#1D4ED8}
+.badge-gray{color:#94A3B8;font-family:'DM Mono',monospace;font-size:10px}
+.scroll-x{overflow-x:auto}
+.filter-bar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;margin-bottom:14px;flex-wrap:wrap}
+.filter-bar label{font-size:9px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:.08em}
+select{border:1px solid #CBD5E1;border-radius:20px;padding:4px 14px;font-size:11px;font-family:inherit;outline:none;background:#fff;cursor:pointer;color:#0f172a;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,48,135,.15)}
+.section-title{font-size:11px;font-weight:700;color:#334155;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.section-title::after{content:'';flex:1;height:1px;background:#E2E8F0}
+/* ── Sync panel ── */
+.sync-panel{background:#fff;border:1px solid #E2E8F0;border-radius:14px;padding:24px;margin-bottom:20px;box-shadow:var(--shadow-card)}
+.sync-input{width:100%;border:1px solid #CBD5E1;border-radius:8px;padding:8px 12px;font-size:12px;font-family:'DM Mono',monospace;outline:none;margin:8px 0}
+.sync-input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,48,135,.12)}
+.btn{padding:8px 20px;border-radius:8px;border:none;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all var(--dur-fast)}
+.btn-primary{background:var(--blue);color:#fff}
+.btn-primary:hover{background:var(--blue-d)}
+.btn-secondary{background:#F1F5F9;color:#475569;border:1px solid #E2E8F0}
+.btn-secondary:hover{background:#E2E8F0}
+.err-box{background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:10px 14px;font-size:11px;color:#B91C1C;margin-top:8px}
+/* ── Spinner ── */
+.spinner{width:20px;height:20px;border:2px solid #DBEAFE;border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
+/* ── Grid cell heatmap ── */
+.cell-hot{background:#BBF7D0!important}
+.cell-warm{background:#FEF08A!important}
+.cell-cold{background:#FECDD3!important}
+.cell-nil{background:#F1F5F9!important;color:#94A3B8!important}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+'use strict';
+
+/* ════════════════════════════════════════════════════════════════════
+   CONFIG — paste your Apps Script web app URL OR Google Sheet gviz URL
+   ════════════════════════════════════════════════════════════════════ */
+const DASHBOARD_CONFIG = Object.freeze({
+  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbwzgnXPbCbunBblnMUrqdWg3eY9qsIwCrFxuYuvYSpxtH22l4Cs32vdkOkDhUn-qwM64w/exec',
+  CACHE_SHEET_URL: '',
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   SOURCE GROUPINGS
+   ════════════════════════════════════════════════════════════════════ */
+const SRC_GROUPS = [
+  { name: 'Paid',    members: ['Facebook','Google'], clr: { bar:'#8B5CF6', light:'#EDE9FE', text:'#4C1D95' } },
+  { name: 'Non-Paid', members: ['Organic','Non CPS'], clr: { bar:'#10B981', light:'#D1FAE5', text:'#064E3B' } },
+];
+const PAID_SET   = new Set(SRC_GROUPS[0].members);
+const NONPAID_SET = new Set(SRC_GROUPS[1].members);
+
+const ce = React.createElement;
+const { useState, useEffect, useMemo, useRef, useCallback, useTransition } = React;
+
+/* ════════════════════════════════════════════════════════════════════
+   DATA FETCHING
+   ════════════════════════════════════════════════════════════════════ */
+async function fetchDashboardData(url) {
+  const u = (url || '').trim();
+  if (!u) throw new Error('No URL configured. Paste your Apps Script URL or Cache Sheet URL.');
+
+  // Detect if it's a gviz CSV URL (cache sheet) or direct JSON (Apps Script)
+  const isGviz = u.includes('gviz/tq');
+
+  let resp;
+  try { resp = await fetch(u + (isGviz ? '' : ''), { cache: 'no-store' }); }
+  catch (e) { throw new Error('Network error: ' + e.message); }
+  if (!resp.ok) throw new Error('HTTP ' + resp.status + ' — check URL and sharing settings.');
+
+  const text = await resp.text();
+  if (!text || text.trim().length < 10) throw new Error('Empty response from server.');
+
+  let json;
+  if (isGviz) {
+    // gviz CSV: cell A1 contains the JSON. Row 0 may be a header row or the data row
+    // depending on the sheet structure — scan all rows for the JSON object.
+    const rows = text.split('\n');
+    let found = false;
+    for (const row of rows) {
+      let raw = row.trim();
+      if (raw.startsWith('"')) raw = raw.slice(1, raw.lastIndexOf('"')).replace(/""/g, '"');
+      if (raw.startsWith('{')) { json = raw; found = true; break; }
+    }
+    if (!found) throw new Error('Cache sheet is empty or malformed. Run computeAndCache() in Apps Script first.');
+  } else {
+    json = text;
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(json); }
+  catch (e) { throw new Error('Could not parse JSON from server. (raw preview: ' + json.slice(0, 80) + ')'); }
+  if (parsed.error) throw new Error('Apps Script error: ' + parsed.error);
+  if (!parsed.maps || !parsed.monthly) throw new Error('Unexpected data format. Re-run testRun() in Apps Script.');
+
+  return parsed;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   AGGREGATION HELPERS
+   ════════════════════════════════════════════════════════════════════ */
+const EMPTY = Object.freeze({ l: 0, r: 0, ldr: 0 });
+
+function fin(l, r) {
+  return { l, r, ldr: l > 0 ? r / l * 100 : 0 };
+}
+
+/* Aggregate sm/ltm/mm/stm/zm arrays for a given month filter.
+   Returns { grand, grandSrc:{src→{l,r,ldr}}, dimAggs:{dim→{total,src:{src→agg}}} }
+   table: array of rows where last two cols are [leads, retails]
+   dimKey(row): returns the dimension string for this row (or null for src-only tables)
+   srcKey(row): returns source string
+   monthKey(row): returns month string
+*/
+function aggregate(table, maps, mf, dimKeyFn, srcKeyFn, monthKeyFn) {
+  const byDim = new Map();
+  const bySrc = new Map();
+  const byDimSrc = new Map();
+  let gL = 0, gR = 0;
+
+  for (const row of table) {
+    const m = monthKeyFn(row, maps);
+    if (mf !== 'All' && m !== mf) continue;
+    const l = row[row.length - 2];
+    const r = row[row.length - 1];
+    gL += l; gR += r;
+
+    const src = srcKeyFn ? srcKeyFn(row, maps) : null;
+    const dim = dimKeyFn ? dimKeyFn(row, maps) : null;
+
+    if (src) {
+      const cur = bySrc.get(src) || [0, 0]; cur[0] += l; cur[1] += r; bySrc.set(src, cur);
+    }
+    if (dim) {
+      const cur = byDim.get(dim) || [0, 0]; cur[0] += l; cur[1] += r; byDim.set(dim, cur);
+      if (src) {
+        const k = dim + '\x00' + src;
+        const cur2 = byDimSrc.get(k) || [0, 0]; cur2[0] += l; cur2[1] += r; byDimSrc.set(k, cur2);
+      }
+    }
+  }
+
+  const grandSrc = {};
+  for (const [s, v] of bySrc) grandSrc[s] = fin(v[0], v[1]);
+
+  const dimAggs = {};
+  for (const [d, dv] of byDim) {
+    const srcAgg = {};
+    for (const s of bySrc.keys()) {
+      const v = byDimSrc.get(d + '\x00' + s);
+      srcAgg[s] = v ? fin(v[0], v[1]) : EMPTY;
+    }
+    dimAggs[d] = { total: fin(dv[0], dv[1]), src: srcAgg };
+  }
+
+  return { grand: fin(gL, gR), grandSrc, dimAggs };
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   FORMATTERS
+   ════════════════════════════════════════════════════════════════════ */
+function Nf(n) { return (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('en-IN'); }
+function Pf(n, d = 1) { return (n == null || isNaN(n)) ? '—' : n.toFixed(d) + '%'; }
+function monthOrder(m) {
+  if (!m) return 0;
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const match = m.match(/([A-Za-z]+)'(\d+)/);
+  if (!match) return 0;
+  return parseInt(match[2]) * 12 + MONTHS.indexOf(match[1]);
+}
+
+function ldrBadge(pct) {
+  if (!pct || isNaN(pct) || pct === 0) return ce('span', { className: 'badge-gray' }, '—');
+  const cls = pct >= 15 ? 'badge-green' : pct >= 8 ? 'badge-amber' : 'badge-red';
+  return ce('span', { className: 'badge ' + cls }, pct.toFixed(1) + '%');
+}
+
+function cellClass(pct) {
+  if (!pct || pct === 0) return 'cell-nil';
+  if (pct >= 15) return 'cell-hot';
+  if (pct >= 8)  return 'cell-warm';
+  return 'cell-cold';
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   EXCEL EXPORT
+   ════════════════════════════════════════════════════════════════════ */
+function exportXlsx(sheetMap, filename) {
+  if (!window.XLSX) { alert('XLSX library not loaded'); return; }
+  const wb = window.XLSX.utils.book_new();
+  for (const [name, aoa] of Object.entries(sheetMap)) {
+    const ws = window.XLSX.utils.aoa_to_sheet(aoa);
+    const colW = [];
+    for (const row of aoa) row.forEach((c, i) => { const l = String(c == null ? '' : c).length; if (!colW[i] || l > colW[i]) colW[i] = l; });
+    ws['!cols'] = colW.map(w => ({ wch: Math.min(w + 2, 40) }));
+    window.XLSX.utils.book_append_sheet(wb, ws, String(name).slice(0, 31));
+  }
+  window.XLSX.writeFile(wb, filename + '.xlsx');
+}
+
+function ExportBtn({ onClick }) {
+  return ce('button', {
+    onClick, title: 'Export to Excel',
+    style: { padding: '4px 14px', fontSize: 10, fontFamily: 'inherit', fontWeight: 700, border: '1px solid #93C5FD', borderRadius: 20, background: '#fff', color: '#001F5B', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }
+  }, '⬇ Export Excel');
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   REUSABLE DIMENSION GRID COMPONENT
+   Renders a table: rows = dimension values (models/states/LTs/etc.)
+                    columns = [Total, Paid Grp, Src1, Src2, ..., Non-Paid Grp, Src3, ...]
+   agg: result of aggregate()
+   srcs: ordered source list
+   dimLabel: header label
+   ════════════════════════════════════════════════════════════════════ */
+const DimGrid = React.memo(function DimGrid({ agg, srcs, dimLabel, viewOnly }) {
+  if (!agg) return null;
+  const { grand, grandSrc, dimAggs } = agg;
+
+  const paidSrcs    = srcs.filter(s => PAID_SET.has(s));
+  const nonPaidSrcs = srcs.filter(s => NONPAID_SET.has(s));
+  const otherSrcs   = srcs.filter(s => !PAID_SET.has(s) && !NONPAID_SET.has(s));
+
+  // Paid/Non-Paid group totals
+  function grpAgg(agg, set) {
+    let l = 0, r = 0;
+    for (const s of set) { const a = agg[s] || EMPTY; l += a.l; r += a.r; }
+    return fin(l, r);
+  }
+  const paidGrand    = grpAgg(grandSrc, PAID_SET);
+  const nonPaidGrand = grpAgg(grandSrc, NONPAID_SET);
+
+  const orderedSrcs = [...paidSrcs, ...nonPaidSrcs, ...otherSrcs];
+
+  // Build header rows
+  const groupCols = [
+    { label: 'Paid', span: paidSrcs.length + 1, bg: '#7C3AED' },
+    { label: 'Non-Paid', span: nonPaidSrcs.length + 1, bg: '#059669' },
+    ...(otherSrcs.length ? [{ label: 'Other', span: otherSrcs.length, bg: '#6B7280' }] : []),
+  ].filter(g => g.span > 0);
+
+  // Sort dim rows by total leads desc
+  const dimRows = Object.entries(dimAggs).sort((a, b) => b[1].total.l - a[1].total.l);
+
+  function aRow(label, tot, paidA, npA, srcMap, isTotal) {
+    const rowClass = isTotal ? 'total-row' : '';
+    return ce('tr', { className: rowClass, key: label },
+      ce('td', { className: 'label', style: isTotal ? { color: '#93C5FD' } : {} }, label),
+      ce('td', null, Nf(tot.l)),
+      ce('td', { style: { color: isTotal ? '#86efac' : '#003087', fontWeight: 700 } }, Nf(tot.r)),
+      ce('td', { className: cellClass(tot.ldr) }, ldrBadge(tot.ldr)),
+      // Paid group
+      ce('td', { style: { borderLeft: '2px solid rgba(124,58,237,.3)' } }, Nf(paidA.l)),
+      ce('td', { style: { color: isTotal ? '#c4b5fd' : '#7C3AED', fontWeight: 700 } }, Nf(paidA.r)),
+      ce('td', { className: cellClass(paidA.ldr) }, Pf(paidA.ldr)),
+      ...paidSrcs.flatMap(s => {
+        const a = srcMap[s] || EMPTY;
+        return [ce('td', null, Nf(a.l)), ce('td', { style: { fontWeight: 700 } }, Nf(a.r)), ce('td', { className: cellClass(a.ldr) }, Pf(a.ldr))];
+      }),
+      // Non-Paid group
+      ce('td', { style: { borderLeft: '2px solid rgba(5,150,105,.3)' } }, Nf(npA.l)),
+      ce('td', { style: { color: isTotal ? '#6ee7b7' : '#059669', fontWeight: 700 } }, Nf(npA.r)),
+      ce('td', { className: cellClass(npA.ldr) }, Pf(npA.ldr)),
+      ...nonPaidSrcs.flatMap(s => {
+        const a = srcMap[s] || EMPTY;
+        return [ce('td', null, Nf(a.l)), ce('td', { style: { fontWeight: 700 } }, Nf(a.r)), ce('td', { className: cellClass(a.ldr) }, Pf(a.ldr))];
+      }),
+      ...otherSrcs.flatMap(s => {
+        const a = srcMap[s] || EMPTY;
+        return [ce('td', null, Nf(a.l)), ce('td', { style: { fontWeight: 700 } }, Nf(a.r)), ce('td', { className: cellClass(a.ldr) }, Pf(a.ldr))];
+      })
+    );
+  }
+
+  return ce('div', { className: 'scroll-x' },
+    ce('table', null,
+      ce('thead', null,
+        // Group header row
+        ce('tr', null,
+          ce('th', { className: 'left', rowSpan: 2, style: { minWidth: 160, zIndex: 3 } }, dimLabel),
+          ce('th', { colSpan: 3, style: { background: '#001F5B' } }, 'Grand Total'),
+          ...groupCols.map(g => ce('th', { colSpan: g.span * 3, style: { background: g.bg } }, g.label)),
+        ),
+        // Sub-header
+        ce('tr', null,
+          // Grand Total sub
+          ce('th', { className: 'sub' }, 'Leads'), ce('th', { className: 'sub' }, 'Retails'), ce('th', { className: 'sub' }, 'LDR%'),
+          // Paid group sub
+          ce('th', { className: 'sub', style: { borderLeft: '2px solid rgba(124,58,237,.3)' } }, 'Leads'),
+          ce('th', { className: 'sub' }, 'Retails'), ce('th', { className: 'sub' }, 'LDR%'),
+          ...paidSrcs.flatMap(s => [ce('th', { className: 'sub' }, s + ' L'), ce('th', { className: 'sub' }, s + ' R'), ce('th', { className: 'sub' }, 'LDR%')]),
+          // Non-Paid sub
+          ce('th', { className: 'sub', style: { borderLeft: '2px solid rgba(5,150,105,.3)' } }, 'Leads'),
+          ce('th', { className: 'sub' }, 'Retails'), ce('th', { className: 'sub' }, 'LDR%'),
+          ...nonPaidSrcs.flatMap(s => [ce('th', { className: 'sub' }, s + ' L'), ce('th', { className: 'sub' }, s + ' R'), ce('th', { className: 'sub' }, 'LDR%')]),
+          ...otherSrcs.flatMap(s => [ce('th', { className: 'sub' }, s + ' L'), ce('th', { className: 'sub' }, s + ' R'), ce('th', { className: 'sub' }, 'LDR%')]),
+        )
+      ),
+      ce('tbody', null,
+        // Total row first
+        aRow('∑ Grand Total', grand, paidGrand, nonPaidGrand, grandSrc, true),
+        // Dim rows
+        ...dimRows.map(([dim, da]) => {
+          const pA = grpAgg(da.src, PAID_SET);
+          const npA = grpAgg(da.src, NONPAID_SET);
+          return aRow(dim, da.total, pA, npA, da.src, false);
+        })
+      )
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   OVERVIEW TAB
+   ════════════════════════════════════════════════════════════════════ */
+const OverviewTab = React.memo(function OverviewTab({ data, mf }) {
+  const { maps, monthly, sm } = data;
+  const chartRef = useRef(); const chartInst = useRef();
+
+  // KPI totals
+  const totals = useMemo(() => {
+    let gL = 0, gR = 0, pL = 0, pR = 0, npL = 0, npR = 0;
+    for (const row of sm) {
+      const m = maps.lm[row[1]];
+      if (mf !== 'All' && m !== mf) continue;
+      const src = maps.src[row[0]];
+      const l = row[2], r = row[3];
+      gL += l; gR += r;
+      if (PAID_SET.has(src)) { pL += l; pR += r; }
+      if (NONPAID_SET.has(src)) { npL += l; npR += r; }
+    }
+    return { l: gL, r: gR, ldr: gL > 0 ? gR / gL * 100 : 0, pL, pR, pLdr: pL > 0 ? pR / pL * 100 : 0, npL, npR, npLdr: npL > 0 ? npR / npL * 100 : 0 };
+  }, [sm, maps, mf]);
+
+  // Monthly trend
+  const trendData = useMemo(() => {
+    const byMonth = new Map();
+    for (const row of monthly) {
+      const m = maps.lm[row[0]];
+      byMonth.set(m, { l: row[1], r: row[2] });
+    }
+    return [...byMonth.entries()]
+      .sort((a, b) => monthOrder(a[0]) - monthOrder(b[0]))
+      .map(([m, v]) => ({ m, l: v.l, r: v.r, ldr: v.l > 0 ? v.r / v.l * 100 : 0 }));
+  }, [monthly, maps]);
+
+  // Source breakdown for the current month filter
+  const srcBreak = useMemo(() => {
+    const bySrc = new Map();
+    for (const row of sm) {
+      const m = maps.lm[row[1]];
+      if (mf !== 'All' && m !== mf) continue;
+      const src = maps.src[row[0]];
+      const cur = bySrc.get(src) || [0, 0]; cur[0] += row[2]; cur[1] += row[3]; bySrc.set(src, cur);
+    }
+    return [...bySrc.entries()]
+      .map(([src, v]) => ({ src, l: v[0], r: v[1], ldr: v[0] > 0 ? v[1] / v[0] * 100 : 0 }))
+      .sort((a, b) => b.l - a.l);
+  }, [sm, maps, mf]);
+
+  // Trend chart
+  useEffect(() => {
+    const canvas = chartRef.current;
+    if (!canvas || !window.Chart) return;
+    if (chartInst.current) try { chartInst.current.destroy(); } catch (e) {}
+    chartInst.current = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: trendData.map(d => d.m),
+        datasets: [
+          { label: 'Leads', data: trendData.map(d => d.l), backgroundColor: '#003087' + '44', borderColor: '#003087', borderWidth: 1.5, borderRadius: 3, yAxisID: 'y' },
+          { label: 'Retails', data: trendData.map(d => d.r), backgroundColor: '#E31837' + '55', borderColor: '#E31837', borderWidth: 1.5, borderRadius: 3, yAxisID: 'y' },
+          { label: 'LDR%', data: trendData.map(d => parseFloat(d.ldr.toFixed(2))), type: 'line', borderColor: '#F5A623', backgroundColor: 'transparent', borderWidth: 2.5, pointRadius: 5, pointBackgroundColor: '#F5A623', yAxisID: 'y2', tension: .3 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'top', labels: { boxWidth: 10, boxHeight: 10, font: { size: 10, family: 'DM Mono,monospace' }, color: '#475569' } },
+          tooltip: { backgroundColor: 'rgba(0,31,91,.92)', titleColor: '#DBEAFE', bodyColor: '#93C5FD', padding: 10, cornerRadius: 8 },
+        },
+        scales: {
+          x: { grid: { color: 'rgba(100,116,139,.1)' }, ticks: { color: '#475569', font: { size: 10 } } },
+          y: { grid: { color: 'rgba(100,116,139,.1)' }, ticks: { color: '#475569', font: { size: 10 } }, position: 'left', title: { display: true, text: 'Volume', color: '#94a3b8', font: { size: 9 } }, beginAtZero: true },
+          y2: { position: 'right', ticks: { color: '#F5A623', font: { size: 10 }, callback: v => v + '%' }, grid: { display: false }, title: { display: true, text: 'LDR%', color: '#F5A623', font: { size: 9 } }, beginAtZero: true }
+        }
+      }
+    });
+    return () => { try { if (chartInst.current) chartInst.current.destroy(); } catch (e) {} };
+  }, [trendData]);
+
+  const KPIs = [
+    { label: 'Total Leads',    value: Nf(totals.l),               sub: 'All sources',                 color: '#003087' },
+    { label: 'Total Retails',  value: Nf(totals.r),               sub: 'Converted leads',             color: '#E31837' },
+    { label: 'LDR %',          value: totals.ldr.toFixed(1) + '%', sub: 'Retails ÷ Total Leads',      color: '#F5A623' },
+    { label: 'Paid LDR%',      value: totals.pLdr.toFixed(1) + '%', sub: Nf(totals.pL) + ' paid leads', color: '#7C3AED' },
+    { label: 'Non-Paid LDR%',  value: totals.npLdr.toFixed(1) + '%', sub: Nf(totals.npL) + ' organic leads', color: '#059669' },
+  ];
+
+  return ce('div', { className: 'fade-up' },
+    // KPI strip
+    ce('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 10, marginBottom: 20 } },
+      KPIs.map((k, i) => ce('div', { key: i, className: 'kpi' },
+        ce('div', { style: { position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: k.color, borderRadius: '12px 12px 0 0' } }),
+        ce('div', { className: 'kpi-label' }, k.label),
+        ce('div', { className: 'kpi-value', style: { fontSize: k.value.length > 7 ? 16 : 20, color: k.color } }, k.value),
+        ce('div', { className: 'kpi-sub', style: { color: k.color } }, k.sub)
+      ))
+    ),
+    // Trend chart
+    ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14 } },
+      ce('div', { className: 'section-title' }, 'Month-wise Trend — Leads, Retails & LDR%'),
+      ce('div', { style: { height: 260, position: 'relative' } }, ce('canvas', { ref: chartRef }))
+    ),
+    // Source summary
+    ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14 } },
+      ce('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 } },
+        ce('div', { className: 'section-title', style: { marginBottom: 0 } }, 'Source Summary'),
+        ce(ExportBtn, {
+          onClick: () => {
+            const trend = [['Month', 'Leads', 'Retails', 'LDR%'], ...trendData.map(d => [d.m, d.l, d.r, +d.ldr.toFixed(2)])];
+            const src = [['Source', 'Leads', 'Retails', 'LDR%'], ...srcBreak.map(s => [s.src, s.l, s.r, +s.ldr.toFixed(2)]), ['∑ Total', totals.l, totals.r, +totals.ldr.toFixed(2)]];
+            exportXlsx({ 'Monthly Trend': trend, 'Source Breakdown': src }, 'TVS_LDR_Overview');
+          }
+        })
+      ),
+      ce('div', { className: 'scroll-x' },
+        ce('table', null,
+          ce('thead', null, ce('tr', null,
+            ce('th', { className: 'left', style: { minWidth: 140 } }, 'Source'),
+            ce('th', null, 'Leads'),
+            ce('th', { style: { background: '#E31837' } }, 'Retails'),
+            ce('th', { style: { background: '#F5A623', color: '#111' } }, 'LDR%'),
+          )),
+          ce('tbody', null,
+            ...srcBreak.map((s, i) => ce('tr', { key: i },
+              ce('td', { className: 'label' }, s.src),
+              ce('td', null, Nf(s.l)),
+              ce('td', { style: { color: '#E31837', fontWeight: 700 } }, Nf(s.r)),
+              ce('td', null, ldrBadge(s.ldr)),
+            )),
+            ce('tr', { className: 'total-row' },
+              ce('td', { className: 'label' }, '∑ Grand Total'),
+              ce('td', null, Nf(totals.l)),
+              ce('td', { style: { color: '#fca5a5', fontWeight: 700 } }, Nf(totals.r)),
+              ce('td', null, ce('span', { style: { color: '#fde68a', fontWeight: 700 } }, totals.ldr.toFixed(1) + '%')),
+            )
+          )
+        )
+      )
+    ),
+    // Zone breakdown
+    ce(ZoneOverview, { data, mf })
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   ZONE OVERVIEW (mini table on Overview tab)
+   ════════════════════════════════════════════════════════════════════ */
+const ZoneOverview = React.memo(function ZoneOverview({ data, mf }) {
+  const { maps, zm } = data;
+  const zoneRows = useMemo(() => {
+    const byZone = new Map();
+    for (const row of zm) {
+      const m = maps.lm[row[1]];
+      if (mf !== 'All' && m !== mf) continue;
+      const zone = maps.zone[row[0]];
+      const cur = byZone.get(zone) || [0, 0]; cur[0] += row[2]; cur[1] += row[3]; byZone.set(zone, cur);
+    }
+    return [...byZone.entries()].map(([z, v]) => ({ z, l: v[0], r: v[1], ldr: v[0] > 0 ? v[1] / v[0] * 100 : 0 }))
+      .sort((a, b) => b.l - a.l);
+  }, [zm, maps, mf]);
+
+  return ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14 } },
+    ce('div', { className: 'section-title' }, 'Zone Breakdown'),
+    ce('div', { className: 'scroll-x' },
+      ce('table', null,
+        ce('thead', null, ce('tr', null,
+          ce('th', { className: 'left', style: { minWidth: 120 } }, 'Zone'),
+          ce('th', null, 'Leads'), ce('th', { style: { background: '#E31837' } }, 'Retails'),
+          ce('th', { style: { background: '#F5A623', color: '#111' } }, 'LDR%'),
+          ce('th', null, 'Share of Leads'),
+        )),
+        ce('tbody', null,
+          ...zoneRows.map((z, i) => {
+            const total = zoneRows.reduce((s, x) => s + x.l, 0);
+            return ce('tr', { key: i },
+              ce('td', { className: 'label' }, z.z),
+              ce('td', null, Nf(z.l)),
+              ce('td', { style: { color: '#E31837', fontWeight: 700 } }, Nf(z.r)),
+              ce('td', null, ldrBadge(z.ldr)),
+              ce('td', null,
+                ce('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                  ce('div', { style: { flex: 1, height: 6, background: '#F1F5F9', borderRadius: 3, overflow: 'hidden', minWidth: 60 } },
+                    ce('div', { style: { width: (total > 0 ? z.l / total * 100 : 0) + '%', height: '100%', background: '#003087', borderRadius: 3 } })
+                  ),
+                  ce('span', { style: { fontSize: 10, fontFamily: 'DM Mono', color: '#64748B' } }, total > 0 ? (z.l / total * 100).toFixed(1) + '%' : '—')
+                )
+              ),
+            );
+          })
+        )
+      )
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   SOURCE ANALYSIS TAB
+   ════════════════════════════════════════════════════════════════════ */
+const SourceTab = React.memo(function SourceTab({ data, mf }) {
+  const { maps, sm } = data;
+  const srcs = useMemo(() => [...new Set(maps.src)].sort(), [maps]);
+
+  // Monthly grids: one per month in filter, or single aggregated view
+  const months = useMemo(() =>
+    mf === 'All'
+      ? [...new Set(maps.lm)].sort((a, b) => monthOrder(a) - monthOrder(b))
+      : [mf],
+    [maps, mf]
+  );
+
+  const agg = useMemo(() => aggregate(
+    sm, maps, mf,
+    (row, maps) => maps.src[row[0]], // dim = source
+    null,
+    (row, maps) => maps.lm[row[1]]
+  ), [sm, maps, mf]);
+
+  // Build a source × month matrix
+  const matrix = useMemo(() => {
+    const byMon = new Map();
+    for (const row of sm) {
+      const m = maps.lm[row[1]];
+      if (mf !== 'All' && m !== mf) continue;
+      if (!byMon.has(m)) byMon.set(m, new Map());
+      const mMap = byMon.get(m);
+      const src = maps.src[row[0]];
+      const cur = mMap.get(src) || [0, 0]; cur[0] += row[2]; cur[1] += row[3]; mMap.set(src, cur);
+    }
+    return byMon;
+  }, [sm, maps, mf]);
+
+  return ce('div', { className: 'fade-up' },
+    months.map(M => {
+      const mData = matrix.get(M) || new Map();
+      let gL = 0, gR = 0;
+      for (const [, v] of mData) { gL += v[0]; gR += v[1]; }
+      return ce('div', { key: M, className: 'card', style: { padding: '16px 18px', marginBottom: 14 } },
+        ce('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 } },
+          ce('div', { className: 'section-title', style: { marginBottom: 0 } }, 'Source Analysis — ' + M),
+          ce(ExportBtn, {
+            onClick: () => {
+              const aoa = [['Source', 'Leads', 'Retails', 'LDR%']];
+              for (const s of srcs) {
+                const v = mData.get(s) || [0, 0];
+                aoa.push([s, v[0], v[1], v[0] > 0 ? +(v[1] / v[0] * 100).toFixed(2) : 0]);
+              }
+              aoa.push(['∑ Total', gL, gR, gL > 0 ? +(gR / gL * 100).toFixed(2) : 0]);
+              exportXlsx({ ['Source_' + M]: aoa }, 'TVS_Source_' + M.replace("'", ''));
+            }
+          })
+        ),
+        ce('div', { className: 'scroll-x' },
+          ce('table', null,
+            ce('thead', null, ce('tr', null,
+              ce('th', { className: 'left', style: { minWidth: 150 } }, 'Source'),
+              ce('th', null, 'Leads'), ce('th', { style: { background: '#E31837' } }, 'Retails'),
+              ce('th', { style: { background: '#F5A623', color: '#111' } }, 'LDR%'),
+            )),
+            ce('tbody', null,
+              ...srcs.map(src => {
+                const v = mData.get(src) || [0, 0];
+                const ldr = v[0] > 0 ? v[1] / v[0] * 100 : 0;
+                return ce('tr', { key: src },
+                  ce('td', { className: 'label' }, src),
+                  ce('td', null, Nf(v[0])),
+                  ce('td', { style: { color: '#E31837', fontWeight: 700 } }, Nf(v[1])),
+                  ce('td', null, ldrBadge(ldr)),
+                );
+              }),
+              ce('tr', { className: 'total-row' },
+                ce('td', { className: 'label' }, '∑ Grand Total'),
+                ce('td', null, Nf(gL)),
+                ce('td', { style: { color: '#fca5a5', fontWeight: 700 } }, Nf(gR)),
+                ce('td', null, ce('span', { style: { color: '#fde68a', fontWeight: 700 } }, gL > 0 ? (gR / gL * 100).toFixed(1) + '%' : '—')),
+              )
+            )
+          )
+        )
+      );
+    })
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   GENERIC DIM × SOURCE TAB
+   ════════════════════════════════════════════════════════════════════ */
+function makeDimTab(dimKey, dimLabel, tableKey, exportName) {
+  return React.memo(function DimTab({ data, mf }) {
+    const { maps } = data;
+    const table = data[tableKey];
+    const srcs  = useMemo(() => [...new Set(maps.src)].sort(), [maps]);
+
+    const agg = useMemo(() => aggregate(
+      table, maps, mf,
+      (row, maps) => maps[dimKey][row[0]], // dim
+      (row, maps) => maps.src[row[1]],     // src
+      (row, maps) => maps.lm[row[2]]       // month
+    ), [table, maps, mf]);
+
+    const handleExport = useCallback(() => {
+      const { dimAggs, grandSrc, grand } = agg;
+      const hdr = [dimLabel, 'Leads', 'Retails', 'LDR%', ...srcs.flatMap(s => [s + ' L', s + ' R', s + ' LDR%'])];
+      const rows = [[dimLabel + ' (Total)', grand.l, grand.r, +grand.ldr.toFixed(2), ...srcs.flatMap(s => { const a = grandSrc[s] || EMPTY; return [a.l, a.r, +a.ldr.toFixed(2)]; })]];
+      for (const [dim, da] of Object.entries(dimAggs).sort((a, b) => b[1].total.l - a[1].total.l)) {
+        rows.push([dim, da.total.l, da.total.r, +da.total.ldr.toFixed(2), ...srcs.flatMap(s => { const a = da.src[s] || EMPTY; return [a.l, a.r, +a.ldr.toFixed(2)]; })]);
+      }
+      exportXlsx({ [exportName]: [hdr, ...rows] }, 'TVS_' + exportName + '_' + mf.replace("'", ''));
+    }, [agg, srcs, mf]);
+
+    return ce('div', { className: 'fade-up' },
+      ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14 } },
+        ce('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 } },
+          ce('div', { className: 'section-title', style: { marginBottom: 0 } }, dimLabel + ' × Source — ' + mf),
+          ce(ExportBtn, { onClick: handleExport })
+        ),
+        ce(DimGrid, { agg, srcs, dimLabel, viewOnly: false })
+      )
+    );
+  });
+}
+
+const LTSourceTab    = makeDimTab('lt',   'Lead Type', 'ltm', 'LT_x_Source');
+const ModelSourceTab = makeDimTab('mdl',  'Model',     'mm',  'Model_x_Source');
+const StateSourceTab = makeDimTab('st',   'State',     'stm', 'State_x_Source');
+
+/* ════════════════════════════════════════════════════════════════════
+   ZONE × MONTH TAB
+   ════════════════════════════════════════════════════════════════════ */
+const ZoneTab = React.memo(function ZoneTab({ data, mf }) {
+  const { maps, zm } = data;
+  const months = useMemo(() =>
+    [...new Set(maps.lm)].sort((a, b) => monthOrder(a) - monthOrder(b)),
+    [maps]
+  );
+  const zones = useMemo(() => [...new Set(maps.zone)].sort(), [maps]);
+
+  const matrix = useMemo(() => {
+    const out = new Map();
+    for (const row of zm) {
+      const m = maps.lm[row[1]];
+      if (mf !== 'All' && m !== mf) continue;
+      const zone = maps.zone[row[0]];
+      if (!out.has(zone)) out.set(zone, new Map());
+      const cur = out.get(zone).get(m) || [0, 0]; cur[0] += row[2]; cur[1] += row[3]; out.get(zone).set(m, cur);
+    }
+    return out;
+  }, [zm, maps, mf]);
+
+  const displayMonths = mf === 'All' ? months : [mf];
+
+  return ce('div', { className: 'fade-up' },
+    ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14 } },
+      ce('div', { className: 'section-title' }, 'Zone × Month Analysis'),
+      ce('div', { className: 'scroll-x' },
+        ce('table', null,
+          ce('thead', null,
+            ce('tr', null,
+              ce('th', { className: 'left', style: { minWidth: 130 } }, 'Zone'),
+              ce('th', { style: { background: '#001F5B' }, colSpan: 3 }, 'Grand Total'),
+              ...displayMonths.flatMap(m => [ce('th', { colSpan: 3, key: m }, m)]),
+            ),
+            ce('tr', null,
+              ce('th', { className: 'sub' }),
+              ce('th', { className: 'sub' }, 'Leads'), ce('th', { className: 'sub' }, 'Retails'), ce('th', { className: 'sub' }, 'LDR%'),
+              ...displayMonths.flatMap(m => [
+                ce('th', { className: 'sub', key: m + 'l' }, 'Leads'),
+                ce('th', { className: 'sub', key: m + 'r' }, 'Retails'),
+                ce('th', { className: 'sub', key: m + 'ldr' }, 'LDR%'),
+              ]),
+            )
+          ),
+          ce('tbody', null,
+            // Totals row
+            (() => {
+              let tL = 0, tR = 0;
+              for (const [, mMap] of matrix) for (const [, v] of mMap) { tL += v[0]; tR += v[1]; }
+              const mTotals = displayMonths.map(m => {
+                let l = 0, r = 0;
+                for (const [, mMap] of matrix) { const v = mMap.get(m) || [0, 0]; l += v[0]; r += v[1]; }
+                return { m, l, r };
+              });
+              return ce('tr', { className: 'total-row', key: 'total' },
+                ce('td', { className: 'label' }, '∑ Grand Total'),
+                ce('td', null, Nf(tL)), ce('td', { style: { color: '#fca5a5', fontWeight: 700 } }, Nf(tR)),
+                ce('td', null, ce('span', { style: { color: '#fde68a', fontWeight: 700 } }, tL > 0 ? (tR / tL * 100).toFixed(1) + '%' : '—')),
+                ...mTotals.flatMap(({ l, r }) => [
+                  ce('td', null, Nf(l)), ce('td', { style: { color: '#fca5a5', fontWeight: 700 } }, Nf(r)),
+                  ce('td', null, l > 0 ? ce('span', { style: { color: '#fde68a', fontWeight: 700 } }, (r / l * 100).toFixed(1) + '%') : '—'),
+                ])
+              );
+            })(),
+            // Zone rows
+            ...zones.map(zone => {
+              const mMap = matrix.get(zone) || new Map();
+              let zL = 0, zR = 0;
+              for (const [, v] of mMap) { zL += v[0]; zR += v[1]; }
+              const ldr = zL > 0 ? zR / zL * 100 : 0;
+              return ce('tr', { key: zone },
+                ce('td', { className: 'label' }, zone),
+                ce('td', null, Nf(zL)),
+                ce('td', { style: { color: '#E31837', fontWeight: 700 } }, Nf(zR)),
+                ce('td', null, ldrBadge(ldr)),
+                ...displayMonths.flatMap(m => {
+                  const v = mMap.get(m) || [0, 0];
+                  const mldr = v[0] > 0 ? v[1] / v[0] * 100 : 0;
+                  return [ce('td', null, Nf(v[0])), ce('td', { style: { color: '#E31837', fontWeight: 700 } }, Nf(v[1])), ce('td', { className: cellClass(mldr) }, Pf(mldr))];
+                })
+              );
+            })
+          )
+        )
+      )
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   BUYING DAYS TAB
+   ════════════════════════════════════════════════════════════════════ */
+const BuyingDaysTab = React.memo(function BuyingDaysTab({ data, mf }) {
+  const { maps, bdm } = data;
+  const srcs = useMemo(() => [...new Set(maps.src)].sort(), [maps]);
+
+  const agg = useMemo(() => aggregate(
+    bdm, maps, mf,
+    (row) => String(row[0]) + ' days', // dim = buying days
+    (row, maps) => maps.src[row[1]],
+    (row, maps) => maps.lm[row[2]]
+  ), [bdm, maps, mf]);
+
+  return ce('div', { className: 'fade-up' },
+    ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14 } },
+      ce('div', { className: 'section-title' }, 'Buying Intent (Days) × Source — ' + mf),
+      ce(DimGrid, { agg, srcs, dimLabel: 'Buying Intent', viewOnly: false })
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   SETUP SCREEN (shown when no URL is configured)
+   ════════════════════════════════════════════════════════════════════ */
+function SetupScreen({ onSave }) {
+  const [url, setUrl] = useState('');
+  const [type, setType] = useState('script'); // 'script' | 'sheet'
+  return ce('div', { style: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#F0F4FF 0%,#EFF6FF 100%)', padding: 24 } },
+    ce('div', { style: { background: '#fff', borderRadius: 20, padding: '44px 40px', maxWidth: 520, width: '100%', boxShadow: '0 8px 40px rgba(0,48,135,.12)', border: '1px solid #DBEAFE' } },
+      ce('div', { style: { marginBottom: 24, textAlign: 'center' } },
+        ce('div', { style: { fontSize: 40, fontWeight: 900, color: '#003087', letterSpacing: '-.04em', fontFamily: 'Inter,system-ui,sans-serif', lineHeight: 1 } }, 'TVS'),
+        ce('div', { style: { fontSize: 13, color: '#64748B', marginTop: 4 } }, 'Lead Disposition Dashboard v1.0'),
+      ),
+      ce('div', { style: { fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 8 } }, 'Select data source type:'),
+      ce('div', { style: { display: 'flex', gap: 8, marginBottom: 16 } },
+        ['script', 'sheet'].map(t => ce('button', { key: t, onClick: () => setType(t), style: { flex: 1, padding: '8px 0', borderRadius: 8, border: type === t ? '2px solid #003087' : '1px solid #E2E8F0', background: type === t ? '#F0F4FF' : '#fff', color: type === t ? '#003087' : '#64748B', fontWeight: type === t ? 700 : 500, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' } },
+          t === 'script' ? '⚡ Apps Script URL' : '📊 Cache Sheet URL'
+        ))
+      ),
+      ce('div', { style: { fontSize: 11, color: '#6B7280', marginBottom: 8 } },
+        type === 'script'
+          ? 'Paste the Google Apps Script web app deployment URL:'
+          : 'Paste the gviz/tq CSV URL of the cache Google Sheet (cell A1 contains JSON):'
+      ),
+      ce('input', { className: 'sync-input', value: url, onChange: e => setUrl(e.target.value), placeholder: type === 'script' ? 'https://script.google.com/macros/s/…/exec' : 'https://docs.google.com/spreadsheets/d/…/gviz/tq?tqx=out:csv&gid=…' }),
+      ce('button', { className: 'btn btn-primary', style: { width: '100%', marginTop: 4 }, onClick: () => { if (url.trim()) onSave(url.trim(), type); } }, 'Connect & Load Data'),
+      ce('div', { style: { marginTop: 20, padding: '12px 16px', background: '#F0F4FF', borderRadius: 10, fontSize: 11, color: '#374151', lineHeight: 1.7 } },
+        ce('div', { style: { fontWeight: 700, marginBottom: 6, color: '#003087' } }, '📋 Quick Setup Guide'),
+        ce('ol', { style: { paddingLeft: 18, margin: 0 } },
+          ce('li', null, 'Upload Leads.xlsx & Retails.xlsx to Google Drive'),
+          ce('li', null, 'Open TVS_Apps_Script_code.gs in script.google.com'),
+          ce('li', null, 'Fill in CONFIG → enable Drive API → run testRun()'),
+          ce('li', null, 'Deploy as Web App → copy URL → paste above'),
+          ce('li', null, 'Run setupDailyTrigger() for automatic daily refresh'),
+        )
+      )
+    )
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   APP ROOT
+   ════════════════════════════════════════════════════════════════════ */
+const TABS = [
+  { id: 'overview',  label: 'Overview' },
+  { id: 'source',    label: 'Source Analysis' },
+  { id: 'ltxsrc',   label: 'LT × Source' },
+  { id: 'modelxsrc',label: 'Model × Source' },
+  { id: 'statexsrc',label: 'State × Source' },
+  { id: 'zone',      label: 'Zone Analysis' },
+  { id: 'buying',    label: 'Buying Intent' },
+];
+
+function App() {
+  const [tab, setTab]           = useState('overview');
+  const [mf, setMf]             = useState('All');
+  const [data, setData]         = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [err, setErr]           = useState(null);
+  const [lastSync, setLastSync] = useState(null);
+  const [isPending, startT]     = useTransition();
+  const [configUrl, setConfigUrl] = useState(() => localStorage.getItem('tvs_ldr_url') || DASHBOARD_CONFIG.APPS_SCRIPT_URL || '');
+  const [showSetup, setShowSetup] = useState(() => !localStorage.getItem('tvs_ldr_url') && !DASHBOARD_CONFIG.APPS_SCRIPT_URL);
+
+  const handleSave = useCallback((url, type) => {
+    localStorage.setItem('tvs_ldr_url', url);
+    localStorage.setItem('tvs_ldr_type', type);
+    setConfigUrl(url);
+    setShowSetup(false);
+    doFetch(url);
+  }, []);
+
+  const doFetch = useCallback(async (url) => {
+    setLoading(true); setErr(null);
+    try {
+      const parsed = await fetchDashboardData(url || configUrl);
+      setData(parsed);
+      setLastSync(new Date());
+      // Extend cache: try to store compact version
+      try { localStorage.setItem('tvs_ldr_cache_t', parsed.t); } catch (e) {}
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [configUrl]);
+
+  // Auto-fetch on mount if URL is configured
+  useEffect(() => {
+    if (configUrl && !data && !showSetup) doFetch(configUrl);
+  }, []);
+
+  const months = useMemo(() =>
+    data ? [...new Set(data.maps.lm)].sort((a, b) => monthOrder(a) - monthOrder(b)) : [],
+    [data]
+  );
+
+  const activeTab = useMemo(() => {
+    if (!data) return null;
+    const map = {
+      overview:   ce(OverviewTab,    { data, mf }),
+      source:     ce(SourceTab,      { data, mf }),
+      ltxsrc:     ce(LTSourceTab,    { data, mf }),
+      modelxsrc:  ce(ModelSourceTab, { data, mf }),
+      statexsrc:  ce(StateSourceTab, { data, mf }),
+      zone:       ce(ZoneTab,        { data, mf }),
+      buying:     ce(BuyingDaysTab,  { data, mf }),
+    };
+    return map[tab] || null;
+  }, [data, tab, mf]);
+
+  if (showSetup) return ce(SetupScreen, { onSave: handleSave });
+
+  return ce('div', { style: { minHeight: '100vh', background: '#f8fafc' } },
+    // ── Header ──
+    ce('div', { style: { background: '#fff', borderBottom: '1px solid #E2E8F0', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 1px 4px rgba(0,0,0,.06)' } },
+      ce('div', { style: { maxWidth: 1440, margin: '0 auto', padding: '0 20px' } },
+        // Top bar
+        ce('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #F1F5F9' } },
+          ce('div', { style: { display: 'flex', alignItems: 'center', gap: 12 } },
+            ce('div', { style: { fontSize: 22, fontWeight: 900, color: '#003087', letterSpacing: '-.04em', fontFamily: 'DM Mono,monospace' } }, 'TVS'),
+            ce('div', { style: { width: 1, height: 20, background: '#E2E8F0' } }),
+            ce('div', { style: { fontSize: 12, fontWeight: 600, color: '#E31837' } }, 'Lead Disposition Dashboard'),
+            ce('div', { style: { fontSize: 10, fontWeight: 600, color: '#94A3B8', background: '#F1F5F9', padding: '2px 9px', borderRadius: 20 } }, 'v1.0'),
+            data && ce('div', { style: { fontSize: 10, color: '#64748B', background: '#F0F4FF', padding: '2px 10px', borderRadius: 20, fontFamily: 'DM Mono' } },
+              'Synced: ' + (data.t ? new Date(data.t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—')
+            ),
+          ),
+          ce('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+            loading && ce('div', { className: 'spinner' }),
+            ce('button', { className: 'btn btn-secondary', style: { fontSize: 11 }, onClick: () => doFetch() }, '⟳ Refresh'),
+            ce('button', { className: 'btn btn-secondary', style: { fontSize: 11 }, onClick: () => setShowSetup(true) }, '⚙ Setup'),
+          )
+        ),
+        // Tab nav
+        ce('div', { style: { display: 'flex', overflowX: 'auto', gap: 0 } },
+          TABS.map(t => ce('button', {
+            key: t.id,
+            className: 'tab-pill' + (tab === t.id ? ' active' : ''),
+            onClick: () => startT(() => setTab(t.id))
+          }, t.label))
+        )
+      )
+    ),
+
+    // ── Main ──
+    ce('div', { style: { maxWidth: 1440, margin: '0 auto', padding: '20px 20px' } },
+      err && ce('div', { className: 'err-box', style: { marginBottom: 14 } }, '⚠ ' + err),
+
+      !data && !loading && !err && ce('div', { style: { textAlign: 'center', padding: 60, color: '#94A3B8', fontSize: 14 } },
+        ce('div', { style: { fontSize: 32, marginBottom: 12 } }, '📂'),
+        'No data loaded. ',
+        ce('button', { onClick: () => doFetch(), style: { color: '#003087', textDecoration: 'underline', background: 'none', border: 'none', cursor: 'pointer', fontSize: 'inherit' } }, 'Click to fetch'),
+      ),
+
+      loading && !data && ce('div', { style: { textAlign: 'center', padding: 60 } },
+        ce('div', { className: 'spinner', style: { width: 36, height: 36, borderWidth: 3, margin: '0 auto 16px' } }),
+        ce('div', { style: { color: '#64748B', fontSize: 13 } }, 'Loading data from Google Drive…')
+      ),
+
+      data && ce('div', null,
+        // Filter bar
+        ce('div', { className: 'filter-bar' },
+          ce('label', null, 'Lead Month'),
+          ce('select', { value: mf, onChange: e => startT(() => setMf(e.target.value)) },
+            ce('option', { value: 'All' }, 'All Months'),
+            ...months.map(m => ce('option', { key: m, value: m }, m))
+          ),
+          ce('div', { style: { marginLeft: 'auto', fontSize: 10, color: '#94A3B8', fontFamily: 'DM Mono' } },
+            Nf(data.maps ? data.maps.lm.length : 0) + ' months · ',
+            Nf(data.maps ? data.maps.mdl.length : 0) + ' models · ',
+            Nf(data.maps ? data.maps.st.length : 0) + ' states'
+          )
+        ),
+        isPending && ce('div', { style: { height: 2, background: '#003087', borderRadius: 1, marginBottom: 12, animation: 'none', opacity: 0.6 } }),
+        activeTab
+      )
+    )
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   BOOT
+   ════════════════════════════════════════════════════════════════════ */
+ReactDOM.createRoot(document.getElementById('root')).render(ce(App));
+</script>
+</body>
+</html>
