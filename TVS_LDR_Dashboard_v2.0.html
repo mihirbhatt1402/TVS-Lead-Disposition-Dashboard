@@ -1663,7 +1663,11 @@ function App() {
   const handleLogin = useCallback((email, name, role) => {
     const a = { email, name, role };
     setAuth(a);
-    try { sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(a)); } catch(e) {}
+    if (role === 'admin' || role === 'full' || role === 'viewer') {
+      try { sessionStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(a)); } catch(e) {}
+    } else {
+      try { sessionStorage.removeItem(AUTH_SESSION_KEY); } catch(e) {}
+    }
     setTab(role === 'viewer' ? 'modelxsrc' : 'overview');
   }, []);
 
