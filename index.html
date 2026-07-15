@@ -180,7 +180,7 @@ async function apiFetchRole(email) {
 async function apiRequestAccess(email, name) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=requestAccess', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ email, name }),
   });
   return r.json();
@@ -192,7 +192,7 @@ async function apiGetPending(adminEmail) {
 async function apiReview(adminEmail, targetEmail, decision, role) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=reviewRequest', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ adminEmail, targetEmail, decision, role }),
   });
   return r.json();
