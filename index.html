@@ -640,7 +640,6 @@ const DimGrid = React.memo(function DimGrid({
   ];
 
   const rows = [];
-  rows.push(renderRow('∑ Grand Total', grand, grandSrc, true, false, null, false));
 
   for (const [dimKey, da] of dimRows) {
     rows.push(renderRow(dimKey, da.total, da.src, false, false, dimKey, false));
@@ -652,6 +651,7 @@ const DimGrid = React.memo(function DimGrid({
       }
     }
   }
+  rows.push(renderRow('∑ Grand Total', grand, grandSrc, true, false, null, false));
 
   return ce('div', { className:'scroll-x' },
     ce('table', null,
@@ -859,35 +859,60 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
 const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
   const { maps, sm } = data;
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
-  const allSrcs = useMemo(() => [...new Set(maps.src)], [maps]);
-  const srcGroups = useMemo(() => buildSrcGroups(allSrcs), [allSrcs]);
-  const [expandedGrps, setExpandedGrps] = useState(new Set());
-  const onToggleGrp = useCallback(id => setExpandedGrps(prev => {
-    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
-  }), []);
 
-  const renderAgg = useCallback((M) => {
+  const renderMonth = useCallback((M) => {
     const allS = !filters.sources || filters.sources.size === 0;
     const bySrc = new Map();
-    let gL=0,gR=0;
+    let gL=0, gR=0;
     for (const row of sm) {
       if (maps.lm[row[1]] !== M) continue;
       const src = maps.src[row[0]];
       if (!allS && !filters.sources.has(src)) continue;
-      const [l,r] = getLR(row); gL+=l; gR+=r;
-      const c=bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
+      const [l,r] = getLR(row);
+      gL+=l; gR+=r;
+      const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
     }
-    const grand = fin(gL,gR);
-    const grandSrc = {};
-    const dimAggs = {};
-    for (const [src,[l,r]] of bySrc) {
-      grandSrc[src] = fin(l,r);
-      dimAggs[src] = { total: fin(l,r), src: { [src]: fin(l,r) } };
-    }
-    return { grand, grandSrc, dimAggs };
+    if (gL === 0) return null;
+    const sorted = [...bySrc.entries()].sort((a,b) => b[1][0]-a[1][0]);
+    const grand = fin(gL, gR);
+    return ce('div', { key:M, className:'card', style:{padding:'16px 18px',marginBottom:14} },
+      ce('div', { className:'section-title', style:{marginBottom:10} }, M),
+      ce('div', { className:'scroll-x' },
+        ce('table', null,
+          ce('thead', null,
+            ce('tr', null,
+              ce('th',{className:'left',style:{minWidth:160}},'Source'),
+              ce('th',null,'Leads'),
+              ce('th',null,'Retail'),
+              ce('th',null,'Contrib%'),
+              ce('th',null,'L2R%'),
+            )
+          ),
+          ce('tbody', null,
+            ...sorted.map(([src,[l,r]]) => {
+              const tot = fin(l,r);
+              return ce('tr',{key:src},
+                ce('td',{className:'label'},src),
+                ce('td',null,Nf(tot.l)),
+                ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(tot.r)),
+                ce('td',null,gL>0?Pf(tot.l/gL*100):'—'),
+                ce('td',{style:{color:'#D97706',fontWeight:700}},tot.l2r>0?Pf(tot.l2r):'—'),
+              );
+            }),
+            ce('tr',{key:'gtotal',className:'total-row'},
+              ce('td',{className:'label',style:{color:'#1A237E'}},'∑ Grand Total'),
+              ce('td',null,Nf(grand.l)),
+              ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(grand.r)),
+              ce('td',null,'100.0%'),
+              ce('td',{style:{color:'#D97706',fontWeight:700}},grand.l2r>0?Pf(grand.l2r):'—'),
+            )
+          )
+        )
+      )
+    );
   }, [sm, maps, filters, getLR]);
 
-  return ce(MonthlyGrids, { months, renderAgg, srcGroups, dimLabel:'Source', expandedGrps, onToggleGrp, noPrefix: true, noGroupHeaders: true });
+  return ce('div', {className:'fade-up'}, months.map(renderMonth));
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -916,7 +941,7 @@ const LTSourceTab = React.memo(function LTSourceTab({ data, filters, months, RT 
 
   return ce('div', { className:'fade-up' },
     ce(MonthlyGrids, { title:'Lead Type × Source', months, renderAgg, srcGroups, dimLabel:'Lead Type',
-      expandedGrps, onToggleGrp })
+      expandedGrps, onToggleGrp, noGroupHeaders: true })
   );
 });
 
@@ -941,7 +966,7 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
     null, getLR
   ), [mm, maps, filters, getLR]);
 
-  return ce(MonthlyGrids, { title:'Model × Source', months, renderAgg, srcGroups, dimLabel:'Model', expandedGrps, onToggleGrp, viewerMode });
+  return ce(MonthlyGrids, { title:'Model × Source', months, renderAgg, srcGroups, dimLabel:'Model', expandedGrps, onToggleGrp, viewerMode, noGroupHeaders: true });
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -984,6 +1009,8 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
   const renderMonthGrid = useCallback((M) => {
     const allSrcF  = !filters.sources || filters.sources.size === 0;
     const allStateF = !filters.states  || filters.states.size  === 0;
+    // Normalize mixed-case state names (e.g. "DELHI" → "Delhi") so duplicates merge
+    const normSt = s => (s||'').split(/\s+/).map(w => w ? w[0].toUpperCase()+w.slice(1).toLowerCase() : w).join(' ') || 'Unknown';
 
     // ── State × Source totals ──
     const stateData = new Map(); // state → { total:[l,r], byS: Map<src,[l,r]> }
@@ -992,7 +1019,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
 
     for (const row of stm) {
       if (maps.lm[row[2]] !== M) continue;
-      const state = maps.st[row[0]];
+      const state = normSt(maps.st[row[0]]);
       if (!allStateF && !filters.states.has(state)) continue;
       const src = maps.src[row[1]];
       if (!allSrcF && !filters.sources.has(src)) continue;
@@ -1093,14 +1120,15 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
       return sm;
     }
 
-    function grpCells(srcMap, grp) {
+    function grpCells(srcMap, grp, denomL) {
+      const denom = denomL != null ? denomL : gL;
       const exp = expandedGrps.has(grp.id);
       if (!exp) {
         const a = grpSum(srcMap, grp.srcs);
         return [
           ce('td',{key:grp.id+'l',style:{borderLeft:'2px solid '+grp.color+'44'}},Nf(a.l)),
           ce('td',{key:grp.id+'r',style:{color:grp.color,fontWeight:700}},Nf(a.r)),
-          ce('td',{key:grp.id+'c'},gL>0?Pf(a.l/gL*100):'—'),
+          ce('td',{key:grp.id+'c'},denom>0?Pf(a.l/denom*100):'—'),
           ce('td',{key:grp.id+'l2r',style:{color:'#D97706',fontWeight:600}},Pf(a.l2r)),
         ];
       }
@@ -1109,7 +1137,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
         return [
           ce('td',{key:sg.id+'l',style:si===0?{borderLeft:'2px solid '+grp.color+'44'}:{}},Nf(a.l)),
           ce('td',{key:sg.id+'r',style:{color:sg.color,fontWeight:700}},Nf(a.r)),
-          ce('td',{key:sg.id+'c'},gL>0?Pf(a.l/gL*100):'—'),
+          ce('td',{key:sg.id+'c'},denom>0?Pf(a.l/denom*100):'—'),
           ce('td',{key:sg.id+'l2r',style:{color:'#D97706',fontWeight:600}},Pf(a.l2r)),
         ];
       });
@@ -1164,18 +1192,12 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
 
     const bodyRows = [];
 
-    // Grand Total
-    bodyRows.push(ce('tr',{key:'gtotal',className:'total-row'},
-      ce('td',{className:'label',style:{color:'#1A237E'}},'∑ Grand Total'),
-      ce('td',null,Nf(gL)),ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(gR)),
-      ce('td',null,'100.0%'),ce('td',{style:{color:'#D97706',fontWeight:700}},grand.l2r>0?Pf(grand.l2r):'—'),
-      ...(viewerMode ? [] : srcGroups.flatMap(grp=>grpCells(grandSrc,grp)))
-    ));
-
     for (const zone of ZONE_ORDER) {
       const zd = zoneData.get(zone);
       if (!zd || zd.total[0] === 0) continue;
-      const zTot = fin(zd.total[0],zd.total[1]);
+      const zLeads = zd.total[0];  // zone total leads — denominator for state Contrib%
+      const zRets  = zd.total[1];
+      const zL2R   = zLeads > 0 ? zRets / zLeads * 100 : 0;
       const zSrcMap = buildSrcMap(zd.bySrc);
       const isZOpen = openZone === zone;
 
@@ -1187,8 +1209,8 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
             zone+' Zone'
           )
         ),
-        ce('td',null,Nf(zTot.l)),ce('td',{style:{color:'#1565C0',fontWeight:700}},Nf(zTot.r)),
-        ce('td',null,gL>0?Pf(zTot.l/gL*100):'—'),ce('td',{style:{color:'#D97706',fontWeight:700}},zTot.l2r>0?Pf(zTot.l2r):'—'),
+        ce('td',null,Nf(zLeads)),ce('td',{style:{color:'#1565C0',fontWeight:700}},Nf(zRets)),
+        ce('td',null,gL>0?Pf(zLeads/gL*100):'—'),ce('td',{style:{color:'#D97706',fontWeight:700}},zL2R>0?Pf(zL2R):'—'),
         ...(viewerMode ? [] : srcGroups.flatMap(grp=>grpCells(zSrcMap,grp)))
       ));
       if (!isZOpen) continue;
@@ -1196,7 +1218,9 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
       for (const state of zd.states.sort()) {
         const sd = stateData.get(state);
         if (!sd) continue;
-        const sTot = fin(sd.total[0],sd.total[1]);
+        const sLeads = sd.total[0];  // state leads — denominator for city Contrib%
+        const sRets  = sd.total[1];
+        const sL2R   = sLeads > 0 ? sRets / sLeads * 100 : 0;
         const sSrcMap = buildSrcMap(sd.byS);
         const isSOpen = openState === state;
 
@@ -1211,16 +1235,18 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
               state
             )
           ),
-          ce('td',null,Nf(sTot.l)),ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(sTot.r)),
-          ce('td',null,gL>0?Pf(sTot.l/gL*100):'—'),ce('td',{style:{color:'#D97706',fontWeight:600}},sTot.l2r>0?Pf(sTot.l2r):'—'),
-          ...(viewerMode ? [] : srcGroups.flatMap(grp=>grpCells(sSrcMap,grp)))
+          ce('td',null,Nf(sLeads)),ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(sRets)),
+          ce('td',null,zLeads>0?Pf(sLeads/zLeads*100):'—'),ce('td',{style:{color:'#D97706',fontWeight:600}},sL2R>0?Pf(sL2R):'—'),
+          ...(viewerMode ? [] : srcGroups.flatMap(grp=>grpCells(sSrcMap,grp,zLeads)))
         ));
         if (!isSOpen) continue;
 
         const sortedCities = [...cityData.keys()].sort();
         for (const city of sortedCities) {
           const cv = cityData.get(city);
-          const cTot = fin(cv[0],cv[1]);
+          const cLeads = cv[0];  // city leads — denominator for dealer Contrib%
+          const cRets  = cv[1];
+          const cL2R   = cLeads > 0 ? cRets / cLeads * 100 : 0;
           const isCOpen = openCity === city;
 
           // ── City row ──
@@ -1234,12 +1260,12 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
                 city
               )
             ),
-            ce('td',{style:{background:'#F0FDF4'}},Nf(cTot.l)),
-            ce('td',{style:{background:'#F0FDF4',color:'#16A34A',fontWeight:700}},Nf(cTot.r)),
-            ce('td',{style:{background:'#F0FDF4'}},gL>0?Pf(cTot.l/gL*100):'—'),
-            ce('td',{style:{background:'#F0FDF4',color:'#D97706',fontWeight:600}},cTot.l2r>0?Pf(cTot.l2r):'—'),
+            ce('td',{style:{background:'#F0FDF4'}},Nf(cLeads)),
+            ce('td',{style:{background:'#F0FDF4',color:'#16A34A',fontWeight:700}},Nf(cRets)),
+            ce('td',{style:{background:'#F0FDF4'}},sLeads>0?Pf(cLeads/sLeads*100):'—'),
+            ce('td',{style:{background:'#F0FDF4',color:'#D97706',fontWeight:600}},cL2R>0?Pf(cL2R):'—'),
             ...(viewerMode ? [] : hasCitySrc
-              ? srcGroups.flatMap(grp => grpCells(buildSrcMap(citySourceByS.get(city) || new Map()), grp))
+              ? srcGroups.flatMap(grp => grpCells(buildSrcMap(citySourceByS.get(city) || new Map()), grp, sLeads))
               : blankSrcCells('#F0FDF4'))
           ));
           if (!isCOpen) continue;
@@ -1248,21 +1274,31 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
           const sortedDealers = [...dealerData.keys()].sort((a,b)=>(dealerData.get(b)[0]||0)-(dealerData.get(a)[0]||0));
           for (const dl of sortedDealers) {
             const dv = dealerData.get(dl);
-            const dTot = fin(dv[0],dv[1]);
+            const dLeads = dv[0];
+            const dRets  = dv[1];
+            const dL2R   = dLeads > 0 ? dRets / dLeads * 100 : 0;
             bodyRows.push(ce('tr',{key:'d_'+dl,className:'dealer-row'},
               ce('td',{className:'label',style:{paddingLeft:68,fontWeight:400,fontSize:11,color:'#64748B',background:'#FAFAFA',borderRight:'2px solid #F1F5F9'}},dl),
-              ce('td',{style:{background:'#FAFAFA'}},Nf(dTot.l)),
-              ce('td',{style:{background:'#FAFAFA',color:'#0D9488',fontWeight:700}},Nf(dTot.r)),
-              ce('td',{style:{background:'#FAFAFA'}},gL>0?Pf(dTot.l/gL*100):'—'),
-              ce('td',{style:{background:'#FAFAFA',color:'#D97706',fontWeight:600}},dTot.l2r>0?Pf(dTot.l2r):'—'),
+              ce('td',{style:{background:'#FAFAFA'}},Nf(dLeads)),
+              ce('td',{style:{background:'#FAFAFA',color:'#0D9488',fontWeight:700}},Nf(dRets)),
+              ce('td',{style:{background:'#FAFAFA'}},cLeads>0?Pf(dLeads/cLeads*100):'—'),
+              ce('td',{style:{background:'#FAFAFA',color:'#D97706',fontWeight:600}},dL2R>0?Pf(dL2R):'—'),
               ...(viewerMode ? [] : hasDealerSrc
-                ? srcGroups.flatMap(grp => grpCells(buildSrcMap(dealerSourceByS.get(dl) || new Map()), grp))
+                ? srcGroups.flatMap(grp => grpCells(buildSrcMap(dealerSourceByS.get(dl) || new Map()), grp, cLeads))
                 : blankSrcCells('#FAFAFA'))
             ));
           }
         }
       }
     }
+
+    // Grand Total at bottom
+    bodyRows.push(ce('tr',{key:'gtotal',className:'total-row'},
+      ce('td',{className:'label',style:{color:'#1A237E'}},'∑ Grand Total'),
+      ce('td',null,Nf(gL)),ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(gR)),
+      ce('td',null,'100.0%'),ce('td',{style:{color:'#D97706',fontWeight:700}},grand.l2r>0?Pf(grand.l2r):'—'),
+      ...(viewerMode ? [] : srcGroups.flatMap(grp=>grpCells(grandSrc,grp)))
+    ));
 
     return { grand, hdr1, hdr2, bodyRows };
   }, [stm, cm, cdm, csm_data, cdsm_data, maps, filters, expandedGrps, openZone, openState, openCity, srcGroups, hasCities, hasDealers, hasCitySrc, hasDealerSrc, cityIndexMap, getLR, viewerMode]);
