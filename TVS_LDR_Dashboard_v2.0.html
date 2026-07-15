@@ -984,6 +984,8 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
   const renderMonthGrid = useCallback((M) => {
     const allSrcF  = !filters.sources || filters.sources.size === 0;
     const allStateF = !filters.states  || filters.states.size  === 0;
+    // Normalize mixed-case state names (e.g. "DELHI" → "Delhi") so duplicates merge
+    const normSt = s => (s||'').split(/\s+/).map(w => w ? w[0].toUpperCase()+w.slice(1).toLowerCase() : w).join(' ') || 'Unknown';
 
     // ── State × Source totals ──
     const stateData = new Map(); // state → { total:[l,r], byS: Map<src,[l,r]> }
@@ -992,7 +994,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
 
     for (const row of stm) {
       if (maps.lm[row[2]] !== M) continue;
-      const state = maps.st[row[0]];
+      const state = normSt(maps.st[row[0]]);
       if (!allStateF && !filters.states.has(state)) continue;
       const src = maps.src[row[1]];
       if (!allSrcF && !filters.sources.has(src)) continue;

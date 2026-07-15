@@ -204,6 +204,7 @@ def fetch_current_retails():
 def standardize_curr_leads(curr_df, state_to_zone):
     """Rename columns, derive Zone from historical state lookup, add BuyingDays=0."""
     out = curr_df.rename(columns=CURR_COL_MAP).copy()
+    out["State"] = out["State"].astype(str).str.strip().str.title()
     # Add Zone from state lookup
     out["Zone"] = out["State"].map(state_to_zone).fillna("Unknown")
     out["BuyingDays"] = "0"
@@ -267,7 +268,7 @@ def build_payload(all_leads, retail_map):
         src  = str(row.get("Source",       "") or "").strip() or "Unknown"
         lt   = str(row.get("LeadType",     "") or "").strip() or "Unknown"
         mdl  = str(row.get("ModelName",    "") or "").strip() or "Unknown"
-        st   = str(row.get("State",        "") or "").strip() or "Unknown"
+        st   = str(row.get("State",        "") or "").strip().title() or "Unknown"
         zone = str(row.get("Zone",         "") or "").strip() or "Unknown"
         bd   = str(row.get("BuyingDays",   "") or "0").strip() or "0"
         city = str(row.get("CityName",     "") or "").strip() or "Unknown"
@@ -382,7 +383,7 @@ print(f"  Historical retails: {len(hist_retails_raw):,} rows", flush=True)
 # 3. Build state→zone lookup from historical data (which has Zone column)
 state_to_zone = {}
 for _, row in hist_leads_raw.iterrows():
-    s = str(row.get("State", "") or "").strip()
+    s = str(row.get("State", "") or "").strip().title()
     z = str(row.get("Zone",  "") or "").strip()
     if s and z:
         state_to_zone[s] = z
