@@ -8,7 +8,7 @@ DATA SOURCES:
   Retails (all months):       Google Sheet 1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE → XLSX export
 """
 
-import json, sys, io, re, urllib.request
+import json, sys, io, re, time, urllib.request
 import pandas as pd
 import requests
 
@@ -111,21 +111,25 @@ def proxy_get(action, extra_params=None, timeout=120):
     resp.raise_for_status()
     return resp.json()
 
-# ─── Retails: load via Apps Script proxy (authenticated, paginated) ───────────
+RETAILS_FILE_ID = '1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE'
+RETAILS_TAB     = 'Raw'
 
-def fetch_retails_proxy():
-    """
-    Fetch all TVS retails from the retail master via Apps Script proxy (paginated).
-    Returns a DataFrame with columns: sourceLeadId, performanceMonth, purchasedModel, createTime.
-    The Apps Script filters to TVS rows and returns these four columns.
-    """
-    print("Fetching retail master via Apps Script (paginated)…", flush=True)
+# ─── Retails: load via Apps Script proxy with XLSX fallback ───────────────────
+
+def _fetch_retails_via_proxy():
+    """Inner: fetch retail master via Apps Script (paginated, 3 retries per page)."""
     page, all_rows, headers = 0, [], None
     while True:
-        try:
-            data = proxy_get("getCurrentRetails", {"page": page, "pageSize": 25000}, timeout=300)
-        except Exception as e:
-            raise RuntimeError(f"getCurrentRetails page {page} failed: {e}")
+        for attempt in range(3):
+            try:
+                data = proxy_get("getCurrentRetails", {"page": page, "pageSize": 25000}, timeout=300)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f"  WARNING: page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
+                    time.sleep(30)
+                else:
+                    raise RuntimeError(f"getCurrentRetails page {page} failed after 3 attempts: {e}")
         if "error" in data:
             raise RuntimeError(f"getCurrentRetails error: {data['error']}")
         if headers is None:
@@ -137,9 +141,41 @@ def fetch_retails_proxy():
         if data.get("done", True):
             break
         page += 1
-    df = pd.DataFrame(all_rows, columns=headers)
-    print(f"  Retails master: {len(df):,} TVS rows", flush=True)
+    return pd.DataFrame(all_rows, columns=headers)
+
+def _fetch_retails_via_xlsx():
+    """Inner: download retail master XLSX directly (fallback when proxy is unavailable)."""
+    buf = read_drive_xlsx(RETAILS_FILE_ID, "RetailMaster")
+    df = pd.read_excel(buf, sheet_name=RETAILS_TAB, dtype=str, engine='openpyxl')
+    df.columns = [c.strip() for c in df.columns]
+    proc_col = next((c for c in df.columns if c.lower() == 'process'), None)
+    if proc_col:
+        df = df[df[proc_col].str.strip().str.upper() == 'TVS'].copy()
     return df
+
+def fetch_retails():
+    """
+    Fetch all TVS retails from the retail master.
+    Primary path: Apps Script proxy (authenticated, works in GitHub Actions).
+    Fallback path: direct XLSX download (works when logged in locally).
+    Returns a DataFrame with at least: sourceLeadId and one of
+    Retail_Attribution_Date (old) / performanceMonth (new) for retail month.
+    Also purchasedModel and createTime if the new Apps Script is deployed.
+    """
+    print("Fetching retail master…", flush=True)
+    try:
+        df = _fetch_retails_via_proxy()
+        print(f"  Retails master (proxy): {len(df):,} TVS rows", flush=True)
+        return df
+    except Exception as proxy_err:
+        print(f"  Proxy failed: {proxy_err}", flush=True)
+        print("  Falling back to direct XLSX download…", flush=True)
+        try:
+            df = _fetch_retails_via_xlsx()
+            print(f"  Retails master (XLSX): {len(df):,} TVS rows", flush=True)
+            return df
+        except Exception as xlsx_err:
+            raise RuntimeError(f"Both retail fetch paths failed. Proxy: {proxy_err} | XLSX: {xlsx_err}")
 
 def build_retail_map_from_proxy(retail_df):
     """Build retail_map {normalized_sourceLeadId → {rm, rtype}} from the proxy DataFrame.
@@ -447,9 +483,9 @@ config = proxy_get("getConfig")
 hist_lead_ids = config["histLeadFileIds"]
 print(f"  Historical lead files: {hist_lead_ids}", flush=True)
 
-# 2. Fetch retails master via Apps Script proxy (all months, TVS only)
+# 2. Fetch retails master (proxy primary, XLSX fallback)
 print("\n[2/6] Loading retail master…", flush=True)
-retail_df = fetch_retails_proxy()
+retail_df = fetch_retails()
 
 # 3. Download historical leads XLSX
 print("\n[3/6] Loading historical lead data…", flush=True)
@@ -470,7 +506,7 @@ print(f"  State→Zone mappings: {len(state_to_zone)}", flush=True)
 print("\n[4/6] Fetching current-month leads from Apps Script…", flush=True)
 curr_leads_raw = fetch_current_leads()
 
-# 5. Build retail map: base from retail master proxy, enhanced by embedded retail cols in leads sheet
+# 5. Build retail map: base from retail master, enhanced by embedded retail cols in leads sheet
 print("\n[5/6] Building retail maps…", flush=True)
 retail_map     = build_retail_map_from_proxy(retail_df)       # all retails, retail month from master
 curr_embed_map = build_retail_map_from_curr(curr_leads_raw)   # provides rtype (DMS/Call) + DMS month
