@@ -121,7 +121,8 @@ function doGet(e) {
       var fileId   = e.parameter.fileId;
       var page     = parseInt(e.parameter.page     || '0');
       var pageSize = parseInt(e.parameter.pageSize || '25000');
-      return handleGetSheetData(fileId, page, pageSize);
+      var tabName  = e.parameter.tabName || '';
+      return handleGetSheetData(fileId, page, pageSize, tabName);
     }
 
     if (action === 'getCurrentLeads') {
@@ -305,16 +306,15 @@ function handleGetCurrentRetails(page, pageSize) {
 
   var hdr = sh.getRange(1, 1, 1, numCols).getValues()[0].map(String);
 
-  var processIdx    = hdr.findIndex(function(h) { return h.toLowerCase() === 'process'; });
-  var leadIdIdx     = hdr.findIndex(function(h) { return h.toLowerCase() === 'sourceleadid'; });
-  var perfMonthIdx  = hdr.findIndex(function(h) {
-    return h.toLowerCase().replace(/[_ ]/g, '') === 'performancemonth';
+  var processIdx   = hdr.findIndex(function(h) { return h.toLowerCase() === 'process'; });
+  var leadIdIdx    = hdr.findIndex(function(h) { return h.toLowerCase() === 'sourceleadid'; });
+  var retailDtIdx  = hdr.findIndex(function(h) {
+    return h.toLowerCase().replace(/[_ ]/g, '') === 'retailattributiondate';
   });
-  var modelIdx      = hdr.findIndex(function(h) { return h.toLowerCase() === 'purchasedmodel'; });
-  var createTimeIdx = hdr.findIndex(function(h) { return h.toLowerCase() === 'createtime'; });
+  var modelIdx     = hdr.findIndex(function(h) { return h.toLowerCase() === 'purchasedmodel'; });
 
-  var needed  = ['sourceLeadId', 'performanceMonth', 'purchasedModel', 'createTime'];
-  var indices = [leadIdIdx, perfMonthIdx, modelIdx, createTimeIdx];
+  var needed  = ['sourceLeadId', 'Retail_Attribution_Date', 'purchasedModel'];
+  var indices = [leadIdIdx, retailDtIdx, modelIdx];
 
   var startRow = 2 + page * pageSize;
   if (startRow > lastRow) {
@@ -331,7 +331,7 @@ function handleGetCurrentRetails(page, pageSize) {
     var out = indices.map(function(idx) {
       if (idx < 0) return '';
       var v = row[idx];
-      if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Kolkata', 'yyyy-MM-dd HH:mm:ss');
+      if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Kolkata', 'yyyy-MM-dd');
       return String(v == null ? '' : v);
     });
     rows.push(out);
@@ -368,12 +368,12 @@ function handleGetLeadFileList() {
   }
 }
 
-/* ─── Generic sheet reader via proxy (paginated) — used for TVS CPS folder files ─── */
-function handleGetSheetData(fileId, page, pageSize) {
+/* ─── Generic sheet reader via proxy (paginated) — used for all monthly lead sheets ─── */
+function handleGetSheetData(fileId, page, pageSize, tabName) {
   if (!fileId) return jsonOut({ error: 'fileId required' });
   try {
     var ss      = SpreadsheetApp.openById(fileId);
-    var sh      = ss.getSheets()[0];
+    var sh      = (tabName && ss.getSheetByName(tabName)) || ss.getSheets()[0];
     var lastRow = sh.getLastRow();
     var numCols = sh.getLastColumn();
 

@@ -2,19 +2,18 @@
 TVS Lead Disposition — Daily Data Push
 Runs via GitHub Actions at 12:00 PM IST every day.
 
-DATA SOURCES:
-  Lead master (all months): Drive folder 1lZ4l1LemSolnGwAiqPWwQS8CUdF0LfZf
-                            → all Google Sheets with "TVS" in the filename
-                            → same column format as current-month sheet
-  Current month leads:      Private Google Sheet via Apps Script proxy
-  Retails (all months):     Google Sheet 1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE
+DATA SOURCES
+  Lead master : 7 hardcoded monthly Google Sheets (Jan–Jul or current month)
+  Retail master: Google Sheet 1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE (Raw tab)
 
-JOIN:  retail.sourceLeadId  ↔  lead.opty_id  (both are 18-digit CRM IDs)
+JOIN: lead.opty_id  ↔  retail.sourceLeadId
+RETAIL MONTH: retail.Retail_Attribution_Date
 """
 
-import json, sys, io, re, time, urllib.request
+import json, sys, re, time
 import pandas as pd
 import requests
+import urllib.request
 
 MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
@@ -24,359 +23,235 @@ SECRET = "tvs2026push"
 RETAILS_FILE_ID = '1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE'
 RETAILS_TAB     = 'Raw'
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# Monthly lead master sheets — last one is current month (tab='TVS')
+LEAD_SHEETS = [
+    {'id': '1mJEi34xbeYW8q3WITTjyUQDLyREBS2dYpWP3svBoprw', 'tab': None,  'label': 'LeadSheet-1'},
+    {'id': '18LM6v6_BLzmKV2fbdXRI19Xr9vCZjJrLgbr4klP5Zis',  'tab': None,  'label': 'LeadSheet-2'},
+    {'id': '1fBvEbUzi6Tnhjq1SYljKDA4tFjuB8gLakmrTrJ2Mk_E',  'tab': None,  'label': 'LeadSheet-3'},
+    {'id': '1ZvoK_8_0BnavmKNqNKIONMC1hM35BwDwTXwGWwK0QzQ',  'tab': None,  'label': 'LeadSheet-4'},
+    {'id': '1jQbHZLrTCsrItGvV26TyDUQ_BiL3vd-sNpWim4tRKJE',  'tab': None,  'label': 'LeadSheet-5'},
+    {'id': '1tWV-wQ97KCZwrb7yz99s52XF5OIVfzj65gxdDSyAeaQ',  'tab': None,  'label': 'LeadSheet-6'},
+    {'id': '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',  'tab': 'TVS', 'label': 'LeadSheet-7 (current)'},
+]
+
+# Lead master column map: sheet column → canonical name
+LEAD_COL_MAP = {
+    'opty_id':     'SorceLeadId',
+    'Lead_Month':  'LeadMonth',
+    'Date':        'CreateDate',
+    'model':       'ModelName',
+    'City':        'CityName',
+    'State':       'State',
+    'Dealer_Name': 'DealerName',
+    'lead_type':   'LeadType',
+    'Medium':      'Source',
+    # optional — for DMS/CC retail-type split if columns exist
+    'Retail By':        '_RetailBy',
+    'DMS_Retail_Month': '_RetailMonth',
+}
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def norm_month(s):
-    """Normalize any month string to Mon'YY format (e.g. Jul'26)."""
-    s = str(s or "").strip()
-    if not s:
-        return s
-    m = re.search(r'([A-Za-z]{3})', s)
+    s = str(s or '').strip()
+    if not s: return s
+    m   = re.search(r'([A-Za-z]{3})', s)
     yr4 = re.search(r'(\d{4})', s)
     yr2 = re.search(r"['\-\s](\d{2})\b", s)
     if m:
         mn = m.group(1)[0].upper() + m.group(1)[1:].lower()
-        if yr4:
-            return f"{mn}'{yr4.group(1)[2:]}"
-        if yr2:
-            return f"{mn}'{yr2.group(1)}"
+        if yr4: return f"{mn}'{yr4.group(1)[2:]}"
+        if yr2: return f"{mn}'{yr2.group(1)}"
     return s
 
 def parse_ym(s):
-    """Parse any date/month string to Mon'YY — handles ISO datetime and Mon-YYYY formats."""
     s = str(s or '').strip()
-    if not s:
-        return ''
+    if not s: return ''
     try:
         ts = pd.Timestamp(s)
-        return f"{MONTH_NAMES[ts.month - 1]}'{ts.strftime('%y')}"
+        return f"{MONTH_NAMES[ts.month-1]}'{ts.strftime('%y')}"
     except Exception:
         return norm_month(s)
 
 def lid_to_month(lid):
-    """Decode lead creation month from 18-digit sequential CRM ID (YYMMDD prefix)."""
+    """Decode month from 18-digit CRM ID YYMMDD prefix."""
     try:
-        yy = int(lid[0:2])
-        mm = int(lid[2:4])
+        yy, mm = int(lid[0:2]), int(lid[2:4])
         if 1 <= mm <= 12:
-            return f"{MONTH_NAMES[mm - 1]}'{yy:02d}"
+            return f"{MONTH_NAMES[mm-1]}'{yy:02d}"
     except Exception:
         pass
     return ''
 
 def to_id(v):
-    if pd.isna(v): return ""
+    if pd.isna(v): return ''
     try:    return str(int(float(v)))
     except: return str(v).strip()
 
-def read_drive_xlsx(file_id, label=""):
-    print(f"Downloading {label} from Google Drive…", flush=True)
-    session = requests.Session()
-    resp = session.get("https://drive.google.com/uc",
-                       params={"export": "download", "id": file_id}, timeout=60)
-    ct = resp.headers.get("Content-Type", "")
-    if resp.status_code == 404 or (resp.status_code == 200 and "text/html" in ct and "404" in resp.text[:500]):
-        # Google Sheet — use Sheets export endpoint
-        print(f"  {label} not a Drive file, trying Sheets export…", flush=True)
-        resp = session.get(
-            f"https://docs.google.com/spreadsheets/d/{file_id}/export",
-            params={"format": "xlsx"}, stream=True, timeout=120)
-    elif "text/html" in ct:
-        html = resp.text
-        direct = re.search(r'href="(https://drive\.usercontent\.google\.com/download[^"]*confirm[^"]+)"', html)
-        if direct:
-            resp = session.get(direct.group(1).replace("&amp;", "&"), stream=True, timeout=120)
-        else:
-            action = re.search(r'<form[^>]*action="([^"]+)"', html)
-            inputs = dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]+)"', html))
-            if action and inputs:
-                resp = session.get(action.group(1).replace("&amp;", "&"),
-                                   params=inputs, stream=True, timeout=120)
-            else:
-                resp = session.get("https://drive.google.com/uc",
-                                   params={"export": "download", "id": file_id, "confirm": "t"},
-                                   stream=True, timeout=120)
-    resp.raise_for_status()
-    buf = io.BytesIO()
-    for chunk in resp.iter_content(chunk_size=1024*1024):
-        buf.write(chunk)
-    buf.seek(0)
-    size_kb = len(buf.getvalue()) / 1024
-    if size_kb < 10:
-        raise RuntimeError(f"{label} download too small ({size_kb:.0f} KB) — possible auth error")
-    print(f"  {label}: {size_kb:.0f} KB", flush=True)
-    return buf
-
 def proxy_get(action, extra_params=None, timeout=120):
-    params = {"action": action, "secret": SECRET}
+    params = {'action': action, 'secret': SECRET}
     if extra_params:
         params.update(extra_params)
     resp = requests.get(APPS_SCRIPT_URL, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
-# ─── Lead file list ───────────────────────────────────────────────────────────
+# ─── Sheet reader (paginated via Apps Script getSheetData) ────────────────────
 
-def fetch_lead_file_list():
-    """
-    Get list of TVS lead files from Apps Script (reads Drive folder LEAD_FOLDER_ID).
-    Returns list of {id, name} dicts, sorted by name (month order).
-    Raises RuntimeError if the action is not available in the deployed Apps Script.
-    """
-    data = proxy_get("getLeadFileList")
-    if "error" in data:
-        raise RuntimeError(data["error"])
-    return data["files"]
-
-# ─── Retails: load via Apps Script proxy with XLSX fallback ───────────────────
-
-def _fetch_retails_via_proxy():
-    """Inner: fetch retail master via Apps Script (paginated, 3 retries per page)."""
+def fetch_sheet_via_proxy(file_id, label, tab_name=None):
+    """Read any Google Sheet via Apps Script proxy. Returns raw DataFrame."""
     page, all_rows, headers = 0, [], None
+    extra = {'fileId': file_id, 'pageSize': 25000}
+    if tab_name:
+        extra['tabName'] = tab_name
     while True:
+        extra['page'] = page
         for attempt in range(3):
             try:
-                data = proxy_get("getCurrentRetails", {"page": page, "pageSize": 25000}, timeout=300)
+                data = proxy_get('getSheetData', extra, timeout=300)
                 break
             except Exception as e:
                 if attempt < 2:
-                    print(f"  WARNING: page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
+                    print(f"  {label} page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
                     time.sleep(30)
                 else:
-                    raise RuntimeError(f"getCurrentRetails page {page} failed after 3 attempts: {e}")
-        if "error" in data:
-            raise RuntimeError(f"getCurrentRetails error: {data['error']}")
+                    raise RuntimeError(f"getSheetData {label} page {page} failed: {e}")
+        if 'error' in data:
+            raise RuntimeError(f"getSheetData error [{label}]: {data['error']}")
         if headers is None:
-            headers = data["headers"]
-        rows  = data.get("rows", [])
-        total = data.get("total", "?")
+            headers = data['headers']
+        rows = data.get('rows', [])
         all_rows.extend(rows)
-        print(f"  Page {page}: +{len(rows)} rows  (fetched {len(all_rows):,}/{total})", flush=True)
-        if data.get("done", True):
+        total = data.get('total', '?')
+        print(f"  {label} page {page}: +{len(rows):,} rows (total {len(all_rows):,}/{total})", flush=True)
+        if data.get('done', True):
             break
         page += 1
     return pd.DataFrame(all_rows, columns=headers)
 
-def _fetch_retails_via_xlsx():
-    """Inner: download retail master XLSX directly (fallback when proxy is unavailable)."""
-    buf = read_drive_xlsx(RETAILS_FILE_ID, "RetailMaster")
-    df = pd.read_excel(buf, sheet_name=RETAILS_TAB, dtype=str, engine='openpyxl')
-    df.columns = [c.strip() for c in df.columns]
-    proc_col = next((c for c in df.columns if c.lower() == 'process'), None)
-    if proc_col:
-        df = df[df[proc_col].str.strip().str.upper() == 'TVS'].copy()
-    return df
+# ─── Lead sheet processing ─────────────────────────────────────────────────────
+
+def extract_rtype_map(raw_df):
+    """Extract {opty_id → {rm, rtype}} from embedded retail columns if present."""
+    rmap = {}
+    if 'DMS_Retail_Month' not in raw_df.columns:
+        return rmap
+    for _, row in raw_df.iterrows():
+        rm = str(row.get('DMS_Retail_Month', '') or '').strip()
+        if not rm: continue
+        lid = to_id(row.get('opty_id', ''))
+        if not lid: continue
+        rmap[lid] = {
+            'rm':    norm_month(rm),
+            'rtype': str(row.get('Retail By', '') or '').strip(),
+        }
+    return rmap
+
+def standardize_leads(raw_df):
+    """Rename to canonical columns; derive LeadMonth from Date if blank."""
+    df = raw_df.rename(columns=LEAD_COL_MAP).copy()
+    if 'State' in df.columns:
+        df['State'] = df['State'].astype(str).str.strip().str.title()
+    df['Zone']       = 'Unknown'
+    df['BuyingDays'] = '0'
+    if 'LeadMonth' in df.columns:
+        df['LeadMonth'] = df['LeadMonth'].apply(parse_ym)
+    if 'CreateDate' in df.columns:
+        empty_lm = df.get('LeadMonth', pd.Series(dtype=str)).str.strip() == ''
+        if empty_lm.any():
+            df.loc[empty_lm, 'LeadMonth'] = df.loc[empty_lm, 'CreateDate'].apply(parse_ym)
+    keep = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
+            'State','Zone','BuyingDays','CityName','DealerName']
+    return df[[c for c in keep if c in df.columns]].copy()
+
+# ─── Retail master ─────────────────────────────────────────────────────────────
 
 def fetch_retails():
-    """
-    Fetch all TVS retails from the retail master.
-    Primary: Apps Script proxy (authenticated). Fallback: direct XLSX download.
-    Returns DataFrame with sourceLeadId + retail month + optional model/createTime.
-    """
-    print("Fetching retail master…", flush=True)
-    try:
-        df = _fetch_retails_via_proxy()
-        print(f"  Retails master (proxy): {len(df):,} TVS rows", flush=True)
-        return df
-    except Exception as proxy_err:
-        print(f"  Proxy failed: {proxy_err}", flush=True)
-        print("  Falling back to direct XLSX download…", flush=True)
-        try:
-            df = _fetch_retails_via_xlsx()
-            print(f"  Retails master (XLSX): {len(df):,} TVS rows", flush=True)
-            return df
-        except Exception as xlsx_err:
-            raise RuntimeError(f"Both retail fetch paths failed.\n  Proxy: {proxy_err}\n  XLSX:  {xlsx_err}")
+    """Fetch TVS retail master via Apps Script (paginated, 3 retries per page)."""
+    print("Fetching retail master via Apps Script…", flush=True)
+    page, all_rows, headers = 0, [], None
+    while True:
+        for attempt in range(3):
+            try:
+                data = proxy_get('getCurrentRetails', {'page': page, 'pageSize': 25000}, timeout=300)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f"  Page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
+                    time.sleep(30)
+                else:
+                    raise RuntimeError(f"getCurrentRetails page {page} failed: {e}")
+        if 'error' in data:
+            raise RuntimeError(f"getCurrentRetails error: {data['error']}")
+        if headers is None:
+            headers = data['headers']
+        rows = data.get('rows', [])
+        all_rows.extend(rows)
+        total = data.get('total', '?')
+        print(f"  Page {page}: +{len(rows):,} rows (total {len(all_rows):,}/{total})", flush=True)
+        if data.get('done', True):
+            break
+        page += 1
+    df = pd.DataFrame(all_rows, columns=headers)
+    print(f"  Retail master: {len(df):,} TVS rows", flush=True)
+    return df
 
-def build_retail_map_from_xlsx(retail_df):
-    """Build retail_map {normalized_sourceLeadId → {rm, rtype}} from the retail master.
-    Handles Apps Script old format (Retail_Attribution_Date) and new (performanceMonth).
-    """
-    retail_map = {}
+def build_retail_map(retail_df):
+    """Build {sourceLeadId → {rm, rtype}} using Retail_Attribution_Date."""
+    rmap = {}
     for _, row in retail_df.iterrows():
         lid = to_id(row.get('sourceLeadId', ''))
-        if not lid:
-            continue
-        rm = parse_ym(row.get('performanceMonth', '') or row.get('Retail_Attribution_Date', ''))
-        retail_map[lid] = {'rm': rm, 'rtype': ''}
-    return retail_map
+        if not lid: continue
+        rm = parse_ym(row.get('Retail_Attribution_Date', ''))
+        rmap[lid] = {'rm': rm, 'rtype': ''}
+    return rmap
 
-def make_synthetic_leads(retail_df, matched_lid_set):
-    """
-    Synthetic lead rows for retails whose sourceLeadId is absent from all lead sources.
-    Model from purchasedModel (if Apps Script returns it), else 'Unknown'.
-    Lead month decoded from 18-digit CRM ID prefix (YYMMDD), then createTime, then retail month.
-    State/city/dealer/source are Unknown.
-    """
+def make_synthetic_leads(retail_df, matched_lids):
+    """Create lead rows for retailed IDs absent from all lead sheets."""
     rows = []
     for _, row in retail_df.iterrows():
         lid = to_id(row.get('sourceLeadId', ''))
-        if not lid or lid in matched_lid_set:
-            continue
-        lm = (parse_ym(row.get('createTime', ''))
-              or lid_to_month(lid)
-              or parse_ym(row.get('performanceMonth', '') or row.get('Retail_Attribution_Date', '')))
+        if not lid or lid in matched_lids: continue
+        rm    = parse_ym(row.get('Retail_Attribution_Date', ''))
+        lm    = rm or lid_to_month(lid)
         model = str(row.get('purchasedModel', '') or '').strip() or 'Unknown'
         rows.append({
-            'SorceLeadId': lid,
-            'LeadMonth':   lm,
-            'ModelName':   model,
-            'Source':      'Unknown',
-            'LeadType':    'Unknown',
-            'State':       'Unknown',
-            'Zone':        'Unknown',
-            'BuyingDays':  '0',
-            'CityName':    'Unknown',
-            'DealerName':  'Unknown',
+            'SorceLeadId': lid, 'LeadMonth': lm, 'ModelName': model,
+            'Source': 'Unknown', 'LeadType': 'Unknown', 'State': 'Unknown',
+            'Zone': 'Unknown', 'BuyingDays': '0', 'CityName': 'Unknown', 'DealerName': 'Unknown',
         })
-    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
-        'SorceLeadId', 'LeadMonth', 'ModelName', 'Source', 'LeadType',
-        'State', 'Zone', 'BuyingDays', 'CityName', 'DealerName'])
-
-# ─── TVS lead file processing (all sources share this format) ─────────────────
-
-# Column map: TVS sheet column → canonical name
-# Applies to both TVS CPS folder files and the current-month live sheet.
-CURR_COL_MAP = {
-    "opty_id":     "SorceLeadId",   # 18-digit CRM ID; matches retail master sourceLeadId
-    "Lead_Month":  "LeadMonth",
-    "Medium":      "Source",
-    "lead_type":   "LeadType",
-    "model":       "ModelName",
-    "State":       "State",
-    "City":        "CityName",
-    "Dealer_Name": "DealerName",
-}
-
-def build_retail_map_from_leads(df):
-    """
-    Extract embedded retail info from a leads sheet (opty_id + Retail Date + DMS_Retail_Month).
-    Provides rtype (Retail By) that the retail master lacks.
-    """
-    retail_map = {}
-    for _, row in df.iterrows():
-        retail_date = str(row.get("Retail Date", "") or "").strip()
-        if not retail_date:
-            continue
-        lid = to_id(row.get("opty_id", ""))
-        if not lid:
-            continue
-        retail_map[lid] = {
-            "rm":    norm_month(str(row.get("DMS_Retail_Month", "") or "").strip()),
-            "rtype": str(row.get("Retail By", "") or "").strip(),
-        }
-    return retail_map
-
-def standardize_leads(df):
-    """
-    Standardize a TVS format leads DataFrame to canonical column names.
-    Works for both TVS CPS folder files and the current-month sheet.
-    Zone is not available in this format — defaults to 'Unknown'.
-    """
-    out = df.rename(columns=CURR_COL_MAP).copy()
-    if "State" in out.columns:
-        out["State"] = out["State"].astype(str).str.strip().str.title()
-    out["Zone"]       = "Unknown"
-    out["BuyingDays"] = "0"
-    if "LeadMonth" in out.columns:
-        out["LeadMonth"] = out["LeadMonth"].apply(norm_month)
-    # Drop raw retail columns (already captured into retail_map)
-    for c in ["DMS_Retail_Month", "Ops_Retail_Month", "Retail Date", "Retail By",
-              "Billing Month", "View Filter", "Model Filter"]:
-        if c in out.columns:
-            out = out.drop(columns=[c])
-    keep = [c for c in ["SorceLeadId","LeadMonth","Source","LeadType","ModelName",
-                         "State","Zone","BuyingDays","CityName","DealerName"] if c in out.columns]
-    return out[keep].copy()
-
-# ─── Generic sheet reader via Apps Script proxy (paginated) ──────────────────
-
-def fetch_sheet_via_proxy(file_id, name):
-    """
-    Fetch any Google Sheet via Apps Script getSheetData endpoint.
-    Returns DataFrame with original column headers.
-    Used for TVS CPS folder files (private sheets, no GitHub Actions auth).
-    """
-    page, all_rows, headers = 0, [], None
-    while True:
-        for attempt in range(3):
-            try:
-                data = proxy_get("getSheetData", {"fileId": file_id, "page": page, "pageSize": 25000}, timeout=300)
-                break
-            except Exception as e:
-                if attempt < 2:
-                    print(f"    WARNING: {name} page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
-                    time.sleep(30)
-                else:
-                    raise RuntimeError(f"getSheetData {name} page {page} failed after 3 attempts: {e}")
-        if "error" in data:
-            raise RuntimeError(f"getSheetData error for {name}: {data['error']}")
-        if headers is None:
-            headers = data["headers"]
-        rows  = data.get("rows", [])
-        total = data.get("total", "?")
-        all_rows.extend(rows)
-        print(f"    {name} page {page}: +{len(rows):,} rows (total {len(all_rows):,}/{total})", flush=True)
-        if data.get("done", True):
-            break
-        page += 1
-    return pd.DataFrame(all_rows, columns=headers)
-
-# ─── Fetch current month leads (paginated via Apps Script) ────────────────────
-
-def fetch_current_leads():
-    print("Fetching current-month leads from Apps Script (paginated)…", flush=True)
-    page, all_rows, headers = 0, [], None
-    while True:
-        data = proxy_get("getCurrentLeads", {"page": page, "pageSize": 25000})
-        if "error" in data:
-            raise RuntimeError(f"getCurrentLeads error: {data['error']}")
-        if headers is None:
-            headers = data["headers"]
-        all_rows.extend(data["rows"])
-        total = data.get("total", "?")
-        print(f"  Page {page}: +{len(data['rows'])} rows  (fetched {len(all_rows):,}/{total})", flush=True)
-        if data.get("done", True):
-            break
-        page += 1
-    print(f"  Current leads total: {len(all_rows):,}", flush=True)
-    return pd.DataFrame(all_rows, columns=headers)
+    cols = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
+            'State','Zone','BuyingDays','CityName','DealerName']
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
 
 # ─── Core aggregation ─────────────────────────────────────────────────────────
 
 def build_payload(all_leads, retail_map):
-    dl_col = "DealerName" if "DealerName" in all_leads.columns else None
+    dl_col = 'DealerName' if 'DealerName' in all_leads.columns else None
 
     lm_idx,  src_idx, lt_idx, mdl_idx, st_idx, zone_idx, city_idx = {},{},{},{},{},{},{}
     lm_arr,  src_arr, lt_arr, mdl_arr, st_arr, zone_arr, city_arr  = [],[],[],[],[],[],[]
-    u_lm_idx = {}
-    u_lm_arr = []
-    dl_idx, dl_arr = {}, []
+    u_lm_idx, u_lm_arr = {}, []
+    dl_idx,  dl_arr  = {}, []
     city_to_state = {}
 
     def ix(d, arr, v):
         if v not in d:
-            d[v] = len(arr)
-            arr.append(v)
+            d[v] = len(arr); arr.append(v)
         return d[v]
 
     monthly, sm, ltm, mm, stm, zm, bdm, cm = {},{},{},{},{},{},{},{}
     u_monthly, u_sm, u_ltm, u_mm, u_stm, u_zm, u_bdm = {},{},{},{},{},{},{}
-    cdm  = {}
-    csm  = {}
-    cdsm = {}
+    cdm, csm, cdsm = {},{},{}
 
-    def bump(d, k, is_ret, rtype=""):
-        if k not in d:
-            d[k] = [0, 0, 0, 0]
+    def bump(d, k, is_ret, rtype=''):
+        if k not in d: d[k] = [0,0,0,0]
         d[k][0] += 1
         if is_ret:
             d[k][1] += 1
             rt_u = rtype.upper()
-            if "DMS" in rt_u:
-                d[k][2] += 1
-            elif "CALL" in rt_u:
-                d[k][3] += 1
+            if 'DMS' in rt_u:   d[k][2] += 1
+            elif 'CALL' in rt_u: d[k][3] += 1
 
     total = len(all_leads)
     print(f"Aggregating {total:,} leads…", flush=True)
@@ -385,18 +260,17 @@ def build_payload(all_leads, retail_map):
         if i % 100000 == 0 and i > 0:
             print(f"  {i:,}/{total:,} ({100*i//total}%)", flush=True)
 
-        lid  = to_id(row.get("SorceLeadId", ""))
-        lm   = str(row.get("LeadMonth",    "") or "").strip()
-        src  = str(row.get("Source",       "") or "").strip() or "Unknown"
-        lt   = str(row.get("LeadType",     "") or "").strip() or "Unknown"
-        mdl  = str(row.get("ModelName",    "") or "").strip() or "Unknown"
-        st   = str(row.get("State",        "") or "").strip().title() or "Unknown"
-        zone = str(row.get("Zone",         "") or "").strip() or "Unknown"
-        bd   = str(row.get("BuyingDays",   "") or "0").strip() or "0"
-        city = str(row.get("CityName",     "") or "").strip() or "Unknown"
+        lid  = to_id(row.get('SorceLeadId', ''))
+        lm   = str(row.get('LeadMonth',  '') or '').strip()
+        src  = str(row.get('Source',     '') or '').strip() or 'Unknown'
+        lt   = str(row.get('LeadType',   '') or '').strip() or 'Unknown'
+        mdl  = str(row.get('ModelName',  '') or '').strip() or 'Unknown'
+        st   = str(row.get('State',      '') or '').strip().title() or 'Unknown'
+        zone = str(row.get('Zone',       '') or '').strip() or 'Unknown'
+        bd   = str(row.get('BuyingDays', '') or '0').strip() or '0'
+        city = str(row.get('CityName',   '') or '').strip() or 'Unknown'
 
-        if not lm or not lid:
-            continue
+        if not lm or not lid: continue
 
         is_ret = lid in retail_map
         li   = ix(lm_idx,   lm_arr,   lm)
@@ -406,36 +280,35 @@ def build_payload(all_leads, retail_map):
         sti  = ix(st_idx,   st_arr,   st)
         zi   = ix(zone_idx, zone_arr, zone)
         cti  = ix(city_idx, city_arr, city)
-
         city_to_state[cti] = sti
-        rtype = retail_map[lid]["rtype"] if is_ret else ""
+        rtype = retail_map[lid]['rtype'] if is_ret else ''
 
-        bump(monthly, li,                  is_ret, rtype)
-        bump(sm,      f"{si}|{li}",        is_ret, rtype)
-        bump(ltm,     f"{tti}|{si}|{li}", is_ret, rtype)
-        bump(mm,      f"{mi}|{si}|{li}",  is_ret, rtype)
-        bump(stm,     f"{sti}|{si}|{li}", is_ret, rtype)
-        bump(zm,      f"{zi}|{li}",        is_ret, rtype)
-        bump(bdm,     f"{bd}|{si}|{li}",  is_ret, rtype)
-        bump(cm,      f"{cti}|{li}",       is_ret, rtype)
-        bump(csm,     f"{cti}|{si}|{li}", is_ret, rtype)
+        bump(monthly, li,                   is_ret, rtype)
+        bump(sm,      f"{si}|{li}",         is_ret, rtype)
+        bump(ltm,     f"{tti}|{si}|{li}",  is_ret, rtype)
+        bump(mm,      f"{mi}|{si}|{li}",   is_ret, rtype)
+        bump(stm,     f"{sti}|{si}|{li}",  is_ret, rtype)
+        bump(zm,      f"{zi}|{li}",         is_ret, rtype)
+        bump(bdm,     f"{bd}|{si}|{li}",   is_ret, rtype)
+        bump(cm,      f"{cti}|{li}",        is_ret, rtype)
+        bump(csm,     f"{cti}|{si}|{li}",  is_ret, rtype)
 
         if dl_col:
-            dl  = str(row.get(dl_col, "") or "").strip() or "Unknown"
+            dl  = str(row.get(dl_col, '') or '').strip() or 'Unknown'
             dli = ix(dl_idx, dl_arr, dl)
             bump(cdm,  f"{cti}|{dli}|{li}",      is_ret, rtype)
             bump(cdsm, f"{cti}|{dli}|{si}|{li}", is_ret, rtype)
 
-        rm  = retail_map[lid].get("rm", "") if is_ret else ""
+        rm  = retail_map[lid].get('rm', '') if is_ret else ''
         um  = rm if rm else lm
         uli = ix(u_lm_idx, u_lm_arr, um)
-        bump(u_monthly, uli,                  is_ret, rtype)
-        bump(u_sm,      f"{si}|{uli}",        is_ret, rtype)
-        bump(u_ltm,     f"{tti}|{si}|{uli}", is_ret, rtype)
-        bump(u_mm,      f"{mi}|{si}|{uli}",  is_ret, rtype)
-        bump(u_stm,     f"{sti}|{si}|{uli}", is_ret, rtype)
-        bump(u_zm,      f"{zi}|{uli}",        is_ret, rtype)
-        bump(u_bdm,     f"{bd}|{si}|{uli}",  is_ret, rtype)
+        bump(u_monthly, uli,                   is_ret, rtype)
+        bump(u_sm,      f"{si}|{uli}",         is_ret, rtype)
+        bump(u_ltm,     f"{tti}|{si}|{uli}",  is_ret, rtype)
+        bump(u_mm,      f"{mi}|{si}|{uli}",   is_ret, rtype)
+        bump(u_stm,     f"{sti}|{si}|{uli}",  is_ret, rtype)
+        bump(u_zm,      f"{zi}|{uli}",         is_ret, rtype)
+        bump(u_bdm,     f"{bd}|{si}|{uli}",   is_ret, rtype)
 
     def to_rows(d, key_fn):
         return [[*key_fn(k), v[0], v[1], v[2], v[3]] for k, v in d.items()]
@@ -443,37 +316,37 @@ def build_payload(all_leads, retail_map):
     city_state_arr = [city_to_state.get(i) for i in range(len(city_arr))]
 
     maps_payload = {
-        "lm":         lm_arr,  "src": src_arr, "lt": lt_arr, "mdl": mdl_arr,
-        "st":         st_arr,  "zone": zone_arr, "city": city_arr,
-        "city_state": city_state_arr,
-        "u_lm":       u_lm_arr,
+        'lm': lm_arr, 'src': src_arr, 'lt': lt_arr, 'mdl': mdl_arr,
+        'st': st_arr, 'zone': zone_arr, 'city': city_arr,
+        'city_state': city_state_arr,
+        'u_lm': u_lm_arr,
     }
     if dl_col and dl_arr:
-        maps_payload["dl"] = dl_arr
+        maps_payload['dl'] = dl_arr
         print(f"Dealers: {len(dl_arr):,}  City×Dealer×Month rows: {len(cdm):,}", flush=True)
 
     payload = {
-        "t":       pd.Timestamp.now().isoformat(),
-        "rt_cols": 1,
-        "maps":    maps_payload,
-        "monthly": to_rows(monthly, lambda k: [int(k)]),
-        "sm":      to_rows(sm,  lambda k: list(map(int, k.split("|")))),
-        "ltm":     to_rows(ltm, lambda k: list(map(int, k.split("|")))),
-        "mm":      to_rows(mm,  lambda k: list(map(int, k.split("|")))),
-        "stm":     to_rows(stm, lambda k: list(map(int, k.split("|")))),
-        "zm":      to_rows(zm,  lambda k: list(map(int, k.split("|")))),
-        "bdm":     to_rows(bdm, lambda k: [int(k.split("|")[0])] + list(map(int, k.split("|")[1:]))),
-        "cm":      to_rows(cm,  lambda k: list(map(int, k.split("|")))),
-        "csm":     to_rows(csm, lambda k: list(map(int, k.split("|")))),
-        **({"cdm":  to_rows(cdm,  lambda k: list(map(int, k.split("|")))),
-            "cdsm": to_rows(cdsm, lambda k: list(map(int, k.split("|"))))} if dl_col and dl_arr else {}),
-        "u_monthly": to_rows(u_monthly, lambda k: [int(k)]),
-        "u_sm":      to_rows(u_sm,  lambda k: list(map(int, k.split("|")))),
-        "u_ltm":     to_rows(u_ltm, lambda k: list(map(int, k.split("|")))),
-        "u_mm":      to_rows(u_mm,  lambda k: list(map(int, k.split("|")))),
-        "u_stm":     to_rows(u_stm, lambda k: list(map(int, k.split("|")))),
-        "u_zm":      to_rows(u_zm,  lambda k: list(map(int, k.split("|")))),
-        "u_bdm":     to_rows(u_bdm, lambda k: [int(k.split("|")[0])] + list(map(int, k.split("|")[1:]))),
+        't':       pd.Timestamp.now().isoformat(),
+        'rt_cols': 1,
+        'maps':    maps_payload,
+        'monthly': to_rows(monthly, lambda k: [int(k)]),
+        'sm':      to_rows(sm,  lambda k: list(map(int, k.split('|')))),
+        'ltm':     to_rows(ltm, lambda k: list(map(int, k.split('|')))),
+        'mm':      to_rows(mm,  lambda k: list(map(int, k.split('|')))),
+        'stm':     to_rows(stm, lambda k: list(map(int, k.split('|')))),
+        'zm':      to_rows(zm,  lambda k: list(map(int, k.split('|')))),
+        'bdm':     to_rows(bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),
+        'cm':      to_rows(cm,  lambda k: list(map(int, k.split('|')))),
+        'csm':     to_rows(csm, lambda k: list(map(int, k.split('|')))),
+        **({"cdm":  to_rows(cdm,  lambda k: list(map(int, k.split('|')))),
+            "cdsm": to_rows(cdsm, lambda k: list(map(int, k.split('|'))))} if dl_col and dl_arr else {}),
+        'u_monthly': to_rows(u_monthly, lambda k: [int(k)]),
+        'u_sm':      to_rows(u_sm,  lambda k: list(map(int, k.split('|')))),
+        'u_ltm':     to_rows(u_ltm, lambda k: list(map(int, k.split('|')))),
+        'u_mm':      to_rows(u_mm,  lambda k: list(map(int, k.split('|')))),
+        'u_stm':     to_rows(u_stm, lambda k: list(map(int, k.split('|')))),
+        'u_zm':      to_rows(u_zm,  lambda k: list(map(int, k.split('|')))),
+        'u_bdm':     to_rows(u_bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),
     }
     print(f"Done — {total:,} leads  {len(retail_map):,} retails  {len(u_lm_arr)} update-months", flush=True)
     return payload
@@ -484,63 +357,51 @@ print("=" * 60, flush=True)
 print("TVS Lead Disposition — Daily Data Push", flush=True)
 print("=" * 60, flush=True)
 
-# 1. Fetch retail master (all months, TVS only)
+# 1. Retail master
 print("\n[1/4] Loading retail master…", flush=True)
 retail_df  = fetch_retails()
-retail_map = build_retail_map_from_xlsx(retail_df)
-print(f"  Base retail map: {len(retail_map):,} entries", flush=True)
+retail_map = build_retail_map(retail_df)
+print(f"  Retail map: {len(retail_map):,} entries", flush=True)
 
-# 2. Load all TVS CPS lead files from Drive folder (via Apps Script getLeadFileList)
-#    and current-month sheet (via Apps Script getCurrentLeads).
-#    Both share the same TVS column format; standardize_leads handles both.
-print("\n[2/4] Loading lead data…", flush=True)
-lead_dfs = []
-embed_map = {}  # accumulated retail overrides (rtype + DMS month) from all lead sheets
+# 2. All 7 monthly lead sheets
+print("\n[2/4] Loading 7 monthly lead sheets…", flush=True)
+lead_dfs   = []
+rtype_map  = {}  # rtype overrides (DMS/CC) from embedded sheet columns
 
-# 2a. TVS CPS folder files (historical completed months)
-try:
-    file_list = fetch_lead_file_list()
-    print(f"  TVS CPS files in folder: {len(file_list)}", flush=True)
-    for f in file_list:
-        try:
-            raw = fetch_sheet_via_proxy(f["id"], f["name"])
-            raw.columns = [c.strip() for c in raw.columns]
-            embed_map.update(build_retail_map_from_leads(raw))
-            std = standardize_leads(raw)
-            lead_dfs.append(std)
-            print(f"    {f['name']}: {len(raw):,} rows loaded", flush=True)
-        except Exception as e:
-            print(f"    WARNING: Could not read {f['name']}: {e}", flush=True)
-except Exception as e:
-    print(f"  WARNING: getLeadFileList failed ({e})", flush=True)
-    print("  → Deploy the updated Apps Script (see TVS_Apps_Script_code.gs)", flush=True)
+for sheet in LEAD_SHEETS:
+    try:
+        raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet['tab'])
+        raw.columns = [c.strip() for c in raw.columns]
+        rtype_map.update(extract_rtype_map(raw))
+        std = standardize_leads(raw)
+        lead_dfs.append(std)
+        print(f"  {sheet['label']}: {len(std):,} rows standardized", flush=True)
+    except Exception as e:
+        print(f"  WARNING: Could not load {sheet['label']}: {e}", flush=True)
 
-# 2b. Current-month sheet (active July leads via Apps Script)
-curr_raw = fetch_current_leads()
-embed_map.update(build_retail_map_from_leads(curr_raw))
-curr_std = standardize_leads(curr_raw)
-lead_dfs.append(curr_std)
+# Apply rtype overrides from embedded sheet data
+for lid, info in rtype_map.items():
+    if lid in retail_map:
+        retail_map[lid]['rtype'] = info['rtype']
+        if info['rm'] and not retail_map[lid]['rm']:
+            retail_map[lid]['rm'] = info['rm']
 
-# 2c. Merge retail map: base from retail master, overridden by embedded lead-sheet data (has rtype)
-retail_map.update(embed_map)
-print(f"  Combined retail map (with rtype): {len(retail_map):,}", flush=True)
-
-# 3. Combine all leads; inject synthetic rows for retails with no matching lead
+# 3. Combine + synthetic gap-fill
 print("\n[3/4] Combining leads and injecting gap-fill rows…", flush=True)
 all_leads = pd.concat(lead_dfs, ignore_index=True) if lead_dfs else pd.DataFrame()
-print(f"  Leads from files + current sheet: {len(all_leads):,}", flush=True)
+print(f"  Leads from sheets: {len(all_leads):,}", flush=True)
 
-matched_lid_set = {to_id(v) for v in all_leads["SorceLeadId"].dropna() if to_id(v)}
-synthetic       = make_synthetic_leads(retail_df, matched_lid_set)
+matched_lids = {to_id(v) for v in all_leads['SorceLeadId'].dropna() if to_id(v)}
+synthetic    = make_synthetic_leads(retail_df, matched_lids)
 if len(synthetic):
     all_leads = pd.concat([all_leads, synthetic], ignore_index=True)
-    print(f"  Synthetic gap-fill rows:          {len(synthetic):,}", flush=True)
-print(f"  Total combined:                   {len(all_leads):,}", flush=True)
+    print(f"  Synthetic gap-fill rows: {len(synthetic):,}", flush=True)
+print(f"  Total combined: {len(all_leads):,}", flush=True)
 
 # 4. Aggregate and push
-print("\n[4/4] Aggregating and pushing to Apps Script cache…", flush=True)
+print("\n[4/4] Aggregating and pushing…", flush=True)
 payload  = build_payload(all_leads, retail_map)
-json_str = json.dumps(payload, separators=(",", ":"))
+json_str = json.dumps(payload, separators=(',', ':'))
 print(f"\nPayload size: {len(json_str)/1024:.1f} KB", flush=True)
 
 print("POSTing to Apps Script…", flush=True)
