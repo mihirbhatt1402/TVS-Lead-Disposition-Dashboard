@@ -207,24 +207,30 @@ def build_retail_map_from_curr(curr_df):
     return retail_map
 
 def fetch_current_retails():
-    """Fetch current-month retails from the separate retails sheet via Apps Script."""
-    print("Fetching current-month retails from Apps Script…", flush=True)
-    try:
-        data = proxy_get("getCurrentRetails")
-    except Exception as e:
-        print(f"  WARNING: getCurrentRetails failed ({e}); skipping retails sheet.", flush=True)
-        return {}
-    if "error" in data:
-        print(f"  WARNING: getCurrentRetails error: {data['error']}", flush=True)
-        return {}
-    rows = data.get("rows", [])
-    print(f"  Retails sheet rows: {len(rows):,}", flush=True)
-    retail_map = {}
-    for row in rows:
-        lid = to_id(row[0]) if len(row) > 0 else ""
-        rm  = norm_month(str(row[1]).strip()) if len(row) > 1 else ""
-        if lid:
-            retail_map[lid] = {"rm": rm, "rtype": ""}
+    """Fetch current-month retails from the separate retails sheet via Apps Script (paginated)."""
+    print("Fetching current-month retails from Apps Script (paginated)…", flush=True)
+    page, retail_map = 0, {}
+    while True:
+        try:
+            data = proxy_get("getCurrentRetails", {"page": page, "pageSize": 25000})
+        except Exception as e:
+            print(f"  WARNING: getCurrentRetails page {page} failed ({e}); skipping rest.", flush=True)
+            break
+        if "error" in data:
+            print(f"  WARNING: getCurrentRetails error: {data['error']}", flush=True)
+            break
+        rows  = data.get("rows", [])
+        total = data.get("total", "?")
+        for row in rows:
+            lid = to_id(row[0]) if len(row) > 0 else ""
+            rm  = norm_month(str(row[1]).strip()) if len(row) > 1 else ""
+            if lid:
+                retail_map[lid] = {"rm": rm, "rtype": ""}
+        print(f"  Page {page}: +{len(rows)} rows  (map size {len(retail_map):,}/{total})", flush=True)
+        if data.get("done", True):
+            break
+        page += 1
+    print(f"  Retails sheet total: {len(retail_map):,}", flush=True)
     return retail_map
 
 def standardize_curr_leads(curr_df, state_to_zone):

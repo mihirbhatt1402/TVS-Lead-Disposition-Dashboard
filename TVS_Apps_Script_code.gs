@@ -122,7 +122,9 @@ function doGet(e) {
 
     if (action === 'getCurrentRetails') {
       if (secret !== PUSH_SECRET) return jsonOut({ error: 'Unauthorized' });
-      return handleGetCurrentRetails();
+      var page     = parseInt(e.parameter.page     || '0');
+      var pageSize = parseInt(e.parameter.pageSize || '25000');
+      return handleGetCurrentRetails(page, pageSize);
     }
 
     // Default: serve dashboard data
@@ -280,12 +282,17 @@ function handleGetCurrentLeads(page, pageSize) {
   });
 }
 
-/* ─── Current-month retails proxy ─── */
-function handleGetCurrentRetails() {
-  var ss   = SpreadsheetApp.openById(CONFIG.CURR_RETAILS_SHEET_ID);
-  var sh   = ss.getSheetByName(CONFIG.CURR_RETAILS_TAB);
-  var data = sh.getDataRange().getValues();
-  var hdr  = data[0].map(String);
+/* ─── Current-month retails proxy (paginated) ─── */
+function handleGetCurrentRetails(page, pageSize) {
+  page     = page     || 0;
+  pageSize = pageSize || 25000;
+
+  var ss      = SpreadsheetApp.openById(CONFIG.CURR_RETAILS_SHEET_ID);
+  var sh      = ss.getSheetByName(CONFIG.CURR_RETAILS_TAB);
+  var lastRow = sh.getLastRow();
+  var numCols = sh.getLastColumn();
+
+  var hdr = sh.getRange(1, 1, 1, numCols).getValues()[0].map(String);
 
   var processIdx     = hdr.findIndex(function(h) { return h.toLowerCase() === 'process'; });
   var leadIdIdx      = hdr.findIndex(function(h) { return h.toLowerCase() === 'sourceleadid'; });
@@ -293,11 +300,19 @@ function handleGetCurrentRetails() {
     return h.toLowerCase().replace(/[_ ]/g, '') === 'retailattributiondate';
   });
 
+  var startRow = 2 + page * pageSize;
+  if (startRow > lastRow) {
+    return jsonOut({ headers: ['sourceLeadId', 'Retail_Attribution_Date'], rows: [], done: true, total: lastRow - 1 });
+  }
+
+  var count = Math.min(pageSize, lastRow - startRow + 1);
+  var data  = sh.getRange(startRow, 1, count, numCols).getValues();
+
   var needed  = ['sourceLeadId', 'Retail_Attribution_Date'];
   var indices = [leadIdIdx, retailMonthIdx];
 
   var rows = [];
-  for (var i = 1; i < data.length; i++) {
+  for (var i = 0; i < data.length; i++) {
     var row = data[i];
     if (processIdx >= 0 && String(row[processIdx] || '').trim().toUpperCase() !== 'TVS') continue;
     var out = indices.map(function(idx) {
@@ -309,7 +324,12 @@ function handleGetCurrentRetails() {
     rows.push(out);
   }
 
-  return jsonOut({ headers: needed, rows: rows, total: rows.length });
+  return jsonOut({
+    headers: needed,
+    rows:    rows,
+    done:    (startRow + count - 1) >= lastRow,
+    total:   lastRow - 1,
+  });
 }
 
 /* ─── Debug: view current roles and pending ─── */
