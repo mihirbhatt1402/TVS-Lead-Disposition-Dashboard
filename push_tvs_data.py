@@ -407,6 +407,10 @@ print(f"  Current (retails sheet): {len(curr_sheet_map):,}", flush=True)
 retail_map = {**curr_sheet_map, **curr_embed_map}
 print(f"  Combined retail map:     {len(retail_map):,}", flush=True)
 
+# DEBUG: show sample IDs to diagnose match format
+retail_samples = list(retail_map.keys())[:5]
+print(f"  [DEBUG] Sample retail IDs: {retail_samples}", flush=True)
+
 # 5. Standardize and concat leads
 print("\n[5/5] Processing all leads…", flush=True)
 hist_leads_std = standardize_hist_leads(hist_leads_raw)
@@ -414,6 +418,11 @@ curr_leads_std = standardize_curr_leads(curr_leads_raw, state_to_zone)
 
 print(f"  Hist leads (standardized):  {len(hist_leads_std):,}", flush=True)
 print(f"  Curr leads (standardized):  {len(curr_leads_std):,}", flush=True)
+# DEBUG: show sample lead IDs from each source
+hist_id_samples = [to_id(v) for v in hist_leads_std["SorceLeadId"].dropna().head(5)]
+curr_id_samples = [to_id(v) for v in curr_leads_std["SorceLeadId"].dropna().head(5)]
+print(f"  [DEBUG] Sample hist lead IDs: {hist_id_samples}", flush=True)
+print(f"  [DEBUG] Sample curr lead IDs: {curr_id_samples}", flush=True)
 
 all_leads = pd.concat([hist_leads_std, curr_leads_std], ignore_index=True)
 print(f"  Combined total:             {len(all_leads):,}", flush=True)
