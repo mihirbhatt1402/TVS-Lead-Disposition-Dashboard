@@ -1,11 +1,15 @@
 """
 TVS Lead Disposition — Daily Data Push
-Runs via GitHub Actions at 11 AM IST every day.
+Runs via GitHub Actions at 12:00 PM IST every day.
 
 DATA SOURCES:
-  Historical leads (Apr-Jun): Google Sheet 1jPYG0LGFFd_ljWpfPr2NPfIU0fK1i7px → fetched via XLSX export
-  Current leads   (Jul+):     Private Google Sheet via Apps Script proxy
-  Retails (all months):       Google Sheet 1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE → XLSX export
+  Lead master (all months): Drive folder 1lZ4l1LemSolnGwAiqPWwQS8CUdF0LfZf
+                            → all Google Sheets with "TVS" in the filename
+                            → same column format as current-month sheet
+  Current month leads:      Private Google Sheet via Apps Script proxy
+  Retails (all months):     Google Sheet 1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE
+
+JOIN:  retail.sourceLeadId  ↔  lead.opty_id  (both are 18-digit CRM IDs)
 """
 
 import json, sys, io, re, time, urllib.request
@@ -16,6 +20,9 @@ MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov'
 
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwzgnXPbCbunBblnMUrqdWg3eY9qsIwCrFxuYuvYSpxtH22l4Cs32vdkOkDhUn-qwM64w/exec"
 SECRET = "tvs2026push"
+
+RETAILS_FILE_ID = '1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE'
+RETAILS_TAB     = 'Raw'
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -69,26 +76,23 @@ def read_drive_xlsx(file_id, label=""):
                        params={"export": "download", "id": file_id}, timeout=60)
     ct = resp.headers.get("Content-Type", "")
     if resp.status_code == 404 or (resp.status_code == 200 and "text/html" in ct and "404" in resp.text[:500]):
-        # Google Sheet (not a Drive file) — use Sheets export endpoint
-        print(f"  {label} Drive 404, trying Sheets export…", flush=True)
+        # Google Sheet — use Sheets export endpoint
+        print(f"  {label} not a Drive file, trying Sheets export…", flush=True)
         resp = session.get(
             f"https://docs.google.com/spreadsheets/d/{file_id}/export",
             params={"format": "xlsx"}, stream=True, timeout=120)
     elif "text/html" in ct:
         html = resp.text
-        # Method 1: modern Drive confirmation page — extract full link including uuid
         direct = re.search(r'href="(https://drive\.usercontent\.google\.com/download[^"]*confirm[^"]+)"', html)
         if direct:
             resp = session.get(direct.group(1).replace("&amp;", "&"), stream=True, timeout=120)
         else:
-            # Method 2: old-style confirmation form
             action = re.search(r'<form[^>]*action="([^"]+)"', html)
             inputs = dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]+)"', html))
             if action and inputs:
                 resp = session.get(action.group(1).replace("&amp;", "&"),
                                    params=inputs, stream=True, timeout=120)
             else:
-                # Method 3: last resort
                 resp = session.get("https://drive.google.com/uc",
                                    params={"export": "download", "id": file_id, "confirm": "t"},
                                    stream=True, timeout=120)
@@ -99,7 +103,7 @@ def read_drive_xlsx(file_id, label=""):
     buf.seek(0)
     size_kb = len(buf.getvalue()) / 1024
     if size_kb < 10:
-        raise RuntimeError(f"{label} download too small ({size_kb:.0f} KB) — possible Drive auth error")
+        raise RuntimeError(f"{label} download too small ({size_kb:.0f} KB) — possible auth error")
     print(f"  {label}: {size_kb:.0f} KB", flush=True)
     return buf
 
@@ -111,8 +115,18 @@ def proxy_get(action, extra_params=None, timeout=120):
     resp.raise_for_status()
     return resp.json()
 
-RETAILS_FILE_ID = '1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE'
-RETAILS_TAB     = 'Raw'
+# ─── Lead file list ───────────────────────────────────────────────────────────
+
+def fetch_lead_file_list():
+    """
+    Get list of TVS lead files from Apps Script (reads Drive folder LEAD_FOLDER_ID).
+    Returns list of {id, name} dicts, sorted by name (month order).
+    Raises RuntimeError if the action is not available in the deployed Apps Script.
+    """
+    data = proxy_get("getLeadFileList")
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return data["files"]
 
 # ─── Retails: load via Apps Script proxy with XLSX fallback ───────────────────
 
@@ -156,11 +170,8 @@ def _fetch_retails_via_xlsx():
 def fetch_retails():
     """
     Fetch all TVS retails from the retail master.
-    Primary path: Apps Script proxy (authenticated, works in GitHub Actions).
-    Fallback path: direct XLSX download (works when logged in locally).
-    Returns a DataFrame with at least: sourceLeadId and one of
-    Retail_Attribution_Date (old) / performanceMonth (new) for retail month.
-    Also purchasedModel and createTime if the new Apps Script is deployed.
+    Primary: Apps Script proxy (authenticated). Fallback: direct XLSX download.
+    Returns DataFrame with sourceLeadId + retail month + optional model/createTime.
     """
     print("Fetching retail master…", flush=True)
     try:
@@ -175,38 +186,33 @@ def fetch_retails():
             print(f"  Retails master (XLSX): {len(df):,} TVS rows", flush=True)
             return df
         except Exception as xlsx_err:
-            raise RuntimeError(f"Both retail fetch paths failed. Proxy: {proxy_err} | XLSX: {xlsx_err}")
+            raise RuntimeError(f"Both retail fetch paths failed.\n  Proxy: {proxy_err}\n  XLSX:  {xlsx_err}")
 
-def build_retail_map_from_proxy(retail_df):
-    """Build retail_map {normalized_sourceLeadId → {rm, rtype}} from the proxy DataFrame.
-    Handles both old 2-column (sourceLeadId, Retail_Attribution_Date) and
-    new 4-column (sourceLeadId, performanceMonth, purchasedModel, createTime) responses.
+def build_retail_map_from_xlsx(retail_df):
+    """Build retail_map {normalized_sourceLeadId → {rm, rtype}} from the retail master.
+    Handles Apps Script old format (Retail_Attribution_Date) and new (performanceMonth).
     """
     retail_map = {}
     for _, row in retail_df.iterrows():
         lid = to_id(row.get('sourceLeadId', ''))
         if not lid:
             continue
-        # performanceMonth is available in new Apps Script; fall back to Retail_Attribution_Date
         rm = parse_ym(row.get('performanceMonth', '') or row.get('Retail_Attribution_Date', ''))
         retail_map[lid] = {'rm': rm, 'rtype': ''}
     return retail_map
 
 def make_synthetic_leads(retail_df, matched_lid_set):
     """
-    Create synthetic lead rows for retails whose sourceLeadId is absent from hist/curr data.
-    These are leads that were retailed and removed from the active sheet before the pipeline ran.
-    Model: from purchasedModel if Apps Script returns it; else 'Unknown'.
-    Lead month: from createTime, or decoded from the 18-digit sourceLeadId (YYMMDD prefix),
-                or falls back to retail month.
-    State/city/dealer/source are Unknown since that data is unavailable.
+    Synthetic lead rows for retails whose sourceLeadId is absent from all lead sources.
+    Model from purchasedModel (if Apps Script returns it), else 'Unknown'.
+    Lead month decoded from 18-digit CRM ID prefix (YYMMDD), then createTime, then retail month.
+    State/city/dealer/source are Unknown.
     """
     rows = []
     for _, row in retail_df.iterrows():
         lid = to_id(row.get('sourceLeadId', ''))
         if not lid or lid in matched_lid_set:
             continue
-        # Lead month: try createTime, then decode from sourceLeadId, then retail month
         lm = (parse_ym(row.get('createTime', ''))
               or lid_to_month(lid)
               or parse_ym(row.get('performanceMonth', '') or row.get('Retail_Attribution_Date', '')))
@@ -227,7 +233,63 @@ def make_synthetic_leads(retail_df, matched_lid_set):
         'SorceLeadId', 'LeadMonth', 'ModelName', 'Source', 'LeadType',
         'State', 'Zone', 'BuyingDays', 'CityName', 'DealerName'])
 
-# ─── Fetch current month leads (paginated) ───────────────────────────────────
+# ─── TVS lead file processing (all sources share this format) ─────────────────
+
+# Column map: TVS sheet column → canonical name
+# Applies to both TVS CPS folder files and the current-month live sheet.
+CURR_COL_MAP = {
+    "opty_id":     "SorceLeadId",   # 18-digit CRM ID; matches retail master sourceLeadId
+    "Lead_Month":  "LeadMonth",
+    "Medium":      "Source",
+    "lead_type":   "LeadType",
+    "model":       "ModelName",
+    "State":       "State",
+    "City":        "CityName",
+    "Dealer_Name": "DealerName",
+}
+
+def build_retail_map_from_leads(df):
+    """
+    Extract embedded retail info from a leads sheet (opty_id + Retail Date + DMS_Retail_Month).
+    Provides rtype (Retail By) that the retail master lacks.
+    """
+    retail_map = {}
+    for _, row in df.iterrows():
+        retail_date = str(row.get("Retail Date", "") or "").strip()
+        if not retail_date:
+            continue
+        lid = to_id(row.get("opty_id", ""))
+        if not lid:
+            continue
+        retail_map[lid] = {
+            "rm":    norm_month(str(row.get("DMS_Retail_Month", "") or "").strip()),
+            "rtype": str(row.get("Retail By", "") or "").strip(),
+        }
+    return retail_map
+
+def standardize_leads(df):
+    """
+    Standardize a TVS format leads DataFrame to canonical column names.
+    Works for both TVS CPS folder files and the current-month sheet.
+    Zone is not available in this format — defaults to 'Unknown'.
+    """
+    out = df.rename(columns=CURR_COL_MAP).copy()
+    if "State" in out.columns:
+        out["State"] = out["State"].astype(str).str.strip().str.title()
+    out["Zone"]       = "Unknown"
+    out["BuyingDays"] = "0"
+    if "LeadMonth" in out.columns:
+        out["LeadMonth"] = out["LeadMonth"].apply(norm_month)
+    # Drop raw retail columns (already captured into retail_map)
+    for c in ["DMS_Retail_Month", "Ops_Retail_Month", "Retail Date", "Retail By",
+              "Billing Month", "View Filter", "Model Filter"]:
+        if c in out.columns:
+            out = out.drop(columns=[c])
+    keep = [c for c in ["SorceLeadId","LeadMonth","Source","LeadType","ModelName",
+                         "State","Zone","BuyingDays","CityName","DealerName"] if c in out.columns]
+    return out[keep].copy()
+
+# ─── Fetch current month leads (paginated via Apps Script) ────────────────────
 
 def fetch_current_leads():
     print("Fetching current-month leads from Apps Script (paginated)…", flush=True)
@@ -246,94 +308,6 @@ def fetch_current_leads():
         page += 1
     print(f"  Current leads total: {len(all_rows):,}", flush=True)
     return pd.DataFrame(all_rows, columns=headers)
-
-# ─── Historical XLSX processing ───────────────────────────────────────────────
-
-def read_hist_leads(file_id, label):
-    buf = read_drive_xlsx(file_id, label)
-    df = pd.read_excel(buf, dtype=str, engine="openpyxl")
-    df.columns = [c.strip() for c in df.columns]
-    return df
-
-def standardize_hist_leads(df):
-    """Normalize historical XLSX columns to canonical names."""
-    def col(candidates):
-        for c in candidates:
-            m = next((x for x in df.columns
-                      if x.lower().replace(" ","").replace("_","") ==
-                         c.lower().replace(" ","").replace("_","")), None)
-            if m: return m
-        return None
-
-    mapping = {
-        col(["SorceLeadId", "SourceLeadId"]): "SorceLeadId",
-        col(["LeadMonth", "Lead Month"]):               "LeadMonth",
-        col(["Source"]):                                "Source",
-        col(["LeadType", "Lead Type"]):                 "LeadType",
-        col(["ModelName", "Model Name"]):               "ModelName",
-        col(["State"]):                                 "State",
-        col(["Zone"]):                                  "Zone",
-        col(["BuyingDays", "Buying Days"]):             "BuyingDays",
-        col(["CityName", "City Name", "City"]):         "CityName",
-        col(["DealerName", "Dealer Name", "OutletName", "Outlet Name", "Dealer"]): "DealerName",
-    }
-    mapping = {k: v for k, v in mapping.items() if k}
-    out = df.rename(columns=mapping)
-    if "LeadMonth" in out.columns:
-        out["LeadMonth"] = out["LeadMonth"].apply(norm_month)
-    keep = [c for c in ["SorceLeadId","LeadMonth","Source","LeadType","ModelName",
-                         "State","Zone","BuyingDays","CityName","DealerName"] if c in out.columns]
-    return out[keep].copy()
-
-# ─── Current month leads processing ──────────────────────────────────────────
-
-# Maps current-month sheet column names → canonical names
-CURR_COL_MAP = {
-    "opty_id":     "SorceLeadId",   # opportunity ID — matches retail sourceLeadId
-    "Lead_Month":  "LeadMonth",
-    "Medium":      "Source",
-    "lead_type":   "LeadType",
-    "model":       "ModelName",
-    "State":       "State",
-    "City":        "CityName",
-    "Dealer_Name": "DealerName",
-}
-
-def build_retail_map_from_curr(curr_df):
-    """
-    Extract retail type and month from retailed leads embedded in the current leads sheet.
-    Rows with non-empty 'Retail Date' are retailed; this provides DMS_Retail_Month and Retail By.
-    Used to enhance rtype (DMS vs Call) over retail master which has no type info.
-    """
-    retail_map = {}
-    for _, row in curr_df.iterrows():
-        retail_date = str(row.get("Retail Date", "") or "").strip()
-        if not retail_date:
-            continue
-        lid = to_id(row.get("opty_id", ""))
-        if not lid:
-            continue
-        retail_map[lid] = {
-            "rm":    norm_month(str(row.get("DMS_Retail_Month", "") or "").strip()),
-            "rtype": str(row.get("Retail By",        "") or "").strip(),
-        }
-    return retail_map
-
-def standardize_curr_leads(curr_df, state_to_zone):
-    """Rename columns, derive Zone from historical state lookup, add BuyingDays=0."""
-    out = curr_df.rename(columns=CURR_COL_MAP).copy()
-    out["State"] = out["State"].astype(str).str.strip().str.title()
-    out["Zone"] = out["State"].map(state_to_zone).fillna("Unknown")
-    out["BuyingDays"] = "0"
-    if "LeadMonth" in out.columns:
-        out["LeadMonth"] = out["LeadMonth"].apply(norm_month)
-    # Drop raw retail columns (already extracted into retail_map)
-    for c in ["DMS_Retail_Month", "Retail Date", "Retail By"]:
-        if c in out.columns:
-            out = out.drop(columns=[c])
-    keep = [c for c in ["SorceLeadId","LeadMonth","Source","LeadType","ModelName",
-                         "State","Zone","BuyingDays","CityName","DealerName"] if c in out.columns]
-    return out[keep].copy()
 
 # ─── Core aggregation ─────────────────────────────────────────────────────────
 
@@ -477,63 +451,62 @@ print("=" * 60, flush=True)
 print("TVS Lead Disposition — Daily Data Push", flush=True)
 print("=" * 60, flush=True)
 
-# 1. Get historical lead file IDs from Apps Script CONFIG
-print("\n[1/6] Fetching config from Apps Script…", flush=True)
-config = proxy_get("getConfig")
-hist_lead_ids = config["histLeadFileIds"]
-print(f"  Historical lead files: {hist_lead_ids}", flush=True)
+# 1. Fetch retail master (all months, TVS only)
+print("\n[1/4] Loading retail master…", flush=True)
+retail_df  = fetch_retails()
+retail_map = build_retail_map_from_xlsx(retail_df)
+print(f"  Base retail map: {len(retail_map):,} entries", flush=True)
 
-# 2. Fetch retails master (proxy primary, XLSX fallback)
-print("\n[2/6] Loading retail master…", flush=True)
-retail_df = fetch_retails()
+# 2. Load all TVS CPS lead files from Drive folder (via Apps Script getLeadFileList)
+#    and current-month sheet (via Apps Script getCurrentLeads).
+#    Both share the same TVS column format; standardize_leads handles both.
+print("\n[2/4] Loading lead data…", flush=True)
+lead_dfs = []
+embed_map = {}  # accumulated retail overrides (rtype + DMS month) from all lead sheets
 
-# 3. Download historical leads XLSX
-print("\n[3/6] Loading historical lead data…", flush=True)
-hist_lead_dfs  = [read_hist_leads(fid, f"Leads-{i+1}") for i, fid in enumerate(hist_lead_ids)]
-hist_leads_raw = pd.concat(hist_lead_dfs, ignore_index=True)
-print(f"  Historical leads: {len(hist_leads_raw):,} rows", flush=True)
+# 2a. TVS CPS folder files (historical completed months)
+try:
+    file_list = fetch_lead_file_list()
+    print(f"  TVS CPS files in folder: {len(file_list)}", flush=True)
+    for f in file_list:
+        try:
+            buf = read_drive_xlsx(f["id"], f["name"])
+            raw = pd.read_excel(buf, dtype=str, engine="openpyxl")
+            raw.columns = [c.strip() for c in raw.columns]
+            embed_map.update(build_retail_map_from_leads(raw))
+            std = standardize_leads(raw)
+            lead_dfs.append(std)
+            print(f"    {f['name']}: {len(raw):,} rows", flush=True)
+        except Exception as e:
+            print(f"    WARNING: Could not read {f['name']}: {e}", flush=True)
+except Exception as e:
+    print(f"  WARNING: getLeadFileList failed ({e})", flush=True)
+    print("  → Deploy the updated Apps Script (see TVS_Apps_Script_code.gs)", flush=True)
 
-# Build state→zone lookup from historical leads (which has Zone column)
-state_to_zone = {}
-for _, row in hist_leads_raw.iterrows():
-    s = str(row.get("State", "") or "").strip().title()
-    z = str(row.get("Zone",  "") or "").strip()
-    if s and z:
-        state_to_zone[s] = z
-print(f"  State→Zone mappings: {len(state_to_zone)}", flush=True)
+# 2b. Current-month sheet (active July leads via Apps Script)
+curr_raw = fetch_current_leads()
+embed_map.update(build_retail_map_from_leads(curr_raw))
+curr_std = standardize_leads(curr_raw)
+lead_dfs.append(curr_std)
 
-# 4. Fetch current month leads from Apps Script proxy
-print("\n[4/6] Fetching current-month leads from Apps Script…", flush=True)
-curr_leads_raw = fetch_current_leads()
+# 2c. Merge retail map: base from retail master, overridden by embedded lead-sheet data (has rtype)
+retail_map.update(embed_map)
+print(f"  Combined retail map (with rtype): {len(retail_map):,}", flush=True)
 
-# 5. Build retail map: base from retail master, enhanced by embedded retail cols in leads sheet
-print("\n[5/6] Building retail maps…", flush=True)
-retail_map     = build_retail_map_from_proxy(retail_df)       # all retails, retail month from master
-curr_embed_map = build_retail_map_from_curr(curr_leads_raw)   # provides rtype (DMS/Call) + DMS month
-retail_map.update(curr_embed_map)                              # embed overrides for rtype accuracy
-print(f"  Retail master:          {len(retail_df):,}", flush=True)
-print(f"  Current (embedded):     {len(curr_embed_map):,}", flush=True)
-print(f"  Combined retail map:    {len(retail_map):,}", flush=True)
+# 3. Combine all leads; inject synthetic rows for retails with no matching lead
+print("\n[3/4] Combining leads and injecting gap-fill rows…", flush=True)
+all_leads = pd.concat(lead_dfs, ignore_index=True) if lead_dfs else pd.DataFrame()
+print(f"  Leads from files + current sheet: {len(all_leads):,}", flush=True)
 
-# 6. Standardize and concat leads; inject synthetic rows for unmatched retails
-print("\n[6/6] Processing all leads…", flush=True)
-hist_leads_std = standardize_hist_leads(hist_leads_raw)
-curr_leads_std = standardize_curr_leads(curr_leads_raw, state_to_zone)
-print(f"  Hist leads (standardized):          {len(hist_leads_std):,}", flush=True)
-print(f"  Curr leads (standardized):          {len(curr_leads_std):,}", flush=True)
-
-all_leads = pd.concat([hist_leads_std, curr_leads_std], ignore_index=True)
-
-# Find retails with no matching lead row (e.g. retailed and removed from the active sheet mid-month)
-# Inject synthetic lead rows for them using retail master model/month data so they are counted.
 matched_lid_set = {to_id(v) for v in all_leads["SorceLeadId"].dropna() if to_id(v)}
-synthetic_leads = make_synthetic_leads(retail_df, matched_lid_set)
-if len(synthetic_leads):
-    all_leads = pd.concat([all_leads, synthetic_leads], ignore_index=True)
-    print(f"  Synthetic retail leads (gap fill):  {len(synthetic_leads):,}", flush=True)
+synthetic       = make_synthetic_leads(retail_df, matched_lid_set)
+if len(synthetic):
+    all_leads = pd.concat([all_leads, synthetic], ignore_index=True)
+    print(f"  Synthetic gap-fill rows:          {len(synthetic):,}", flush=True)
+print(f"  Total combined:                   {len(all_leads):,}", flush=True)
 
-print(f"  Combined total:                     {len(all_leads):,}", flush=True)
-
+# 4. Aggregate and push
+print("\n[4/4] Aggregating and pushing to Apps Script cache…", flush=True)
 payload  = build_payload(all_leads, retail_map)
 json_str = json.dumps(payload, separators=(",", ":"))
 print(f"\nPayload size: {len(json_str)/1024:.1f} KB", flush=True)

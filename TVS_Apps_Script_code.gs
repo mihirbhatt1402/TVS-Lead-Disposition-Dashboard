@@ -17,8 +17,8 @@
 =================================================================*/
 
 const CONFIG = {
-  // Historical completed-month leads (Google Sheet, all months appended)
-  HIST_LEAD_FILE_IDS:    ['1jPYG0LGFFd_ljWpfPr2NPfIU0fK1i7px'],   // Apr-Jun FY26-27
+  // Drive folder containing monthly TVS CPS lead files (all files with "TVS" in name are used)
+  LEAD_FOLDER_ID:       '1lZ4l1LemSolnGwAiqPWwQS8CUdF0LfZf',
 
   // Current month live Google Sheets
   CURR_LEADS_SHEET_ID:   '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',
@@ -107,8 +107,13 @@ function doGet(e) {
     if (action === 'getConfig') {
       if (secret !== PUSH_SECRET) return jsonOut({ error: 'Unauthorized' });
       return jsonOut({
-        histLeadFileIds: CONFIG.HIST_LEAD_FILE_IDS,
+        leadFolderId: CONFIG.LEAD_FOLDER_ID,
       });
+    }
+
+    if (action === 'getLeadFileList') {
+      if (secret !== PUSH_SECRET) return jsonOut({ error: 'Unauthorized' });
+      return handleGetLeadFileList();
     }
 
     if (action === 'getCurrentLeads') {
@@ -330,6 +335,29 @@ function handleGetCurrentRetails(page, pageSize) {
     done:    (startRow + count - 1) >= lastRow,
     total:   lastRow - 1,
   });
+}
+
+/* ─── List TVS lead files in the configured Drive folder ─── */
+function handleGetLeadFileList() {
+  var folderId = CONFIG.LEAD_FOLDER_ID;
+  if (!folderId) return jsonOut({ error: 'No LEAD_FOLDER_ID configured' });
+  try {
+    var folder = DriveApp.getFolderById(folderId);
+    var iter   = folder.getFiles();
+    var files  = [];
+    while (iter.hasNext()) {
+      var f    = iter.next();
+      var name = f.getName();
+      if (name.toUpperCase().indexOf('TVS') >= 0) {
+        files.push({ id: f.getId(), name: name });
+      }
+    }
+    // Sort by name so months are processed in order
+    files.sort(function(a, b) { return a.name.localeCompare(b.name); });
+    return jsonOut({ files: files });
+  } catch (e) {
+    return jsonOut({ error: 'getLeadFileList failed: ' + e.message });
+  }
 }
 
 /* ─── Debug: view current roles and pending ─── */
