@@ -155,7 +155,7 @@ def standardize_hist_leads(df):
 
 # Maps current-month sheet column names → canonical names
 CURR_COL_MAP = {
-    "oem_crm_id":  "SorceLeadId",   # OEM CRM lead ID — matches retail sourceLeadId
+    "opty_id":     "SorceLeadId",   # opportunity ID — matches retail sourceLeadId
     "Lead_Month":  "LeadMonth",
     "Medium":      "Source",
     "lead_type":   "LeadType",
@@ -176,7 +176,7 @@ def build_retail_map_from_curr(curr_df):
         retail_date = str(row.get("Retail Date", "") or "").strip()
         if not retail_date:
             continue
-        lid = to_id(row.get("oem_crm_id", ""))
+        lid = to_id(row.get("opty_id", ""))
         if not lid:
             continue
         retail_map[lid] = {
@@ -409,9 +409,12 @@ print(f"  Current (retails sheet): {len(curr_sheet_map):,}", flush=True)
 retail_map = {**curr_sheet_map, **curr_embed_map}
 print(f"  Combined retail map:     {len(retail_map):,}", flush=True)
 
-# DEBUG: show sample IDs to diagnose match format
+# DEBUG: show sample IDs and retail month distribution
 retail_samples = list(retail_map.keys())[:5]
 print(f"  [DEBUG] Sample retail IDs: {retail_samples}", flush=True)
+from collections import Counter
+retail_month_dist = Counter(v["rm"] for v in retail_map.values())
+print(f"  [DEBUG] Retail month distribution: {dict(retail_month_dist.most_common())}", flush=True)
 
 # 5. Standardize and concat leads
 print("\n[5/5] Processing all leads…", flush=True)
