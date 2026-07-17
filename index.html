@@ -2918,27 +2918,41 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
         ce('tbody', null,
           sortedRows.flatMap(({ label, entry }, rowIdx) => {
             const isCollapsed = hasR2 && collapsed.has(label);
-            const bg0    = rowIdx%2===0 ? '#F0F7FF' : '#E3EFFE';
-            const grpBg  = '#2563EB';
+
+            // Cycling vibrant-pastel palette — each group gets its own hue family
+            const PALETTES = [
+              { hdr:'#93C5FD', txt:'#1E3A8A', cEven:'#EFF6FF', cOdd:'#DBEAFE', sep:'#BFDBFE' }, // sky
+              { hdr:'#6EE7B7', txt:'#065F46', cEven:'#ECFDF5', cOdd:'#D1FAE5', sep:'#A7F3D0' }, // emerald
+              { hdr:'#FCD34D', txt:'#78350F', cEven:'#FFFBEB', cOdd:'#FEF3C7', sep:'#FDE68A' }, // amber
+              { hdr:'#F9A8D4', txt:'#831843', cEven:'#FDF2F8', cOdd:'#FCE7F3', sep:'#FBCFE8' }, // pink
+              { hdr:'#C4B5FD', txt:'#4C1D95', cEven:'#F5F3FF', cOdd:'#EDE9FE', sep:'#DDD6FE' }, // violet
+              { hdr:'#5EEAD4', txt:'#134E4A', cEven:'#F0FDFA', cOdd:'#CCFBF1', sep:'#99F6E4' }, // teal
+              { hdr:'#FCA5A5', txt:'#7F1D1D', cEven:'#FEF2F2', cOdd:'#FEE2E2', sep:'#FECACA' }, // red
+              { hdr:'#FDBA74', txt:'#7C2D12', cEven:'#FFF7ED', cOdd:'#FED7AA', sep:'#FDDDB4' }, // orange
+            ];
+            const pal   = PALETTES[rowIdx % PALETTES.length];
+            const grpBg = hasR2 ? pal.hdr : (rowIdx%2===0 ? '#F8FAFC' : '#F1F5F9');
+            const grpTxt = hasR2 ? pal.txt : '#1E293B';
+            const grpSep = hasR2 ? pal.sep : '#E2E8F0';
             const rows = [];
 
-            // Primary row
+            // Primary row (group header when hasR2, or single-dim data row)
             rows.push(ce('tr', {
               key: `p_${label}`,
-              style:{ background: hasR2 ? grpBg : bg0, cursor: hasR2 ? 'pointer' : 'default' },
+              style:{ background: grpBg, cursor: hasR2 ? 'pointer' : 'default' },
               onClick: hasR2 ? () => toggleCollapse(label) : undefined
             },
               // Primary label (sticky)
               ce('td', {
-                style:{ padding:'8px 16px', fontWeight:700,
-                        color: hasR2 ? '#fff' : '#1E3A8A',
-                        position:'sticky', left:0, background: hasR2 ? grpBg : bg0,
-                        borderRight: hasR2 ? '1px solid rgba(255,255,255,0.2)' : '1px solid #BFDBFE',
-                        whiteSpace:'nowrap' }
+                style:{ padding:'8px 16px', fontWeight: hasR2 ? 700 : 500,
+                        color: grpTxt, fontSize: hasR2 ? 13 : 12,
+                        position:'sticky', left:0, background: grpBg,
+                        borderRight: `1px solid ${grpSep}`, whiteSpace:'nowrap' }
               }, hasR2 ? (isCollapsed?'▶ ':'▼ ')+label : label),
               // Secondary label col: "Subtotal" label or collapsed item count
               hasR2 && ce('td', {
-                style:{ padding:'8px 10px', color:'rgba(255,255,255,0.8)', fontSize:12,
+                style:{ padding:'8px 10px', background: grpBg,
+                        color: grpTxt, opacity:0.7, fontSize:12,
                         fontStyle:'italic', whiteSpace:'nowrap' }
               }, isCollapsed ? `(${entry.children.size} items)` : 'Subtotal'),
               // Data cells from sub (subtotals)
@@ -2949,10 +2963,10 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
                 return metrics.map((m, mi) =>
                   ce('td', { key:`${ck}_${m}`,
                     style:{ padding:'8px 12px', textAlign:'right',
-                            color: hasR2 ? '#fff' : '#1E293B',
-                            fontWeight: hasR2 ? 600 : 400,
+                            background: grpBg, color: grpTxt,
+                            fontWeight: hasR2 ? 700 : 400,
                             borderLeft: mi===0&&(groupBorder||(multiMetric&&ci>0))
-                              ? (hasR2 ? '1px solid rgba(255,255,255,0.2)' : '1px solid #BFDBFE') : 'none' }
+                              ? `1px solid ${grpSep}` : 'none' }
                   }, fmtV(entry.sub.get(ck), m))
                 );
               }),
@@ -2960,8 +2974,8 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               ...metrics.map((m, mi) =>
                 ce('td', { key:`tot_${m}`,
                   style:{ padding:'8px 12px', textAlign:'right', fontWeight:700,
-                          color: hasR2 ? '#fff' : '#1E3A8A',
-                          borderLeft: mi===0 ? (hasR2 ? '2px solid rgba(255,255,255,0.3)' : '2px solid #93C5FD') : 'none' }
+                          background: grpBg, color: grpTxt,
+                          borderLeft: mi===0 ? `2px solid ${grpSep}` : 'none' }
                 }, fmtTotal(entry.sub, m))
               )
             ));
@@ -2970,16 +2984,17 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
             if (hasR2 && !isCollapsed) {
               let ci = 0;
               for (const [r2Label, cMap] of entry.children) {
-                const cBg = ci++%2===0 ? '#EFF6FF' : '#DBEAFE';
+                const cBg  = ci++%2===0 ? pal.cEven : pal.cOdd;
+                const cTxt = pal.txt;
                 rows.push(ce('tr', { key:`c_${label}_${r2Label}`, style:{ background:cBg } },
                   // Empty first col (sticky)
                   ce('td', {
                     style:{ padding:'7px 16px', position:'sticky', left:0,
-                            background:cBg, borderRight:'1px solid #BFDBFE' }
+                            background:cBg, borderRight:`1px solid ${pal.sep}` }
                   }, ''),
                   // Secondary label
                   ce('td', {
-                    style:{ padding:'7px 10px 7px 20px', color:'#1E3A8A', fontSize:12,
+                    style:{ padding:'7px 10px 7px 22px', color:cTxt, fontSize:12,
                             fontWeight:500, whiteSpace:'nowrap' }
                   }, r2Label),
                   // Data cells
@@ -2989,17 +3004,17 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
                     const groupBorder = hasC2 && (colI===0 || thisC0!==prevC0);
                     return metrics.map((m, mi) =>
                       ce('td', { key:`${ck}_${m}`,
-                        style:{ padding:'7px 12px', textAlign:'right', color:'#1E293B',
+                        style:{ padding:'7px 12px', textAlign:'right', color:cTxt,
                                 fontSize:12,
-                                borderLeft: mi===0&&(groupBorder||(multiMetric&&colI>0)) ? '1px solid #BFDBFE' : 'none' }
+                                borderLeft: mi===0&&(groupBorder||(multiMetric&&colI>0)) ? `1px solid ${pal.sep}` : 'none' }
                       }, fmtV(cMap.get(ck), m))
                     );
                   }),
                   // Row totals
                   ...metrics.map((m, mi) =>
                     ce('td', { key:`tot_${m}`,
-                      style:{ padding:'7px 12px', textAlign:'right', fontWeight:600, color:'#1E3A8A',
-                              fontSize:12, borderLeft: mi===0 ? '2px solid #93C5FD' : 'none' }
+                      style:{ padding:'7px 12px', textAlign:'right', fontWeight:700, color:cTxt,
+                              fontSize:12, borderLeft: mi===0 ? `2px solid ${pal.sep}` : 'none' }
                     }, fmtTotal(cMap, m))
                   )
                 ));
