@@ -422,6 +422,10 @@ def build_payload(all_leads, retail_map):
     mlt,  u_mlt  = {}, {}   # model × lead-type × month
     stlt, u_stlt = {}, {}   # state × lead-type × month
     stcm, u_stcm = {}, {}   # state × city × month
+    univ, u_univ = {}, {}   # mdl × src × st × lt × month (universal — covers any non-city/dealer combo)
+    stdm, u_stdm = {}, {}   # state × dealer × month
+    mxdl, u_mxdl = {}, {}  # model × dealer × month
+    ltdl, u_ltdl = {}, {}  # lead-type × dealer × month
     disp, u_disp = {}, {}   # enquired_model × purchased_model × month (retails only)
     cdm, csm, cdsm = {},{},{}
 
@@ -477,12 +481,16 @@ def build_payload(all_leads, retail_map):
         bump(cm,      f"{cti}|{li}",           is_ret, rtype)
         bump(csm,     f"{cti}|{si}|{li}",   is_ret, rtype)
         bump(stcm,    f"{sti}|{cti}|{li}",  is_ret, rtype)
+        bump(univ,    f"{mi}|{si}|{sti}|{tti}|{li}", is_ret, rtype)
 
         if dl_col:
             dl  = str(row.get(dl_col, '') or '').strip() or 'Unknown'
             dli = ix(dl_idx, dl_arr, dl)
             bump(cdm,  f"{cti}|{dli}|{li}",      is_ret, rtype)
             bump(cdsm, f"{cti}|{dli}|{si}|{li}", is_ret, rtype)
+            bump(stdm, f"{sti}|{dli}|{li}",       is_ret, rtype)
+            bump(mxdl, f"{mi}|{dli}|{li}",        is_ret, rtype)
+            bump(ltdl, f"{tti}|{dli}|{li}",       is_ret, rtype)
 
         rm  = retail_map[lid].get('rm', '') if is_ret else ''
         um  = rm if rm else lm
@@ -498,6 +506,12 @@ def build_payload(all_leads, retail_map):
         bump(u_zm,      f"{zi}|{uli}",            is_ret, rtype)
         bump(u_bdm,     f"{bd}|{si}|{uli}",    is_ret, rtype)
         bump(u_stcm,    f"{sti}|{cti}|{uli}",  is_ret, rtype)
+        bump(u_univ,    f"{mi}|{si}|{sti}|{tti}|{uli}", is_ret, rtype)
+
+        if dl_col:
+            bump(u_stdm, f"{sti}|{dli}|{uli}", is_ret, rtype)
+            bump(u_mxdl, f"{mi}|{dli}|{uli}",  is_ret, rtype)
+            bump(u_ltdl, f"{tti}|{dli}|{uli}", is_ret, rtype)
 
         if is_ret:
             pm  = retail_map[lid].get('pm', 'Unknown')
@@ -539,7 +553,13 @@ def build_payload(all_leads, retail_map):
         'cm':      to_rows(cm,  lambda k: list(map(int, k.split('|')))),
         'csm':     to_rows(csm, lambda k: list(map(int, k.split('|')))),
         **({"cdm":  to_rows(cdm,  lambda k: list(map(int, k.split('|')))),
-            "cdsm": to_rows(cdsm, lambda k: list(map(int, k.split('|'))))} if dl_col and dl_arr else {}),
+            "cdsm": to_rows(cdsm, lambda k: list(map(int, k.split('|')))),
+            "stdm": to_rows(stdm, lambda k: list(map(int, k.split('|')))),
+            "mxdl": to_rows(mxdl, lambda k: list(map(int, k.split('|')))),
+            "ltdl": to_rows(ltdl, lambda k: list(map(int, k.split('|')))),
+            "u_stdm": to_rows(u_stdm, lambda k: list(map(int, k.split('|')))),
+            "u_mxdl": to_rows(u_mxdl, lambda k: list(map(int, k.split('|')))),
+            "u_ltdl": to_rows(u_ltdl, lambda k: list(map(int, k.split('|'))))} if dl_col and dl_arr else {}),
         'u_monthly': to_rows(u_monthly, lambda k: [int(k)]),
         'u_sm':      to_rows(u_sm,  lambda k: list(map(int, k.split('|')))),
         'u_ltm':     to_rows(u_ltm, lambda k: list(map(int, k.split('|')))),
@@ -549,6 +569,8 @@ def build_payload(all_leads, retail_map):
         'u_mlt':     to_rows(u_mlt,   lambda k: list(map(int, k.split('|')))),
         'u_stlt':    to_rows(u_stlt,  lambda k: list(map(int, k.split('|')))),
         'u_stcm':    to_rows(u_stcm,  lambda k: list(map(int, k.split('|')))),
+        'univ':      to_rows(univ,    lambda k: list(map(int, k.split('|')))),
+        'u_univ':    to_rows(u_univ,  lambda k: list(map(int, k.split('|')))),
         'u_disp':  [[*map(int,k.split('|')), v] for k,v in u_disp.items()],
         'u_zm':      to_rows(u_zm,  lambda k: list(map(int, k.split('|')))),
         'u_bdm':     to_rows(u_bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),

@@ -1945,6 +1945,8 @@ function App() {
       monthly: data.u_monthly, sm: data.u_sm, ltm: data.u_ltm,
       mm: data.u_mm, stm: data.u_stm, zm: data.u_zm, bdm: data.u_bdm,
       mxst: data.u_mxst, mlt: data.u_mlt, stlt: data.u_stlt, disp: data.u_disp,
+      stcm: data.u_stcm, univ: data.u_univ,
+      stdm: data.u_stdm, mxdl: data.u_mxdl, ltdl: data.u_ltdl,
       maps: { ...data.maps, lm: data.maps.u_lm },
     };
   }, [data, leadsMode]);
@@ -2251,6 +2253,10 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
     { key:'cdm',  dims:['city','dl','lm']        },
     { key:'cdsm', dims:['city','dl','src','lm']  },
     { key:'stcm', dims:['st','city','lm']        },
+    { key:'univ', dims:['mdl','src','st','lt','lm'] },
+    { key:'stdm', dims:['st','dl','lm']          },
+    { key:'mxdl', dims:['mdl','dl','lm']         },
+    { key:'ltdl', dims:['lt','dl','lm']          },
   ];
 
   const matConfig = useMemo(() => {
