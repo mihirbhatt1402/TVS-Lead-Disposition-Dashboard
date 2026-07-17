@@ -2247,6 +2247,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
     { key:'csm',  dims:['city','src','lm']       },
     { key:'cdm',  dims:['city','dl','lm']        },
     { key:'cdsm', dims:['city','dl','src','lm']  },
+    { key:'stcm', dims:['st','city','lm']        },
   ];
 
   const matConfig = useMemo(() => {
