@@ -2778,19 +2778,22 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
           const showOuterRow = hasC2 || multiMetric;
           const showMidRow   = hasC2 && multiMetric;
           const numHdrRows   = (showOuterRow ? 1 : 0) + (showMidRow ? 1 : 0) + 1;
-          const topBg   = '#1a3a5c';
-          const midBg   = '#163258';
-          const botBg   = numHdrRows > 1 ? '#112844' : '#1a3a5c';
+          const topBg   = '#DBEAFE';
+          const topTxt  = '#1E3A8A';
+          const midBg   = '#BFDBFE';
+          const midTxt  = '#1E3A8A';
+          const botBg   = '#1a3a5c';
+          const botTxt  = '#fff';
 
           // Label cell helper for row-dim columns
-          const rowLabelTh = (dim, i, bg, small) =>
+          const rowLabelTh = (dim, i, bg, txt, small) =>
             ce('th', { key:`rl_${dim}`,
               style:{ padding: small?'6px 16px':'10px 16px', textAlign:'left', fontWeight:700,
-                      whiteSpace:'nowrap', color:'#fff',
+                      whiteSpace:'nowrap', color: txt,
                       position: i===0 ? 'sticky' : undefined, left: i===0 ? 0 : undefined,
-                      background: i===0 ? bg : undefined,
+                      background: bg,
                       minWidth: i===0 ? 140 : 110,
-                      borderRight: i===rowDims.length-1 ? '1px solid rgba(255,255,255,0.15)' : 'none',
+                      borderRight: i===rowDims.length-1 ? `1px solid ${txt==='#fff'?'rgba(255,255,255,0.15)':'rgba(0,0,0,0.1)'}` : 'none',
                       cursor: i===0 ? 'pointer' : 'default', userSelect:'none' },
               onClick: i===0 ? ()=>{ setSortBy('__label__'); setSortDir(d=>d==='asc'?'desc':'asc'); } : undefined
             }, (DIMS.find(d=>d.key===dim)?.label||dim) + (i===0&&sortBy==='__label__'?(sortDir==='asc'?' ↑':' ↓'):''));
@@ -2799,64 +2802,68 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
 
           // ── OUTER ROW ──────────────────────────────────────────────
           if (showOuterRow) {
-            rows.push(ce('tr', { key:'hdr0', style:{ background:topBg, color:'#fff' } },
+            rows.push(ce('tr', { key:'hdr0', style:{ background:topBg } },
               ce('th', { colSpan: rowDims.length,
-                style:{ padding:'7px 16px', textAlign:'left', fontWeight:700, color:'#fff',
+                style:{ padding:'7px 16px', textAlign:'left', fontWeight:700, color:topTxt,
                         position:'sticky', left:0, background:topBg,
-                        borderRight:'1px solid rgba(255,255,255,0.15)' }
+                        borderRight:'1px solid rgba(0,0,0,0.1)' }
               }, rowDims.map(k=>DIMS.find(d=>d.key===k)?.label||k).join(' → ')),
 
               ...(hasC2
                 // col1 group cells
                 ? colGroups.map(({c0, span}, gi) =>
                     ce('th', { key:`cg_${c0}`, colSpan: span * metrics.length,
-                      style:{ padding:'7px 12px', textAlign:'center', fontWeight:600, whiteSpace:'nowrap', color:'#fff',
-                              borderLeft: gi===0 ? 'none' : '1px solid rgba(255,255,255,0.15)' }
+                      style:{ padding:'7px 12px', textAlign:'center', fontWeight:700, whiteSpace:'nowrap',
+                              color:topTxt, background:topBg,
+                              borderLeft: gi===0 ? 'none' : '1px solid rgba(0,0,0,0.1)' }
                     }, c0)
                   )
                 // col values each spanning metrics (single col dim + multiMetric)
                 : orderedCols.map((col, ci) =>
                     ce('th', { key:`cv_${col}`, colSpan: metrics.length,
-                      style:{ padding:'7px 12px', textAlign:'center', fontWeight:600, whiteSpace:'nowrap', color:'#fff',
-                              borderLeft: ci===0 ? 'none' : '1px solid rgba(255,255,255,0.15)' }
+                      style:{ padding:'7px 12px', textAlign:'center', fontWeight:700, whiteSpace:'nowrap',
+                              color:topTxt, background:topBg,
+                              borderLeft: ci===0 ? 'none' : '1px solid rgba(0,0,0,0.1)' }
                     }, col)
                   )
               ),
 
               ce('th', { colSpan: metrics.length,
-                style:{ padding:'7px 12px', textAlign:'center', fontWeight:700, color:'#fff',
-                        borderLeft:'2px solid rgba(255,255,255,0.3)' }
+                style:{ padding:'7px 12px', textAlign:'center', fontWeight:700,
+                        color:topTxt, background:topBg,
+                        borderLeft:'2px solid rgba(0,0,0,0.15)' }
               }, 'TOTAL')
             ));
           }
 
           // ── MIDDLE ROW (hasC2 + multiMetric) ───────────────────────
           if (showMidRow) {
-            rows.push(ce('tr', { key:'hdr1', style:{ background:midBg, color:'#fff' } },
+            rows.push(ce('tr', { key:'hdr1', style:{ background:midBg } },
               ce('th', { colSpan: rowDims.length,
                 style:{ padding:'6px 16px', position:'sticky', left:0, background:midBg,
-                        borderRight:'1px solid rgba(255,255,255,0.15)' }
+                        borderRight:'1px solid rgba(0,0,0,0.1)' }
               }, ''),
               ...orderedCols.map((ck, ci) => {
                 const c1 = ck.slice(ck.indexOf(COL_SEP) + 1);
                 const prevC0 = ci > 0 ? orderedCols[ci-1].slice(0, orderedCols[ci-1].indexOf(COL_SEP)) : null;
                 const thisC0 = ck.slice(0, ck.indexOf(COL_SEP));
                 return ce('th', { key:`cm_${ck}`, colSpan: metrics.length,
-                  style:{ padding:'6px 10px', textAlign:'center', fontWeight:500, whiteSpace:'nowrap', color:'#fff', fontSize:12,
-                          borderLeft: (ci===0||thisC0!==prevC0) ? '1px solid rgba(255,255,255,0.15)' : 'none' }
+                  style:{ padding:'6px 10px', textAlign:'center', fontWeight:600, whiteSpace:'nowrap',
+                          color:midTxt, background:midBg, fontSize:12,
+                          borderLeft: (ci===0||thisC0!==prevC0) ? '1px solid rgba(0,0,0,0.1)' : 'none' }
                 }, c1);
               }),
               ce('th', { colSpan: metrics.length,
-                style:{ padding:'6px 10px', textAlign:'center', color:'rgba(255,255,255,0.5)',
-                        borderLeft:'2px solid rgba(255,255,255,0.3)', fontSize:11 }
+                style:{ padding:'6px 10px', textAlign:'center', color:midTxt, background:midBg,
+                        borderLeft:'2px solid rgba(0,0,0,0.15)', fontSize:11, fontWeight:600 }
               }, 'Total')
             ));
           }
 
           // ── BOTTOM ROW (always) ────────────────────────────────────
-          rows.push(ce('tr', { key:'hdrB', style:{ background:botBg, color:'#fff' } },
+          rows.push(ce('tr', { key:'hdrB', style:{ background:botBg, color:botTxt } },
             // Row dim label ths
-            rowDims.map((dim, i) => rowLabelTh(dim, i, botBg, numHdrRows > 1)),
+            rowDims.map((dim, i) => rowLabelTh(dim, i, botBg, botTxt, numHdrRows > 1)),
 
             // Data column cells
             ...orderedCols.flatMap((ck, ci) => {
@@ -2868,7 +2875,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
                 return metrics.map((m, mi) =>
                   ce('th', { key:`bot_${ck}_${m}`,
                     style:{ padding:'6px 10px', textAlign:'right', fontWeight:500, whiteSpace:'nowrap',
-                            fontSize:11, color:'rgba(255,255,255,0.85)',
+                            fontSize:11, color:botTxt, background:botBg,
                             borderLeft: mi===0&&groupBorder ? '1px solid rgba(255,255,255,0.15)'
                                        : mi===0&&ci>0&&!hasC2 ? '1px solid rgba(255,255,255,0.1)' : 'none' }
                   }, METRICS.find(x=>x.key===m)?.label||m)
@@ -2876,12 +2883,13 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               }
               // single metric
               const colLabel = hasC2
-                ? ck.slice(ck.indexOf(COL_SEP) + 1) // show c1 value
-                : ck;                                 // show col value + sort indicator
+                ? ck.slice(ck.indexOf(COL_SEP) + 1)
+                : ck;
               const sortable = !hasC2;
               return [ce('th', { key:`bot_${ck}`,
                 style:{ padding: numHdrRows>1?'6px 12px':'10px 12px', textAlign:'right',
                         fontWeight:600, whiteSpace:'nowrap', minWidth: multiMetric?68:80,
+                        color:botTxt, background:botBg,
                         borderLeft: groupBorder ? '1px solid rgba(255,255,255,0.15)'
                                    : ci>0&&!hasC2 ? '1px solid rgba(255,255,255,0.1)' : 'none',
                         cursor: sortable ? 'pointer' : 'default', userSelect:'none' },
@@ -2895,7 +2903,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               return ce('th', { key:`btot_${m}`,
                 style:{ padding: numHdrRows>1?'6px 10px':'10px 12px', textAlign:'right',
                         fontWeight:700, whiteSpace:'nowrap',
-                        fontSize: multiMetric?11:13,
+                        fontSize: multiMetric?11:13, color:botTxt, background:botBg,
                         borderLeft: mi===0 ? '2px solid rgba(255,255,255,0.3)' : 'none',
                         cursor: sortable ? 'pointer' : 'default', userSelect:'none' },
                 onClick: sortable ? ()=>{ setSortBy('__total__'); setSortDir(d=>d==='asc'?'desc':'asc'); } : undefined
