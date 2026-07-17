@@ -1814,7 +1814,7 @@ function App() {
   const [authChecking, setAuthChecking] = useState(!!auth); // verify cached session
 
   // ── Dashboard state ────────────────────────────────────────────────
-  const [adminView, setAdminView] = useState(true); // admin starts on admin panel
+  const [adminView, setAdminView] = useState(false);
   const [tab, setTab]             = useState(() => auth && auth.role === 'viewer' ? 'modelxsrc' : 'overview');
   const [data, setData]           = useState(null);
   const [loading, setLoading]     = useState(false);

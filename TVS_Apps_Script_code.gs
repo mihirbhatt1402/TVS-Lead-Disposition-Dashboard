@@ -101,6 +101,16 @@ function doGet(e) {
       return jsonOut({ pending: getPendingMap() });
     }
 
+    if (action === 'getUsers') {
+      const email = ((e.parameter.email) || '').toLowerCase().trim();
+      if (!isAdmin(email)) return jsonOut({ error: 'Unauthorized' });
+      const roles = getRoles();
+      const allUsers = {};
+      ADMIN_EMAILS.forEach(function(ae) { allUsers[ae] = { role: 'admin', name: '' }; });
+      Object.keys(roles).forEach(function(ue) { allUsers[ue] = { role: roles[ue], name: '' }; });
+      return jsonOut({ users: allUsers });
+    }
+
     // Data proxy endpoints (protected by PUSH_SECRET)
     const secret = e.parameter && e.parameter.secret;
 
@@ -194,6 +204,21 @@ function doPost(e) {
         roles[targetEmail] = role;
         saveRoles(roles);
       }
+      return jsonOut({ ok: true });
+    }
+
+    if (action === 'updateRole') {
+      const adminEmail  = (body.adminEmail  || '').toLowerCase().trim();
+      const targetEmail = (body.targetEmail || '').toLowerCase().trim();
+      const newRole     = body.role;
+      if (!isAdmin(adminEmail)) return jsonOut({ error: 'Unauthorized' });
+      const roles = getRoles();
+      if (newRole === 'remove') {
+        delete roles[targetEmail];
+      } else {
+        roles[targetEmail] = newRole;
+      }
+      saveRoles(roles);
       return jsonOut({ ok: true });
     }
 
