@@ -98,10 +98,13 @@ def proxy_get(action, extra_params=None, timeout=120):
 
 # ─── Sheet reader (paginated via Apps Script getSheetData) ────────────────────
 
+# Only these columns are needed from each lead sheet — reduces payload ~70%
+LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medium,Retail By,DMS_Retail_Month'
+
 def fetch_sheet_via_proxy(file_id, label, tab_name=None):
     """Read any Google Sheet via Apps Script proxy. Returns raw DataFrame."""
     page, all_rows, headers = 0, [], None
-    extra = {'fileId': file_id, 'pageSize': 25000}
+    extra = {'fileId': file_id, 'pageSize': 50000, 'cols': LEAD_COLS}
     if tab_name:
         extra['tabName'] = tab_name
     while True:

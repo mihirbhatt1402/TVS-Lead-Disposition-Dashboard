@@ -120,9 +120,10 @@ function doGet(e) {
       if (secret !== PUSH_SECRET) return jsonOut({ error: 'Unauthorized' });
       var fileId   = e.parameter.fileId;
       var page     = parseInt(e.parameter.page     || '0');
-      var pageSize = parseInt(e.parameter.pageSize || '25000');
+      var pageSize = parseInt(e.parameter.pageSize || '50000');
       var tabName  = e.parameter.tabName || '';
-      return handleGetSheetData(fileId, page, pageSize, tabName);
+      var cols     = e.parameter.cols    || '';
+      return handleGetSheetData(fileId, page, pageSize, tabName, cols);
     }
 
     if (action === 'getCurrentLeads') {
@@ -369,7 +370,7 @@ function handleGetLeadFileList() {
 }
 
 /* ─── Generic sheet reader via proxy (paginated) — used for all monthly lead sheets ─── */
-function handleGetSheetData(fileId, page, pageSize, tabName) {
+function handleGetSheetData(fileId, page, pageSize, tabName, cols) {
   if (!fileId) return jsonOut({ error: 'fileId required' });
   try {
     var ss      = SpreadsheetApp.openById(fileId);
@@ -381,25 +382,34 @@ function handleGetSheetData(fileId, page, pageSize, tabName) {
       return jsonOut({ headers: [], rows: [], done: true, total: 0 });
     }
 
-    var headers  = sh.getRange(1, 1, 1, numCols).getValues()[0].map(String);
-    var startRow = 2 + page * pageSize;
+    var allHeaders = sh.getRange(1, 1, 1, numCols).getValues()[0].map(String);
+    var startRow   = 2 + page * pageSize;
 
     if (startRow > lastRow) {
-      return jsonOut({ headers: headers, rows: [], done: true, total: lastRow - 1 });
+      return jsonOut({ headers: allHeaders, rows: [], done: true, total: lastRow - 1 });
     }
+
+    // Only return requested columns (cols = comma-separated names); empty = all columns
+    var wantedNames = cols ? cols.split(',').map(function(c) { return c.trim(); }) : null;
+    var colIndices  = wantedNames
+      ? wantedNames.map(function(n) { return allHeaders.indexOf(n); })
+      : allHeaders.map(function(_, i) { return i; });
+    var outHeaders  = wantedNames || allHeaders;
 
     var count = Math.min(pageSize, lastRow - startRow + 1);
     var data  = sh.getRange(startRow, 1, count, numCols).getValues();
 
     var rows = data.map(function(row) {
-      return row.map(function(v) {
+      return colIndices.map(function(i) {
+        if (i < 0) return '';
+        var v = row[i];
         if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Kolkata', 'yyyy-MM-dd');
         return String(v == null ? '' : v);
       });
     });
 
     return jsonOut({
-      headers: headers,
+      headers: outHeaders,
       rows:    rows,
       done:    (startRow + count - 1) >= lastRow,
       total:   lastRow - 1,
