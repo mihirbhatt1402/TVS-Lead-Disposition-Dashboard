@@ -1802,7 +1802,6 @@ const TABS = [
   { id:'ltxsrc',   label:'LT × Source' },
   { id:'modelxsrc',label:'Model × Source' },
   { id:'statexsrc',label:'State × Source' },
-  { id:'buying',   label:'Buying Intent' },
 ];
 
 function App() {
@@ -1904,7 +1903,6 @@ function App() {
       case 'ltxsrc':   return ce(LTSourceTab,      props);
       case 'modelxsrc':return ce(ModelSourceTab,   props);
       case 'statexsrc':return ce(StateSourceTab,   props);
-      case 'buying':   return ce(BuyingIntentTab,  props);
       default: return null;
     }
   }, [effectiveData, tab, filters, months, RT, viewerMode]);
