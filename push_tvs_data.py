@@ -407,7 +407,6 @@ def build_payload(all_leads, retail_map):
 
     lm_idx,  src_idx, lt_idx, mdl_idx, st_idx, zone_idx, city_idx = {},{},{},{},{},{},{}
     lm_arr,  src_arr, lt_arr, mdl_arr, st_arr, zone_arr, city_arr  = [],[],[],[],[],[],[]
-    u_lm_idx, u_lm_arr = {}, []
     dl_idx,  dl_arr  = {}, []
     city_to_state = {}
 
@@ -437,6 +436,17 @@ def build_payload(all_leads, retail_map):
             rt_u = rtype.upper()
             if 'DMS' in rt_u:   d[k][2] += 1
             elif 'CALL' in rt_u: d[k][3] += 1
+
+    def ubump(d, key_lead, key_ret, is_ret, rtype=''):
+        # Lead always counted in create-month row; retail in retail-month row.
+        if key_lead not in d: d[key_lead] = [0,0,0,0]
+        d[key_lead][0] += 1
+        if is_ret:
+            if key_ret not in d: d[key_ret] = [0,0,0,0]
+            d[key_ret][1] += 1
+            rt_u = rtype.upper()
+            if 'DMS' in rt_u:   d[key_ret][2] += 1
+            elif 'CALL' in rt_u: d[key_ret][3] += 1
 
     total = len(all_leads)
     print(f"Aggregating {total:,} leads…", flush=True)
@@ -494,24 +504,25 @@ def build_payload(all_leads, retail_map):
 
         rm  = retail_map[lid].get('rm', '') if is_ret else ''
         um  = rm if rm else lm
-        uli = ix(u_lm_idx, u_lm_arr, um)
-        bump(u_monthly, uli,                   is_ret, rtype)
-        bump(u_sm,      f"{si}|{uli}",         is_ret, rtype)
-        bump(u_ltm,     f"{tti}|{si}|{uli}",  is_ret, rtype)
-        bump(u_mm,      f"{mi}|{si}|{uli}",   is_ret, rtype)
-        bump(u_stm,     f"{sti}|{si}|{uli}",  is_ret, rtype)
-        bump(u_mxst,    f"{mi}|{sti}|{uli}",  is_ret, rtype)
-        bump(u_mlt,     f"{mi}|{tti}|{uli}", is_ret, rtype)
-        bump(u_stlt,    f"{sti}|{tti}|{uli}",is_ret, rtype)
-        bump(u_zm,      f"{zi}|{uli}",            is_ret, rtype)
-        bump(u_bdm,     f"{bd}|{si}|{uli}",    is_ret, rtype)
-        bump(u_stcm,    f"{sti}|{cti}|{uli}",  is_ret, rtype)
-        bump(u_univ,    f"{mi}|{si}|{sti}|{tti}|{uli}", is_ret, rtype)
+        # u_ matrices share the same lm_arr so lead counts stay fixed by create month.
+        uli = ix(lm_idx, lm_arr, um)
+        ubump(u_monthly, li,                          uli,                          is_ret, rtype)
+        ubump(u_sm,      f"{si}|{li}",               f"{si}|{uli}",               is_ret, rtype)
+        ubump(u_ltm,     f"{tti}|{si}|{li}",        f"{tti}|{si}|{uli}",        is_ret, rtype)
+        ubump(u_mm,      f"{mi}|{si}|{li}",         f"{mi}|{si}|{uli}",         is_ret, rtype)
+        ubump(u_stm,     f"{sti}|{si}|{li}",        f"{sti}|{si}|{uli}",        is_ret, rtype)
+        ubump(u_mxst,    f"{mi}|{sti}|{li}",        f"{mi}|{sti}|{uli}",        is_ret, rtype)
+        ubump(u_mlt,     f"{mi}|{tti}|{li}",        f"{mi}|{tti}|{uli}",        is_ret, rtype)
+        ubump(u_stlt,    f"{sti}|{tti}|{li}",       f"{sti}|{tti}|{uli}",       is_ret, rtype)
+        ubump(u_zm,      f"{zi}|{li}",               f"{zi}|{uli}",               is_ret, rtype)
+        ubump(u_bdm,     f"{bd}|{si}|{li}",         f"{bd}|{si}|{uli}",         is_ret, rtype)
+        ubump(u_stcm,    f"{sti}|{cti}|{li}",       f"{sti}|{cti}|{uli}",       is_ret, rtype)
+        ubump(u_univ,    f"{mi}|{si}|{sti}|{tti}|{li}", f"{mi}|{si}|{sti}|{tti}|{uli}", is_ret, rtype)
 
         if dl_col:
-            bump(u_stdm, f"{sti}|{dli}|{uli}", is_ret, rtype)
-            bump(u_mxdl, f"{mi}|{dli}|{uli}",  is_ret, rtype)
-            bump(u_ltdl, f"{tti}|{dli}|{uli}", is_ret, rtype)
+            ubump(u_stdm, f"{sti}|{dli}|{li}", f"{sti}|{dli}|{uli}", is_ret, rtype)
+            ubump(u_mxdl, f"{mi}|{dli}|{li}",  f"{mi}|{dli}|{uli}",  is_ret, rtype)
+            ubump(u_ltdl, f"{tti}|{dli}|{li}", f"{tti}|{dli}|{uli}", is_ret, rtype)
 
         if is_ret:
             pm  = retail_map[lid].get('pm', 'Unknown')
@@ -528,7 +539,6 @@ def build_payload(all_leads, retail_map):
         'lm': lm_arr, 'src': src_arr, 'lt': lt_arr, 'mdl': mdl_arr,
         'st': st_arr, 'zone': zone_arr, 'city': city_arr,
         'city_state': city_state_arr,
-        'u_lm': u_lm_arr,
     }
     if dl_col and dl_arr:
         maps_payload['dl'] = dl_arr
@@ -575,7 +585,7 @@ def build_payload(all_leads, retail_map):
         'u_zm':      to_rows(u_zm,  lambda k: list(map(int, k.split('|')))),
         'u_bdm':     to_rows(u_bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),
     }
-    print(f"Done — {total:,} leads  {len(retail_map):,} retails  {len(u_lm_arr)} update-months", flush=True)
+    print(f"Done — {total:,} leads  {len(retail_map):,} retails", flush=True)
     return payload
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
