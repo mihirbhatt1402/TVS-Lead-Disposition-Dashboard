@@ -775,7 +775,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
       modelTot.set(mdl, (modelTot.get(mdl) || 0) + v);
       stateTot.set(st,  (stateTot.get(st)  || 0) + v);
     }
-    const top10 = [...modelTot.entries()].sort((a,b) => b[1]-a[1]).slice(0,10).map(e=>e[0]);
+    const top10 = [...modelTot.entries()].sort((a,b) => b[1]-a[1]).map(e=>e[0]);
     const top15 = [...stateTot.entries()].sort((a,b) => b[1]-a[1]).slice(0,15).map(e=>e[0]);
     const maxV  = Math.max(1, ...[...cell.values()]);
     return { cell, top10, top15, maxV };
@@ -874,7 +874,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
     ),
     heatData.top10.length > 0 && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14} },
       ce('div', { style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4} },
-        ce('div', { className:'section-title', style:{marginBottom:0} }, '🔥 Model × State — Lead Volume (Top 10 Models × Top 15 States)'),
+        ce('div', { className:'section-title', style:{marginBottom:0} }, '🔥 Model × State — Lead Volume (All Models × Top 15 States)'),
         ce(ExportBtn, { onClick:() => {
           const aoa = [['Model', ...heatData.top15]];
           for (const mdl of heatData.top10) {
