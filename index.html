@@ -1488,10 +1488,15 @@ const DimSourceTab=React.memo(function DimSourceTab({rows,mf,rowKey,dimLabel,xTa
       }})
     ),
     activeMonths.map(M=>ce(CompactMonthGrid,{key:M,M,rows,rowKey,dimLabel,viewerMode,bm})),
-    ce('div',{style:{margin:'24px 0 16px',borderTop:'2px solid #D1D5DB'}}),
-    ce('div',{style:{fontSize:11,fontWeight:700,color:'#6b7280',textTransform:'uppercase',
-      letterSpacing:'.08em',marginBottom:12}},xTabLabel+' — All Months Summary'),
-    ce(CompactMonthGrid,{M:mf,rows,rowKey,dimLabel,viewerMode,bm})
+    /* Only show the All Months Summary when no month is filtered — when a single month is
+       selected the per-month grid above already shows the same data, so the summary is a
+       duplicate and its label is misleading. */
+    (!mf||mf==='All')&&ce(React.Fragment,null,
+      ce('div',{style:{margin:'24px 0 16px',borderTop:'2px solid #D1D5DB'}}),
+      ce('div',{style:{fontSize:11,fontWeight:700,color:'#6b7280',textTransform:'uppercase',
+        letterSpacing:'.08em',marginBottom:12}},xTabLabel+' — All Months Summary'),
+      ce(CompactMonthGrid,{M:'All',rows,rowKey,dimLabel,viewerMode,bm})
+    )
   );
 });
 
@@ -1554,17 +1559,16 @@ const GeoModelTab=React.memo(function GeoModelTab({rows,mf,viewerMode,bm='update
 
   const resolvedMonths=(!mf||mf==='All')?allMonths:[mf];
 
-  const filteredRows=useMemo(()=>
-    (!mf||mf==='All')?rows:rows.filter(r=>r.lead_month===mf)
-  ,[rows,mf]);
-
+  /* Do NOT pre-filter by lead_month here — aggGrouped inside CompactMonthGrid must see
+     rows from M-2 to M so backward booking attribution works correctly in On Update mode.
+     Group by model from the full row set; month scoping is handled by passing M:mf. */
   const modelGroups=useMemo(()=>{
     const m={};
-    for(const r of filteredRows){ const v=r.model||'Unknown'; if(!m[v]) m[v]=[]; m[v].push(r); }
+    for(const r of rows){ const v=r.model||'Unknown'; if(!m[v]) m[v]=[]; m[v].push(r); }
     return Object.keys(m)
       .sort((a,b)=>m[b].length-m[a].length)
       .map(model=>({model,rows:m[model]}));
-  },[filteredRows]);
+  },[rows]);
 
   return ce('div',{className:'fade-up'},
     ce('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,marginTop:8}},
@@ -1572,23 +1576,23 @@ const GeoModelTab=React.memo(function GeoModelTab({rows,mf,viewerMode,bm='update
       ce(ExportBtn,{onClick:()=>{
         const sheets={};
         for(const{model,rows:mr} of modelGroups){
-          const g=aggGrouped(mr,'All',r=>r.state||'Unknown',bm);
+          const g=aggGrouped(mr,mf,r=>r.state||'Unknown',bm);
           sheets[model.slice(0,31)]=aggToAoa(g,'State');
         }
-        const gAll=aggGrouped(filteredRows,'All',r=>r.state||'Unknown',bm);
+        const gAll=aggGrouped(rows,mf,r=>r.state||'Unknown',bm);
         sheets['All Models']=aggToAoa(gAll,'State');
         exportXlsx(sheets,'RE_LDR_Model_State_x_Source');
       }})
     ),
     modelGroups.map(({model,rows:mr})=>ce(CompactMonthGrid,{
-      key:model,M:'All',rows:mr,rowKey:'state',dimLabel:'State',
+      key:model,M:mf,rows:mr,rowKey:'state',dimLabel:'State',
       badgeLabel:model,vahanMonths:resolvedMonths,viewerMode,bm
     })),
     ce('div',{style:{margin:'24px 0 16px',borderTop:'2px solid #D1D5DB'}}),
     ce('div',{style:{fontSize:11,fontWeight:700,color:'#6b7280',textTransform:'uppercase',
       letterSpacing:'.08em',marginBottom:12}},'Model wise State × Source — All Models Summary'),
     ce(CompactMonthGrid,{
-      M:'All',rows:filteredRows,rowKey:'state',dimLabel:'State',
+      M:mf,rows,rowKey:'state',dimLabel:'State',
       badgeLabel:'All Models',vahanMonths:resolvedMonths,viewerMode,bm
     })
   );
