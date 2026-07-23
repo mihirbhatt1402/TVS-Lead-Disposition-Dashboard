@@ -564,13 +564,14 @@ function aggGroupedByMonth(rows,dimKey,bm='update'){
 }
 
 /* ── Flexible pivot aggregation ─────────────────────────────────── */
-function aggPivot(rows,rowField,colFields,mf,bm){
+function aggPivot(rows,rowFields,colFields,mf,bm){
   const isAll=mf==='All';
   const mfOrder=isAll?0:monthOrder(mf);
   const SEP='\x00';
+  const isNested=rowFields.length>=2;
   function mk(){return{tl:0,us:new Set(),bc:0};}
   function acc(map,key){let a=map.get(key);if(!a){a=mk();map.set(key,a);}return a;}
-  const byRow=new Map(),rowTotals=new Map(),colTotals=new Map(),grand=mk();
+  const byRow=new Map(),colTotals=new Map(),grand=mk();
   for(const r of rows){
     let countsLead,countsBooking;
     if(isAll){
@@ -591,14 +592,23 @@ function aggPivot(rows,rowField,colFields,mf,bm){
     }
     if(!countsLead&&!countsBooking) continue;
     const countsUnique=countsLead&&r.isUnique;
-    const rv=r[rowField]||'Unknown';
     const getF=f=>f==='lead_month'?(r.lead_month||'–'):(r[f]||'Unknown');
+    const outerRv=getF(rowFields[0]);
+    const innerRv=isNested?getF(rowFields[1]):null;
     const colKey=colFields.length?colFields.map(getF).join(SEP):'';
     const bump=a=>{if(countsLead){a.tl++;if(countsUnique)a.us.add(r.lead_number);}if(countsBooking)a.bc++;};
-    bump(grand); bump(acc(rowTotals,rv));
+    bump(grand);
     if(colKey) bump(acc(colTotals,colKey));
-    let rm=byRow.get(rv);if(!rm){rm=new Map();byRow.set(rv,rm);}
-    if(colKey) bump(acc(rm,colKey));
+    if(!byRow.has(outerRv))byRow.set(outerRv,{total:mk(),cells:new Map(),subRows:new Map()});
+    const oe=byRow.get(outerRv);
+    bump(oe.total);
+    if(colKey) bump(acc(oe.cells,colKey));
+    if(isNested){
+      if(!oe.subRows.has(innerRv))oe.subRows.set(innerRv,{total:mk(),cells:new Map()});
+      const ie=oe.subRows.get(innerRv);
+      bump(ie.total);
+      if(colKey) bump(acc(ie.cells,colKey));
+    }
   }
   function fin(a){const ul=a.us.size,tl=a.tl,bc=a.bc;return{tl,ul,bc,e2b:ul>0?bc/ul*100:0};}
   const allColKeys=[...colTotals.keys()];
@@ -617,9 +627,17 @@ function aggPivot(rows,rowField,colFields,mf,bm){
     colStructure=allColKeys.sort(srt).map(ck=>({label:ck,items:[{label:ck,key:ck}]}));
   }
   const rowsOut=[];
-  for(const[rv,rm]of byRow){const cells={};for(const[ck,a]of rm)cells[ck]=fin(a);rowsOut.push({rv,total:fin(rowTotals.get(rv)||mk()),cells});}
+  for(const[outerRv,oe]of byRow){
+    const cells={};for(const[ck,a]of oe.cells)cells[ck]=fin(a);
+    const subRowsOut=[];
+    for(const[innerRv,ie]of oe.subRows){
+      const sc={};for(const[ck,a]of ie.cells)sc[ck]=fin(a);
+      subRowsOut.push({rv:innerRv,total:fin(ie.total),cells:sc});
+    }
+    rowsOut.push({rv:outerRv,total:fin(oe.total),cells,subRows:subRowsOut});
+  }
   const ctf={};for(const[ck,a]of colTotals)ctf[ck]=fin(a);
-  return{rows:rowsOut,colStructure,colTotals:ctf,grand:fin(grand),isTwoLevel:colFields.length===2};
+  return{rows:rowsOut,colStructure,colTotals:ctf,grand:fin(grand),isTwoLevel:colFields.length===2,isNested};
 }
 
 /* ── Vahan state-wise industry retails (source: RE Vahan retails.xlsx) ──── */
@@ -1702,27 +1720,24 @@ const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
   const VAL_DEFS=[
     {k:'tl',l:'Total Leads'},{k:'ul',l:'Unique Leads'},{k:'bc',l:'Bookings'},{k:'e2b',l:'E2B%'},
   ];
-  const [rowDim,setRowDim]=useState('model');
+  const [rowDims,setRowDims]=useState(['model']);
   const [colDims,setColDims]=useState(['lead_month','source']);
   const [showVals,setShowVals]=useState({tl:false,ul:true,bc:true,e2b:true});
   const [sortBy,setSortBy]=useState('ul');
   const [sortDir,setSortDir]=useState('desc');
   const [showN,setShowN]=useState('all');
 
-  function toggleCol(v){
-    setColDims(prev=>prev.includes(v)?prev.filter(d=>d!==v):prev.length>=2?[...prev.slice(1),v]:[...prev,v]);
-  }
   const activeVals=VAL_DEFS.filter(v=>showVals[v.k]);
   const nv=Math.max(activeVals.length,1);
 
-  const pivotData=useMemo(()=>aggPivot(rows,rowDim,colDims,mf,bm),[rows,rowDim,colDims,mf,bm]);
+  const pivotData=useMemo(()=>aggPivot(rows,rowDims,colDims,mf,bm),[rows,rowDims,colDims,mf,bm]);
 
   const sortedRows=useMemo(()=>{
     const s=[...pivotData.rows].sort((a,b)=>{const av=a.total[sortBy]??0,bv=b.total[sortBy]??0;return sortDir==='desc'?bv-av:av-bv;});
     return showN==='all'?s:s.slice(0,parseInt(showN));
   },[pivotData.rows,sortBy,sortDir,showN]);
 
-  const {colStructure,colTotals,grand,isTwoLevel}=pivotData;
+  const {colStructure,colTotals,grand,isTwoLevel,isNested}=pivotData;
   const orderedKeys=colStructure.flatMap(g=>g.items.map(i=>i.key));
 
   const fmt=(val,k)=>{
@@ -1740,20 +1755,25 @@ const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
   const TH3TOT={...TH3,background:'#0f2418'};
   const TD={padding:'4px 8px',fontSize:11,border:'1px solid #e5e7eb',textAlign:'right',whiteSpace:'nowrap'};
 
-  const rowLabel=ROW_DIMS.find(d=>d.v===rowDim)?.l||rowDim;
+  const rowHeaderLabel=rowDims.map(v=>ROW_DIMS.find(d=>d.v===v)?.l||v).join(' › ');
   const hRows=isTwoLevel?3:colDims.length?2:1;
 
-  const Tog=({label,active,onClick})=>ce('button',{onClick,style:{
-    padding:'3px 10px',fontSize:11,fontWeight:700,borderRadius:12,cursor:'pointer',fontFamily:'inherit',
-    background:active?'#1B4332':'transparent',color:active?'#fff':'#374151',
-    border:'1px solid '+(active?'#1B4332':'#d1d5db'),
-  }},label);
+  const Chip=({label,onRemove,canRemove=true})=>ce('span',{style:{
+    display:'inline-flex',alignItems:'center',gap:4,padding:'2px 6px 2px 10px',
+    background:'#1B4332',color:'#fff',borderRadius:12,fontSize:11,fontWeight:700,
+  }},label,canRemove&&ce('button',{onClick:onRemove,style:{
+    background:'none',border:'none',color:'rgba(255,255,255,.8)',cursor:'pointer',padding:'0 2px',fontSize:14,lineHeight:1
+  }},'×'));
+
+  const AddPill=({label,onClick})=>ce('button',{onClick,style:{
+    padding:'2px 10px',fontSize:11,fontWeight:600,borderRadius:12,cursor:'pointer',fontFamily:'inherit',
+    background:'transparent',color:'#374151',border:'1px solid #d1d5db',
+  }},'+ '+label);
 
   function exportPivot(){
     if(!window.XLSX){alert('XLSX not loaded');return;}
     const aoa=[];
-    // header
-    const h1=[rowLabel],h2=[''],h3=[''];
+    const h1=[rowHeaderLabel],h2=[''],h3=[''];
     for(const g of colStructure){
       if(isTwoLevel){h1.push(g.label,...Array((g.items.length*activeVals.length)-1).fill(''));}
       else{h1.push(g.label,...Array(activeVals.length-1).fill(''));}
@@ -1769,6 +1789,14 @@ const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
       for(const ck of orderedKeys) for(const v of activeVals) r.push((row.cells[ck]||{})[v.k]??'');
       for(const v of activeVals) r.push(row.total[v.k]??'');
       aoa.push(r);
+      if(isNested){
+        for(const sub of row.subRows){
+          const sr=['↳ '+sub.rv];
+          for(const ck of orderedKeys) for(const v of activeVals) sr.push((sub.cells[ck]||{})[v.k]??'');
+          for(const v of activeVals) sr.push(sub.total[v.k]??'');
+          aoa.push(sr);
+        }
+      }
     }
     const gr=['Σ Grand Total'];
     for(const ck of orderedKeys) for(const v of activeVals) gr.push((colTotals[ck]||{})[v.k]??'');
@@ -1777,76 +1805,100 @@ const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
     exportXlsx({'Pivot':aoa},'RE_Pivot');
   }
 
+  const colUnselected=COL_OPTIONS.filter(d=>!colDims.includes(d.v));
+  const rowUnselected=ROW_DIMS.filter(d=>!rowDims.includes(d.v));
+
   return ce('div',{className:'fade-up'},
-    // ── Config bar
-    ce('div',{style:{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'10px 14px',marginBottom:16,display:'flex',flexWrap:'wrap',gap:10,alignItems:'center'}},
-      ...[
-        ['ROWS', ce('select',{value:rowDim,onChange:e=>setRowDim(e.target.value),style:{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #d1d5db',fontFamily:'inherit',fontWeight:600}},
-          ROW_DIMS.map(d=>ce('option',{key:d.v,value:d.v},d.l)))],
-        null,
-        ['COLUMNS',...COL_OPTIONS.map(d=>ce(Tog,{key:d.v,label:d.l,active:colDims.includes(d.v),onClick:()=>toggleCol(d.v)}))],
-        null,
-        ['VALUES',...VAL_DEFS.map(v=>ce(Tog,{key:v.k,label:v.l,active:showVals[v.k],onClick:()=>setShowVals(p=>({...p,[v.k]:!p[v.k]}))}))],
-        null,
-        ['SORT BY',
-          ce('select',{value:sortBy,onChange:e=>setSortBy(e.target.value),style:{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #d1d5db',fontFamily:'inherit'}},
-            VAL_DEFS.map(v=>ce('option',{key:v.k,value:v.k},v.l))),
-          ce('select',{value:sortDir,onChange:e=>setSortDir(e.target.value),style:{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #d1d5db',fontFamily:'inherit'}},
-            ce('option',{value:'desc'},'↓ High → Low'),ce('option',{value:'asc'},'↑ Low → High'))],
-        null,
-        ['SHOW',ce('select',{value:showN,onChange:e=>setShowN(e.target.value),style:{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #d1d5db',fontFamily:'inherit'}},
-          ce('option',{value:'all'},'All rows'),ce('option',{value:'5'},'Top 5'),ce('option',{value:'10'},'Top 10'),ce('option',{value:'20'},'Top 20'))],
-      ].flatMap((item,i)=>item===null
-        ?[ce('div',{key:'sep'+i,style:{width:1,background:'#d1d5db',alignSelf:'stretch'}})]
-        :[ce('div',{key:i,style:{display:'flex',alignItems:'center',gap:6}},
-            ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:48}},item[0]),
-            ...item.slice(1))])
-      ,
+    ce('div',{style:{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'10px 14px',marginBottom:16,display:'flex',flexWrap:'wrap',gap:10,alignItems:'flex-start'}},
+      ce('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
+        ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:48}},'ROWS'),
+        rowDims.map(v=>ce(Chip,{key:v,label:ROW_DIMS.find(d=>d.v===v)?.l||v,canRemove:rowDims.length>1,onRemove:()=>setRowDims(prev=>prev.filter(d=>d!==v))})),
+        rowDims.length<2&&rowUnselected.map(d=>ce(AddPill,{key:d.v,label:d.l,onClick:()=>setRowDims(prev=>[...prev,d.v])}))
+      ),
+      ce('div',{style:{width:1,background:'#d1d5db',alignSelf:'stretch'}}),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
+        ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:52}},'COLUMNS'),
+        colDims.map(v=>ce(Chip,{key:v,label:COL_OPTIONS.find(d=>d.v===v)?.l||v,onRemove:()=>setColDims(prev=>prev.filter(d=>d!==v))})),
+        colDims.length<2&&colUnselected.map(d=>ce(AddPill,{key:d.v,label:d.l,onClick:()=>setColDims(prev=>[...prev,d.v])}))
+      ),
+      ce('div',{style:{width:1,background:'#d1d5db',alignSelf:'stretch'}}),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
+        ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:48}},'VALUES'),
+        VAL_DEFS.map(v=>ce('button',{key:v.k,onClick:()=>setShowVals(p=>({...p,[v.k]:!p[v.k]})),style:{
+          padding:'3px 10px',fontSize:11,fontWeight:700,borderRadius:12,cursor:'pointer',fontFamily:'inherit',
+          background:showVals[v.k]?'#1B4332':'transparent',color:showVals[v.k]?'#fff':'#374151',
+          border:'1px solid '+(showVals[v.k]?'#1B4332':'#d1d5db'),
+        }},v.l))
+      ),
+      ce('div',{style:{width:1,background:'#d1d5db',alignSelf:'stretch'}}),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
+        ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:48}},'SORT BY'),
+        ce('select',{value:sortBy,onChange:e=>setSortBy(e.target.value),style:{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #d1d5db',fontFamily:'inherit'}},
+          VAL_DEFS.map(v=>ce('option',{key:v.k,value:v.k},v.l))),
+        ce('select',{value:sortDir,onChange:e=>setSortDir(e.target.value),style:{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #d1d5db',fontFamily:'inherit'}},
+          ce('option',{value:'desc'},'↓ High → Low'),ce('option',{value:'asc'},'↑ Low → High'))
+      ),
+      ce('div',{style:{width:1,background:'#d1d5db',alignSelf:'stretch'}}),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:6}},
+        ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:48}},'SHOW'),
+        ce('select',{value:showN,onChange:e=>setShowN(e.target.value),style:{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #d1d5db',fontFamily:'inherit'}},
+          ce('option',{value:'all'},'All rows'),ce('option',{value:'5'},'Top 5'),ce('option',{value:'10'},'Top 10'),ce('option',{value:'20'},'Top 20'))
+      ),
       ce('div',{style:{marginLeft:'auto'}},ce(ExportBtn,{onClick:exportPivot}))
     ),
-
-    // ── Table
     ce('div',{style:{overflowX:'auto',borderRadius:8,border:'1px solid #e2e8f0',boxShadow:'0 1px 3px rgba(0,0,0,.06)'}},
       ce('table',{style:{borderCollapse:'collapse',fontSize:11,minWidth:'100%'}},
         ce('thead',null,
-          // Row 1
           ce('tr',null,
-            ce('th',{rowSpan:hRows,style:{...TH,textAlign:'left',minWidth:140,position:'sticky',left:0,zIndex:3}},rowLabel),
+            ce('th',{rowSpan:hRows,style:{...TH,textAlign:'left',minWidth:140,position:'sticky',left:0,zIndex:3}},rowHeaderLabel),
             colDims.length===0?null:
             isTwoLevel
               ?colStructure.map(g=>ce('th',{key:g.label,colSpan:g.items.length*nv,style:TH},g.label))
               :colStructure.map(g=>ce('th',{key:g.label,colSpan:nv,style:TH},g.label)),
             ce('th',{colSpan:nv,rowSpan:isTwoLevel?2:1,style:THTOT},'TOTAL')
           ),
-          // Row 2 (inner labels or value labels)
           colDims.length>0&&ce('tr',null,
             isTwoLevel
               ?colStructure.flatMap(g=>g.items.map(item=>ce('th',{key:item.key,colSpan:nv,style:TH2},item.label)))
               :colStructure.flatMap(g=>activeVals.map((v,vi)=>ce('th',{key:g.label+vi,style:TH2},v.l))),
             !isTwoLevel&&activeVals.map((v,vi)=>ce('th',{key:'tv'+vi,style:TH2TOT},v.l))
           ),
-          // Row 3 (value labels for 2-dim)
           isTwoLevel&&ce('tr',null,
-            colStructure.flatMap(g=>g.items.flatMap((item,ii)=>activeVals.map((v,vi)=>ce('th',{key:item.key+vi,style:TH3},v.l)))),
+            colStructure.flatMap(g=>g.items.flatMap((item)=>activeVals.map((v,vi)=>ce('th',{key:item.key+vi,style:TH3},v.l)))),
             activeVals.map((v,vi)=>ce('th',{key:'tv3'+vi,style:TH3TOT},v.l))
           )
         ),
         ce('tbody',null,
-          sortedRows.map((row,ri)=>
-            ce('tr',{key:row.rv,style:{background:ri%2?'#f9fafb':'#fff'}},
-              ce('td',{style:{...TD,textAlign:'left',fontWeight:600,position:'sticky',left:0,zIndex:1,background:ri%2?'#f9fafb':'#fff',borderRight:'2px solid #d1d5db'}},row.rv),
+          sortedRows.flatMap((row,ri)=>[
+            ce('tr',{key:row.rv,style:{background:isNested?'#f0fdf4':ri%2?'#f9fafb':'#fff'}},
+              ce('td',{style:{...TD,textAlign:'left',fontWeight:isNested?800:600,position:'sticky',left:0,zIndex:1,background:isNested?'#f0fdf4':ri%2?'#f9fafb':'#fff',borderRight:'2px solid #d1d5db'}},row.rv),
               orderedKeys.flatMap(ck=>
                 activeVals.map((v,vi)=>{
                   const val=(row.cells[ck]||{})[v.k];
-                  return ce('td',{key:ck+vi,style:{...TD,background:v.k==='e2b'?e2bBg(val):'transparent'}},fmt(val,v.k));
+                  return ce('td',{key:ck+vi,style:{...TD,background:v.k==='e2b'?e2bBg(val):'transparent',fontWeight:isNested?700:400}},fmt(val,v.k));
                 })
               ),
               activeVals.map((v,vi)=>{
                 const val=row.total[v.k];
                 return ce('td',{key:'t'+vi,style:{...TD,fontWeight:700,background:v.k==='e2b'?e2bBg(val):'#f0fdf4'}},fmt(val,v.k));
               })
-            )
-          ),
+            ),
+            ...(isNested?row.subRows.map((sub,si)=>
+              ce('tr',{key:row.rv+'_'+sub.rv,style:{background:si%2?'#f9fafb':'#fff'}},
+                ce('td',{style:{...TD,textAlign:'left',fontWeight:500,paddingLeft:24,position:'sticky',left:0,zIndex:1,background:si%2?'#f9fafb':'#fff',borderRight:'2px solid #d1d5db',color:'#374151'}},'↳ '+sub.rv),
+                orderedKeys.flatMap(ck=>
+                  activeVals.map((v,vi)=>{
+                    const val=(sub.cells[ck]||{})[v.k];
+                    return ce('td',{key:ck+vi,style:{...TD,background:v.k==='e2b'?e2bBg(val):'transparent'}},fmt(val,v.k));
+                  })
+                ),
+                activeVals.map((v,vi)=>{
+                  const val=sub.total[v.k];
+                  return ce('td',{key:'t'+vi,style:{...TD,fontWeight:600,background:v.k==='e2b'?e2bBg(val):'#f9fafb'}},fmt(val,v.k));
+                })
+              )
+            ):[])
+          ]),
           ce('tr',{style:{background:'#dcfce7'}},
             ce('td',{style:{...TD,textAlign:'left',fontWeight:800,position:'sticky',left:0,zIndex:1,background:'#dcfce7',borderRight:'2px solid #52916C'}},'Σ Grand Total'),
             orderedKeys.flatMap(ck=>
