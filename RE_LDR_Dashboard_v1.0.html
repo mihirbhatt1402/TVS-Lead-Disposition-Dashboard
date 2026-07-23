@@ -1801,7 +1801,7 @@ const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
         :[ce('div',{key:i,style:{display:'flex',alignItems:'center',gap:6}},
             ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:48}},item[0]),
             ...item.slice(1))])
-      ),
+      ,
       ce('div',{style:{marginLeft:'auto'}},ce(ExportBtn,{onClick:exportPivot}))
     ),
 
