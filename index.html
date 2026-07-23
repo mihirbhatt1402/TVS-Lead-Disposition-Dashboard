@@ -209,6 +209,17 @@ function parseRows(raw){
   Object.keys(raw[0]).forEach(rk=>{
     keyMap[rk.toLowerCase().replace(/\s+/g,' ').trim()]=rk;
   });
+  /* Log available columns once so developers can identify column name mismatches */
+  console.info('[RE-LDR] Columns detected:', Object.values(keyMap).join(' | '));
+  /* Resolve UTM Campaign column once — try known aliases, then scan for any key
+     containing "utm" (handles variations like "UTM_Campaign", "utm campaign", etc.) */
+  const utmAliases=['utm campaign','campaign','utm_campaign'];
+  let utmRawKey=null;
+  for(const alias of utmAliases){if(keyMap[alias]){utmRawKey=keyMap[alias];break;}}
+  if(!utmRawKey){
+    const found=Object.keys(keyMap).find(k=>k.includes('utm'));
+    if(found) utmRawKey=keyMap[found];
+  }
   return raw.map(function(r){
     function get(keys){
       for(const k of(Array.isArray(keys)?keys:[keys])){
@@ -229,7 +240,7 @@ function parseRows(raw){
     const lead_month    = get('Lead Month');
     const booking_status= get('Booking Status');
     const booking_month = get('Booking Month');
-    const utm_campaign  = get(['UTM Campaign','Campaign','utm_campaign','UTM_Campaign']);
+    const utm_campaign  = utmRawKey?String(r[utmRawKey]||'').trim():'';
     const isUnique      = dup.toLowerCase()==='unique';
     const bm            = (booking_month==='-'||booking_month==='')?'':booking_month;
     return{
@@ -594,7 +605,10 @@ function aggPivot(rows,rowFields,colFields,mf,bm){
     }
     if(!countsLead&&!countsBooking) continue;
     const countsUnique=countsLead&&r.isUnique;
-    const getF=f=>f==='lead_month'?(r.lead_month||'–'):(r[f]||'Unknown');
+    /* When a specific month is filtered and this row qualifies only via booking
+       attribution (not as a lead from mf), treat its lead_month as mf for column
+       placement — otherwise May/Jun leads booked in Jul create spurious columns. */
+    const getF=f=>f==='lead_month'?((isAll||countsLead)?(r.lead_month||'–'):mf):(r[f]||'Unknown');
     const outerRv=getF(rowFields[0]);
     const innerRv=isNested?getF(rowFields[1]):null;
     const colKey=colFields.length?colFields.map(getF).join(SEP):'';
