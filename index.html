@@ -229,6 +229,7 @@ function parseRows(raw){
     const lead_month    = get('Lead Month');
     const booking_status= get('Booking Status');
     const booking_month = get('Booking Month');
+    const utm_campaign  = get(['UTM Campaign','Campaign','utm_campaign','UTM_Campaign']);
     const isUnique      = dup.toLowerCase()==='unique';
     const bm            = (booking_month==='-'||booking_month==='')?'':booking_month;
     return{
@@ -239,6 +240,7 @@ function parseRows(raw){
       model:canonicalModel(model)||'Unknown',
       city:city||'Unknown',
       state:canonicalState(state)||'Unknown',
+      utm_campaign:utm_campaign||'Unknown',
       lead_month,
       booking_status,
       booking_month:bm,
@@ -1711,11 +1713,11 @@ function UploadScreen({onData,onSync,syncing,syncErr,sheetUrl,setSheetUrl,urlDra
 const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
   const ROW_DIMS=[
     {v:'model',l:'Model'},{v:'source',l:'Source'},{v:'primary_src',l:'Primary Source'},
-    {v:'state',l:'State'},{v:'lt',l:'LT'},{v:'city',l:'City'},
+    {v:'utm_campaign',l:'Campaign'},{v:'state',l:'State'},{v:'lt',l:'LT'},{v:'city',l:'City'},
   ];
   const COL_OPTIONS=[
     {v:'lead_month',l:'Month'},{v:'source',l:'Source'},{v:'primary_src',l:'Primary Source'},
-    {v:'state',l:'State'},{v:'model',l:'Model'},
+    {v:'utm_campaign',l:'Campaign'},{v:'state',l:'State'},{v:'model',l:'Model'},
   ];
   const VAL_DEFS=[
     {k:'tl',l:'Total Leads'},{k:'ul',l:'Unique Leads'},{k:'bc',l:'Bookings'},{k:'e2b',l:'E2B%'},
@@ -1943,7 +1945,7 @@ function App({fbUser,role,presence,onSignOut,onAdminOpen}){
      subtle loading cue instead of the UI appearing to freeze). */
   const [isPending,startTransition]=useTransition();
   /* Each filter is a Set of selected values — empty Set means "All" (no restriction). */
-  const [filters,setFilters]=useState(()=>({month:new Set(),source:new Set(),primarySrc:new Set(),state:new Set(),city:new Set(),model:new Set()}));
+  const [filters,setFilters]=useState(()=>({month:new Set(),source:new Set(),primarySrc:new Set(),state:new Set(),city:new Set(),model:new Set(),campaign:new Set()}));
   const [bookingMode,setBookingMode]=useState('update');
   function setFilterKey(key,valueOrFn){
     startTransition(()=>setFilters(prev=>({...prev,[key]:typeof valueOrFn==='function'?valueOrFn(prev[key]):valueOrFn})));
@@ -1993,6 +1995,7 @@ function App({fbUser,role,presence,onSignOut,onAdminOpen}){
   const states=useMemo(()=>rows?[...new Set(rows.map(r=>r.state))].filter(Boolean).sort():[],[rows]);
   const cities=useMemo(()=>rows?[...new Set(rows.map(r=>r.city))].filter(Boolean).sort():[],[rows]);
   const models=useMemo(()=>rows?[...new Set(rows.map(r=>r.model))].filter(Boolean).sort():[],[rows]);
+  const campaigns=useMemo(()=>rows?[...new Set(rows.map(r=>r.utm_campaign))].filter(v=>v&&v!=='Unknown').sort():[],[rows]);
 
   /* Base rows: filtered by source/state/city/model/primarySrc but NOT by month.
      Month filtering is intentionally excluded here — backward attribution requires
@@ -2007,9 +2010,10 @@ function App({fbUser,role,presence,onSignOut,onAdminOpen}){
       (filters.primarySrc.size===0||filters.primarySrc.has(r.primary_src))&&
       (filters.state.size===0||filters.state.has(r.state))&&
       (filters.city.size===0||filters.city.has(r.city))&&
-      (filters.model.size===0||filters.model.has(r.model))
+      (filters.model.size===0||filters.model.has(r.model))&&
+      (filters.campaign.size===0||filters.campaign.has(r.utm_campaign))
     );
-  },[rows,filters.source,filters.primarySrc,filters.state,filters.city,filters.model]);
+  },[rows,filters.source,filters.primarySrc,filters.state,filters.city,filters.model,filters.campaign]);
 
   const mf=filters.month.size===1?[...filters.month][0]:'All';
 
@@ -2122,6 +2126,7 @@ function App({fbUser,role,presence,onSignOut,onAdminOpen}){
           {k:'month',     label:'Lead Month',     opts:months},
           {k:'source',    label:'Source',          opts:sources,  viewerHide:true},
           {k:'primarySrc',label:'Primary Source',  opts:primSrcs},
+          {k:'campaign',  label:'UTM Campaign',    opts:campaigns},
           {k:'model',     label:'Model',           opts:models},
           {k:'state',     label:'State',           opts:states},
           {k:'city',      label:'City',            opts:cities},
@@ -2132,7 +2137,7 @@ function App({fbUser,role,presence,onSignOut,onAdminOpen}){
         )),
         Object.values(filters).some(s=>s.size>0)&&
           ce('button',{
-            onClick:()=>startTransition(()=>setFilters({month:new Set(),source:new Set(),primarySrc:new Set(),state:new Set(),city:new Set(),model:new Set()})),
+            onClick:()=>startTransition(()=>setFilters({month:new Set(),source:new Set(),primarySrc:new Set(),state:new Set(),city:new Set(),model:new Set(),campaign:new Set()})),
             style:{padding:'4px 12px',fontSize:10,background:'#D8EED8',border:'1px solid #A8D5BA',borderRadius:20,cursor:'pointer',fontFamily:'inherit',color:'#1B4332',fontWeight:600}
           },'✕ Clear Filters'),
         ce('div',{style:{display:'flex',alignItems:'center',gap:4,marginLeft:8,flexShrink:0}},
