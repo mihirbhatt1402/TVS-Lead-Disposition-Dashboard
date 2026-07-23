@@ -1713,11 +1713,11 @@ function UploadScreen({onData,onSync,syncing,syncErr,sheetUrl,setSheetUrl,urlDra
 const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
   const ROW_DIMS=[
     {v:'model',l:'Model'},{v:'source',l:'Source'},{v:'primary_src',l:'Primary Source'},
-    {v:'utm_campaign',l:'Campaign'},{v:'state',l:'State'},{v:'lt',l:'LT'},{v:'city',l:'City'},
+    {v:'utm_campaign',l:'UTM Campaign'},{v:'state',l:'State'},{v:'lt',l:'LT'},{v:'city',l:'City'},
   ];
   const COL_OPTIONS=[
     {v:'lead_month',l:'Month'},{v:'source',l:'Source'},{v:'primary_src',l:'Primary Source'},
-    {v:'utm_campaign',l:'Campaign'},{v:'state',l:'State'},{v:'model',l:'Model'},
+    {v:'utm_campaign',l:'UTM Campaign'},{v:'state',l:'State'},{v:'model',l:'Model'},
   ];
   const VAL_DEFS=[
     {k:'tl',l:'Total Leads'},{k:'ul',l:'Unique Leads'},{k:'bc',l:'Bookings'},{k:'e2b',l:'E2B%'},
@@ -1815,13 +1815,13 @@ const PivotTab=React.memo(function PivotTab({rows,mf,viewerMode,bm='update'}){
       ce('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
         ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:48}},'ROWS'),
         rowDims.map(v=>ce(Chip,{key:v,label:ROW_DIMS.find(d=>d.v===v)?.l||v,canRemove:rowDims.length>1,onRemove:()=>setRowDims(prev=>prev.filter(d=>d!==v))})),
-        rowDims.length<2&&rowUnselected.map(d=>ce(AddPill,{key:d.v,label:d.l,onClick:()=>setRowDims(prev=>[...prev,d.v])}))
+        rowUnselected.map(d=>ce(AddPill,{key:d.v,label:d.l,onClick:()=>setRowDims(prev=>prev.length>=2?[...prev.slice(1),d.v]:[...prev,d.v])}))
       ),
       ce('div',{style:{width:1,background:'#d1d5db',alignSelf:'stretch'}}),
       ce('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
         ce('span',{style:{fontSize:9,fontWeight:700,color:'#9ca3af',textTransform:'uppercase',letterSpacing:'.07em',minWidth:52}},'COLUMNS'),
         colDims.map(v=>ce(Chip,{key:v,label:COL_OPTIONS.find(d=>d.v===v)?.l||v,onRemove:()=>setColDims(prev=>prev.filter(d=>d!==v))})),
-        colDims.length<2&&colUnselected.map(d=>ce(AddPill,{key:d.v,label:d.l,onClick:()=>setColDims(prev=>[...prev,d.v])}))
+        colUnselected.map(d=>ce(AddPill,{key:d.v,label:d.l,onClick:()=>setColDims(prev=>prev.length>=2?[...prev.slice(1),d.v]:[...prev,d.v])}))
       ),
       ce('div',{style:{width:1,background:'#d1d5db',alignSelf:'stretch'}}),
       ce('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
