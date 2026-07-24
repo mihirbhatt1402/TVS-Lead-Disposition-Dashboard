@@ -720,13 +720,16 @@ function Nf(n){return n==null||isNaN(n)?'—':Number(n).toLocaleString('en-IN');
 function Pf(n,d=1){return(n==null||isNaN(n))?'—':n.toFixed(d)+'%';}
 
 /* Parse a date string from CRM exports into a JS timestamp.
-   Handles ISO (YYYY-MM-DD), DD/MM/YYYY, DD-MM-YYYY, and native Date strings. */
+   Priority: ISO (YYYY-MM-DD) → native Date (handles MM/DD/YYYY, Google Sheets export)
+   → explicit DD/MM/YYYY fallback for strings native Date rejects (e.g. "20/07/2026"). */
 function parseDateTs(s){
   if(!s) return 0;
   let m;
   if((m=s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return new Date(+m[1],+m[2]-1,+m[3]).getTime();
+  const native=new Date(s);
+  if(!isNaN(native)) return native.getTime();
   if((m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/))) return new Date(+m[3],+m[2]-1,+m[1]).getTime();
-  const d=new Date(s); return isNaN(d)?0:d.getTime();
+  return 0;
 }
 function fmtDateStr(s){
   const ts=parseDateTs(s); if(!ts) return s;
