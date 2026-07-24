@@ -673,14 +673,23 @@ def fetch_retails():
     return df
 
 def build_retail_map(retail_df):
-    """Build {sourceLeadId → {rm, rtype, pm}} using Retail_Attribution_Date."""
+    """Build {sourceLeadId → {rm, rtype, pm}} using Retail_Attribution_Date.
+    rtype: 'DMS' when 'Purchased From' is blank, 'Call Out' when it has a value.
+    """
     rmap = {}
+    has_pf = 'Purchased From' in retail_df.columns
     for _, row in retail_df.iterrows():
         lid = to_id(row.get('sourceLeadId', ''))
         if not lid: continue
         rm = parse_ym(row.get('Retail_Attribution_Date', ''))
         pm = normalize_purchased_model(row.get('purchasedModel', ''))
-        rmap[lid] = {'rm': rm, 'rtype': '', 'pm': pm}
+        if has_pf:
+            pf = str(row.get('Purchased From', '') or '').strip()
+            rtype = '' if pf else 'DMS'
+            if pf: rtype = 'Call Out'
+        else:
+            rtype = ''
+        rmap[lid] = {'rm': rm, 'rtype': rtype, 'pm': pm}
     return rmap
 
 def make_synthetic_leads(retail_df, matched_lids):
