@@ -1334,7 +1334,7 @@ def build_payload(all_leads, retail_map):
             ubump(u_ltdl, f"{tti}|{dli}|{li}", f"{tti}|{dli}|{uli}", is_ret, rtype)
 
         if is_ret:
-            pm  = retail_map[lid].get('pm', 'Unknown')
+            pm  = normalize_purchased_model(retail_map[lid].get('pm', '')) or 'Unknown'
             pmi = ix(mdl_idx, mdl_arr, pm)   # purchased model uses same mdl index
             disp[f"{mi}|{pmi}|{li}"]   = disp.get(f"{mi}|{pmi}|{li}",   0) + 1
             u_disp[f"{mi}|{pmi}|{uli}"] = u_disp.get(f"{mi}|{pmi}|{uli}", 0) + 1
