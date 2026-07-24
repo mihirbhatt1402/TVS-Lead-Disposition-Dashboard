@@ -241,6 +241,7 @@ function parseRows(raw){
     const booking_status= get('Booking Status');
     const booking_month = get('Booking Month');
     const utm_campaign  = utmRawKey?String(r[utmRawKey]||'').trim():'';
+    const create_date   = get(['Create Date','Lead Create Date','Created Date','Creation Date','Lead Date','created_at','CreateDate']);
     const isUnique      = dup.toLowerCase()==='unique';
     const bm            = (booking_month==='-'||booking_month==='')?'':booking_month;
     return{
@@ -252,6 +253,7 @@ function parseRows(raw){
       city:city||'Unknown',
       state:canonicalState(state)||'Unknown',
       utm_campaign:utm_campaign||'Unknown',
+      create_date,
       lead_month,
       booking_status,
       booking_month:bm,
@@ -716,6 +718,20 @@ function vahanMonthTotal(monthOrMonths){
 /* ── Formatters & badges ──────────────────────────────────────────── */
 function Nf(n){return n==null||isNaN(n)?'—':Number(n).toLocaleString('en-IN');}
 function Pf(n,d=1){return(n==null||isNaN(n))?'—':n.toFixed(d)+'%';}
+
+/* Parse a date string from CRM exports into a JS timestamp.
+   Handles ISO (YYYY-MM-DD), DD/MM/YYYY, DD-MM-YYYY, and native Date strings. */
+function parseDateTs(s){
+  if(!s) return 0;
+  let m;
+  if((m=s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return new Date(+m[1],+m[2]-1,+m[3]).getTime();
+  if((m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/))) return new Date(+m[3],+m[2]-1,+m[1]).getTime();
+  const d=new Date(s); return isNaN(d)?0:d.getTime();
+}
+function fmtDateStr(s){
+  const ts=parseDateTs(s); if(!ts) return s;
+  return new Date(ts).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
+}
 
 function e2bBadge(pct){
   if(isNaN(pct)||pct===0) return ce('span',{className:'badge-gray'},'—');
@@ -2014,6 +2030,16 @@ function App({fbUser,role,presence,onSignOut,onAdminOpen}){
   const cities=useMemo(()=>rows?[...new Set(rows.map(r=>r.city))].filter(Boolean).sort():[],[rows]);
   const models=useMemo(()=>rows?[...new Set(rows.map(r=>r.model))].filter(Boolean).sort():[],[rows]);
   const campaigns=useMemo(()=>rows?[...new Set(rows.map(r=>r.utm_campaign))].filter(v=>v&&v!=='Unknown').sort():[],[rows]);
+  const maxCreateDate=useMemo(()=>{
+    if(!rows) return null;
+    let best='',bestTs=0;
+    for(const r of rows){
+      if(!r.create_date) continue;
+      const ts=parseDateTs(r.create_date);
+      if(ts>bestTs){bestTs=ts;best=r.create_date;}
+    }
+    return best?fmtDateStr(best):null;
+  },[rows]);
 
   /* Base rows: filtered by source/state/city/model/primarySrc but NOT by month.
      Month filtering is intentionally excluded here — backward attribution requires
@@ -2066,7 +2092,8 @@ function App({fbUser,role,presence,onSignOut,onAdminOpen}){
           ce('div',{style:{width:34,height:34,borderRadius:8,background:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:900,color:'#2D6A4F',boxShadow:'0 2px 8px rgba(0,0,0,.15)'}},'RE'),
           ce('div',null,
             ce('div',{style:{fontSize:13,fontWeight:800,color:'#fff',letterSpacing:'-.02em'}},'Royal Enfield · LDR'),
-            ce('div',{style:{fontSize:9,color:'#D8EED8',letterSpacing:'.07em',fontWeight:600}},'LEAD DISPOSITION DASHBOARD v1.0 · BikeDekho')
+            ce('div',{style:{fontSize:9,color:'#D8EED8',letterSpacing:'.07em',fontWeight:600}},'LEAD DISPOSITION DASHBOARD v1.0 · BikeDekho'),
+            maxCreateDate&&ce('div',{style:{fontSize:9,color:'#86EFAC',letterSpacing:'.04em',fontWeight:700,marginTop:1}},'Updated till: '+maxCreateDate)
           )
         ),
         ce('div',{style:{flex:1,display:'flex',gap:14,overflowX:'auto',padding:'8px 0',borderLeft:'1px solid rgba(255,255,255,.3)',paddingLeft:16,marginLeft:4}},
