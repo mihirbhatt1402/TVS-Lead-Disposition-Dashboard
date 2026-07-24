@@ -1,4 +1,4 @@
-﻿"""
+"""
 TVS Lead Disposition — Daily Data Push
 Runs via GitHub Actions at 12:00 PM IST every day.
 
@@ -10,10 +10,12 @@ JOIN: lead.opty_id  ↔  retail.sourceLeadId
 RETAIL MONTH: retail.Retail_Attribution_Date
 """
 
-import json, sys, re, time, os
+import json, sys, re, time, os, gzip
 import pandas as pd
 import requests
 import urllib.request
+from pathlib import Path
+from datetime import datetime, timezone
 
 MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
@@ -35,437 +37,820 @@ LEAD_SHEETS = [
 ]
 
 # Historical lead/retail files (Apr'25–Apr'26). Override via TVS_HIST_DIR env var.
-HIST_DIR     = os.environ.get('TVS_HIST_DIR', r'C:\Users\mihir.bhatt\Desktop\New folder (2)')
-ONLINE_START = "May'26"  # online sheets are only used from this month onwards
+HIST_DIR       = os.environ.get('TVS_HIST_DIR', r'C:\Users\mihir.bhatt\Desktop\New folder (2)')
+HIST_CACHE_PATH = Path(__file__).parent / 'hist_cache.json.gz'
+ONLINE_START   = "May'26"  # online sheets are only used from this month onwards
 
 # Lead master column map: sheet column → canonical name
 # purchasedModel (raw from retail sheet) → canonical lead-model name
 PURCHASED_MODEL_MAP = {
-    # Apache RTR 160 4V
-    'APACHE  160 4V – PL 2CH USD OBDIIB':          'TVS Apache RTR 160 4V',
-    'APACHE  160 4V – PL DISC B.T OBDIIB':         'TVS Apache RTR 160 4V',
-    'APACHE  160 4V – PL DISC SPL ED OBDIIB':      'TVS Apache RTR 160 4V',
-    'APACHE  160 4V â€“ PL 2CH USD+TFT OBDIIB': 'TVS Apache RTR 160 4V',
-    'Apache RTR 160 4V Disc BT':                         'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - 2CH ABS BT':               'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - RM SPL ED':                 'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V USD – 2CH':              'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 1604V– RM OBDIIA DRUM B.E':    'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 1604V-OBDIIB DISC BLK.EDI':         'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR1604V–OBDIIB SPL ED':           'TVS Apache RTR 160 4V',
-    'TVSAPACHERTR1604V–OBDIIB 2CH USD':            'TVS Apache RTR 160 4V',
-    # Apache RTR 160 (2V)
-    'APACHE 160-2V Disc 2CH A -EDI OBDIIB':             'TVS Apache RTR 160',
-    'APACHE 160-4V PL TFT USD 2CH A.EDI':               'TVS Apache RTR 160',
-    'APACHE RTR 160 2V RM DISC':                         'TVS Apache RTR 160',
-    'TVS APACHE RTR 160 2V DC ABS':                      'TVS Apache RTR 160',
-    'TVS APACHE RTR 160-2V RM OBDIIA DRUM B.E':         'TVS Apache RTR 160',
-    'TVS APACHE RTR 160-OBDIIB 2V DC ABS':              'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DISC':                 'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DISC BT':              'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DRUM':                 'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DRUM BLK.EDI':        'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V RAC ED':               'TVS Apache RTR 160',
-    'TVS APACHE RTR180-OBDIIB DISC':                    'TVS Apache RTR 160',  # per user mapping
-    # Apache RTR 180
-    'APACHE 180-2V Disc 1CH A -EDI OBDIIB':             'TVS Apache RTR 180',
-    'APACHE RTR 180 RM':                                 'TVS Apache RTR 180',
-    # Apache RTR 200 4V
-    'APACHE  200 4V – PL 2CH USD+TFT OBDIIB':     'TVS Apache RTR 200 4V',
-    'APACHE  200 4V â€“ PL 2CH USD+TFT OBDIIB': 'TVS Apache RTR 200 4V',
-    'APACHE 200-4V PL TFT USD 2CH A.EDI':              'TVS Apache RTR 200 4V',
-    'TVS APACHE RTR 200 4V–OBDIIB 2CH':           'TVS Apache RTR 200 4V',
-    # Apache RR 310
-    'APACHE RR 310-O2B-M25-DYN+DYPR-GBLK GLD':        'TVS Apache RR 310',
-    'APACHE RR310-O2B-M24–BASE W/O QS-RAR':       'TVS Apache RR 310',
-    'APACHE RR310-O2B-M24–BASE-RAR':              'TVS Apache RR 310',
-    'APACHE RR310-O2B-M24–BASE-SMG':              'TVS Apache RR 310',
-    'APACHE RR310-O2B-M24-DYN PRO-SEP-BLU':           'TVS Apache RR 310',
-    # Apache RTR 310
-    'APACHE RTR 310 – BASE BLK':                  'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24- BASE-GL BLK':             'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-BASE-BLK YEL':             'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-BASE-RC-RED':              'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-DYN+DYPR-RC-RED':         'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M25-DYN+DYPR-GBLK GLD':       'TVS Apache RTR 310',
-    # Star City Plus
-    'CITY+ DRUM OBDIIB':                                'TVS Star City Plus',
-    'StarCity + ES DT BSVI':                            'TVS Star City Plus',
-    # Jupiter 125
-    'TVS JUPITER 125 DISC DT SXC OBDIIB':              'TVS Jupiter 125',
-    'TVS JUPITER 125 DISC OBDIIB':                      'TVS Jupiter 125',
-    'TVS JUPITER 125 DISC SXC OBDIIB':                 'TVS Jupiter 125',
-    'TVS JUPITER 125 DRUM OBDIIB':                      'TVS Jupiter 125',
-    # Jupiter (110)
-    'JUPITER 125 BSVI':                                 'TVS Jupiter',  # per user mapping
-    'JUPITER ZX DISC SXC':                              'TVS Jupiter',
-    'TVS JUPITER110 DISC ALLOY SXC':                   'TVS Jupiter',
-    'TVS JUPITER110 DISC ALLOY SXC OBDIIB':            'TVS Jupiter',
-    'TVS JUPITER110 DRUM ALLOY':                        'TVS Jupiter',
-    'TVS JUPITER110 DRUM ALLOY OBDIIB':                 'TVS Jupiter',
-    'TVS JUPITER110 DRUM ALLOY SXC OBDIIB':            'TVS Jupiter',
-    'TVS JUPITER110 DRUM OBDIIB':                       'TVS Jupiter',
-    'TVS JUPITER110 DRUM SMW OBDIIB':                   'TVS Jupiter',
-    # iQube S
-    'TVS iQUBE  S15 BEIGE  Fr Disc':                   'TVS iQube S',
-    'TVS iQUBE  S15 BLACK Fr Disc':                     'TVS iQube S',
-    'TVS iQube 11 Fr. Disc black':                      'TVS iQube S',
-    'TVS IQUBE ELECTRIC 9':                             'TVS iQube S',
-    'TVS IQube S-Beige':                                'TVS iQube S',
-    'TVS IQube S-New':                                  'TVS iQube S',
-    'TVS IQUBE ST 17':                                  'TVS iQube S',
-    'TVS IQUBE ST 17-Beige':                            'TVS iQube S',
-    'TVS IQube UG-Beige':                               'TVS iQube S',
-    'TVS IQube UG-New':                                 'TVS iQube S',
-    'U546 V2':                                          'TVS iQube S',
-    'U759 iQUBE':                                       'TVS iQube S',
-    'U759 iQUBE 11 Black':                              'TVS iQube S',
-    # NTORQ 125
-    'NTORQ 125 DISC – Race Edition BSVI':         'TVS NTORQ 125',
-    'NTORQ 125 DISC – SSE':                       'TVS NTORQ 125',
-    'NTORQ 125 DISC R.LCD OBD2B':                      'TVS NTORQ 125',
-    'NTORQ 125 RACE XP OBDIIB TORQUE ASSIST':          'TVS NTORQ 125',
-    'NTORQ 125 RE R.LCD OBD2B':                        'TVS NTORQ 125',
-    'NTORQ 125 SSE R.LCD OBD2B':                       'TVS NTORQ 125',
-    'NTORQ 125 XT':                                    'TVS NTORQ 125',
-    'TVS NTORQ 125 DISC BSVI':                         'TVS NTORQ 125',
-    'TVS NTORQ 125 DISC BSVI OBDIIB':                  'TVS NTORQ 125',
-    'TVS NTORQ 125 RACE EDT  BSVI OBDIIB':             'TVS NTORQ 125',
-    'TVS NTORQ 125 RACE XP BSVI OBDIIB':               'TVS NTORQ 125',
-    'TVS NTORQ 125 SUPER SQUAD BSVI OBDIIB':           'TVS NTORQ 125',
-    'TVS NTORQ 125 XT BSVI OBDIIB':                    'TVS NTORQ 125',
-    # Radeon
-    'RADEON DISC DIGI OBDIIB':                         'TVS Radeon',
-    'RADEON DRUM BLACK EDITION OBDIIB':                'TVS Radeon',
-    'RADEON DRUM DIGI OBDIIB':                         'TVS Radeon',
-    'RADEON DRUM OBDIIB':                              'TVS Radeon',
-    'TVS RADEON - DIGI DISC ':                         'TVS Radeon',
-    'TVS RADEON - DIGI DRUM ':                         'TVS Radeon',
-    'TVS RADEON 110 ES MAG BSVI':                      'TVS Radeon',
-    # Raider
-    'RAIDER - OBDIIB 1CH ABS':                         'TVS Raider',
-    'RAIDER DISC IGO I-ECU OBDIIB':                    'TVS Raider',
-    'RAIDER DRUM OBDIIB':                              'TVS Raider',
-    'RAIDER IGO I-ECU RD WH OBDIIB':                  'TVS Raider',
-    'Raider LCD OBDIIB 1CH ABS':                       'TVS Raider',
-    'RAIDER SQD EDN I-ECU OBDIIB':                     'TVS Raider',
-    'RAIDER SS DISC OBDIIB':                           'TVS Raider',
-    'TVS RAIDER DISC':                                 'TVS Raider',
-    'TVS RAIDER DISC - LCD SX':                        'TVS Raider',
-    'TVS RAIDER DISC - SS':                            'TVS Raider',
-    'TVS RAIDER DISC - SSE':                           'TVS Raider',
-    'TVS RAIDER DISC CONNECTED':                       'TVS Raider',
-    'TVS RAIDER DRUM':                                 'TVS Raider',
-    # Ronin
-    'TVS RONIN 1CH BASE-FL RED - OBDIIB':              'TVS Ronin',
-    'TVS RONIN 1CH BASE-LNG Black - OBDIIB':           'TVS Ronin',
-    'TVS RONIN 2CH MID SPECIAL EDI OBDIIB':            'TVS Ronin',
-    'TVS RONIN BASE OBIIB 1CH – MATTE WHITE':     'TVS Ronin',
-    'TVS RONIN MID 2CH – CHARCOAL EMBR OBDIIB':  'TVS Ronin',
-    'TVS RONIN MID 2CH – GLACIER SILVR OBDIIB':  'TVS Ronin',
-    # Scooty Zest
-    'Scooty Zest – OBDIIB':                       'TVS Scooty Zest',
-    'Scooty Zest Matte series – BSVI':            'TVS Scooty Zest',
-    'Scooty Zest Matte series – OBDIIB':          'TVS Scooty Zest',
-    'TVS ZEST - OBDIIB SXC BLACK':                     'TVS Scooty Zest',
-    'TVS ZEST - OBDIIB SXC NARDO GREY':                'TVS Scooty Zest',
-    # Sport
-    'SPORT ELS REFRESH OBDIIB':                        'TVS Sport',
-    'SPORT ES OBDIIB':                                 'TVS Sport',
-    'TVS SPORT ELS BSVI':                              'TVS Sport',
-    'TVS SPORT ES-U559':                               'TVS Sport',
-    # XL100
-    'TVS XL 100 COM iTs-BSVI':                        'TVS XL100',
-    'TVS XL 100 HD iTs – SBS Spl. Edition':      'TVS XL100',
-    'TVS XL 100 HD iTs BSVI':                         'TVS XL100',
-    'TVS XL 100 HD OBDIIB':                            'TVS XL100',
-    'TVS XL 100 HEAVY DUTY ES':                        'TVS XL100',
-}
-
-# Lead ModelName column → canonical model name (from TVS Bike Lookup.xlsx)
-LEAD_MODEL_MAP = {
-    # APACHE RTR 165
-    'APACHE RTR 165 RP': 'APACHE RTR 165',
-    # TVS Apache RR 310
-    'RR 310': 'TVS Apache RR 310',
-    'APACHE RR 310-O2B-M25-DYN+DYPR-GBLK GLD': 'TVS Apache RR 310',
-    'APACHE RR 310 BTO - RACE': 'TVS Apache RR 310',
-    'APACHE RR 310 BTO-RACE+DYN': 'TVS Apache RR 310',
-    'APACHE RR 310 BTO-DYNAMIC': 'TVS Apache RR 310',
-    'Apache RR': 'TVS Apache RR 310',
-    'APACHE RR310-OBDIIA-M23?BASE-RAR': 'TVS Apache RR 310',
-    'APACHE RR310-OBDIIA-M23?DYN PRO-RCR TR': 'TVS Apache RR 310',
-    'APACHE RR310-OBDIIA-M23?BASE-SMG': 'TVS Apache RR 310',
-    'APACHE RR310-O2B-M24-DYN PRO-SEP-BLU': 'TVS Apache RR 310',
-    'APACHE RR310-OBDIIA-M23?BASE W/O QS-RAR': 'TVS Apache RR 310',
-    'APACHE RR310-O2B-M24-BASE-GRY': 'TVS Apache RR 310',
-    'APACHE RR310-O2B-M24-DYN-SEP-BLU': 'TVS Apache RTR 310',
-    'APACHE RR310-OBDIIA-M23?DYN PRO-SEP': 'TVS Apache RR 310',
-    'TVS Apache RR': 'TVS Apache RR 310',
-    'APACHE RR310-OBDIIA-M23?DYN-RAR': 'TVS Apache RR 310',
-    'APACHE RR 310 BTO-RC REP+RC DYN+RD AL': 'TVS Apache RR 310',
-    'APACHE RR310-OBDIIA-M23?DYN+DYN PRO-SMG': 'TVS Apache RR 310',
-    'APACHE RR 310 BSVI': 'TVS Apache RR 310',
-    # TVS Apache RTR 160
-    'TVS APACHE RTR 160 2V DC ABS': 'TVS Apache RTR 160',
-    'TVS APACHE RTR 160-2V RM OBDIIA DRUM B.E': 'TVS Apache RTR 160',
-    'TVS Apache RTR': 'TVS Apache RTR 160',
-    'TVS APACHE RTR 160 2V DISC BT RACING EDI': 'TVS Apache RTR 160',
-    'TVS Apache RTR160': 'TVS Apache RTR 160',
-    'RTR 160': 'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DISC BT': 'TVS Apache RTR 160',
-    '2024 TVS Apache RTR 160': 'TVS Apache RTR 160',
-    'TVS Apache 160': 'TVS Apache RTR 160',
-    'APACHE RTR 160 2V BSVI DRUM': 'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DRUM BLK.EDI': 'TVS Apache RTR 160',
-    'APACHE RTR 160 2V BSVI DISC': 'TVS Apache RTR 160',
-    'APACHE RTR 160 2V RM DISC BT': 'TVS Apache RTR 160',
-    'APACHE 160-2V Disc 2CH A -EDI OBDIIB': 'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V RAC ED': 'TVS Apache RTR 160',
-    'TVS APACHE RTR 160-OBDIIB 2V DC ABS': 'TVS Apache RTR 160',
-    'TVS Apache 2V': 'TVS Apache RTR 160',
-    'Apache RTR': 'TVS Apache RTR 160',
-    'APACHE RTR 160 2V RM DISC': 'TVS Apache RTR 160',
-    'APACHE RTR 160 2V RM DRUM': 'TVS Apache RTR 160',
-    'TVS Apache': 'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DISC': 'TVS Apache RTR 160',
-    'TVS APACHE RTR160-OBDIIB 2V DRUM': 'TVS Apache RTR 160',
-    # TVS Apache RTR 160 4V
-    'APACHE RTR 160 4V BSVI DRUM': 'TVS Apache RTR 160 4V',
-    'APACHE RTR 160 4V BSVI DISC': 'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - Disc HP': 'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - Drum HP': 'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - 2CH ABS BT': 'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - RM DISC': 'TVS Apache RTR 160 4V',
-    'Apache RTR 160 4V Disc BT': 'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - RM SPL ED': 'TVS Apache RTR 160 4V',
-    'TVS APACHE RTR 160 4V - RM DRUM': 'TVS Apache RTR 160 4V',
-    'APACHE 160-4V PL TFT USD 2CH A.EDI': 'TVS Apache RTR 160 4V',
-    # TVS Apache RTR 180
-    'APACHE RTR 180 RM-OBIIA': 'TVS Apache RTR 180',
-    'APACHE 180-2V Disc 1CH A -EDI OBDIIB': 'TVS Apache RTR 180',
-    'APACHE RTR 180 BSVI': 'TVS Apache RTR 180',
-    'APACHE RTR 180 RM': 'TVS Apache RTR 180',
-    'APACHE RTR 180 RM-OBD IIA': 'TVS Apache RTR 180',
     # TVS Apache RTR 200 4V
-    'TVS Apache RTR 200 Fi E100': 'TVS Apache RTR 200 4V',
     'Apache 200 4V 1ch-R Mode': 'TVS Apache RTR 200 4V',
     'Apache 200 4V 2ch-R Mode': 'TVS Apache RTR 200 4V',
+
+    # TVS Apache RR 310
+    'APACHE RR 310 BSVI': 'TVS Apache RR 310',
+
+    # TVS Apache RTR 160
+    'APACHE RTR 160 2V BSVI DISC': 'TVS Apache RTR 160',
+    'APACHE RTR 160 2V BSVI DRUM': 'TVS Apache RTR 160',
+
+    # TVS Apache RTR 160 4V
+    'APACHE RTR 160 4V BSVI DRUM': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 180
+    'APACHE RTR 180 BSVI': 'TVS Apache RTR 180',
+
+    # TVS Apache RR 310
+    'TVS Apache RR 310': 'TVS Apache RR 310',
+
+    # TVS Apache RTR 160
+    'TVS Apache RTR 160': 'TVS Apache RTR 160',
+
+    # TVS Apache RTR 160 4V
+    'TVS Apache RTR 160 4V': 'TVS Apache RTR 160 4V',
+    'TVS APACHE RTR 160 4V - Disc HP': 'TVS Apache RTR 160 4V',
+    'TVS APACHE RTR 160 4V - Drum HP': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 180
+    'TVS Apache RTR 180': 'TVS Apache RTR 180',
+
+    # TVS Apache RTR 200 4V
+    'TVS Apache RTR 200 4V': 'TVS Apache RTR 200 4V',
+
+    # TVS Apache RTR 160 4V
+    'TVS APACHE RTR 160 4V - RM DISC': 'TVS Apache RTR 160 4V',
+    'TVS APACHE RTR 160 4V - RM DRUM': 'TVS Apache RTR 160 4V',
+    'TVS APACHE RTR 160 4V - RM SPL ED': 'TVS Apache RTR 160 4V',
+    'APACHE RTR 160 4V BSVI DISC': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 200 4V
     'APACHE RTR 200 BSVI': 'TVS Apache RTR 200 4V',
-    'TVS Apache RTR 200': 'TVS Apache RTR 200 4V',
-    'APACHE 200-4V PL TFT USD 2CH A.EDI': 'TVS Apache RTR 200 4V',
-    '2025 TVS Apache RTR 200 4V': 'TVS Apache RTR 200 4V',
-    '2024 TVS Apache RTR 200 4V': 'TVS Apache RTR 200 4V',
-    # TVS Apache RTR 310
-    'Apache RTR 310': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-DYN+DYPR-RC-RED': 'TVS Apache RTR 310',
-    '2024 TVS Apache RTR 310': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M25-DYN+DYPR-GBLK GLD': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-BASE-BLK YEL': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-DYN-PRO+ SP BLU': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-DYN-RC-RED': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-BASE-RC-RED': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24- BASE-GL BLK': 'TVS Apache RTR 310',
-    'APACHE RTR 310-O2B-M24-DYN PRO-RC-RED TR': 'TVS Apache RTR 310',
+
+    # APACHE RTR 165
+    'APACHE RTR 165 RP': 'APACHE RTR 165',
+
+    # TVS Apache RTR 160 4V
+    'Apache RTR 160 4V Disc BT': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 160
+    'APACHE RTR 160 2V RM DISC': 'TVS Apache RTR 160',
+    'APACHE RTR 160 2V RM DRUM': 'TVS Apache RTR 160',
+
     # TVS Jupiter
-    'TVS JUPITER110 DRUM': 'TVS Jupiter',
+    'JUPITER BSVI': 'TVS Jupiter',
+    'JUPITER BSVI - SMW': 'TVS Jupiter',
+    'JUPITER BSVI-AOL': 'TVS Jupiter',
+    'JUPITER CLASSIC BSVI': 'TVS Jupiter',
+    'JUPITER ZX BSVI - AOL': 'TVS Jupiter',
+    'JUPITER ZX DISC BSVI-ISS': 'TVS Jupiter',
+    'TVS Jupiter': 'TVS Jupiter',
+    'JUPITER CLASSIC – HBS': 'TVS Jupiter',
     'JUPITER ZX BSVI': 'TVS Jupiter',
-    'JUPITERBSVI SMW INS- OBDIIA': 'TVS Jupiter',
     'JUPITER ZX DISC BSVI': 'TVS Jupiter',
     'Jupiter ZX Disc Ref (BSIV)': 'TVS Jupiter',
     'JUPITER ZX DISC SXC': 'TVS Jupiter',
     'TVS JUPITER CLASSIC DISC': 'TVS Jupiter',
-    'TVS JUPITER110 DISC ALLOY SXC': 'TVS Jupiter',
-    'TVS JUPITER110 DRUM ALLOY SXC': 'TVS Jupiter',
-    'TVS JUPITER110 DRUM OBDIIB': 'TVS Jupiter',
-    'TVS JUPITER110 DRUM ALLOY OBDIIB': 'TVS Jupiter',
-    'TVS JUPITER110 DRUM ALLOY': 'TVS Jupiter',
-    'TVS JUPITER110 DRUM ALLOY SXC OBDIIB': 'TVS Jupiter',
-    'TVS JUPITER110 DISC ALLOY SXC OBDIIB': 'TVS Jupiter',
-    'TVS JUPITER SMW - INSW': 'TVS Jupiter',
-    'TVS JUPITER110 DRUM SMW OBDIIB': 'TVS Jupiter',
-    'TVS Jupiter 110 Special Edition': 'TVS Jupiter',
-    'JUPITER BSVI': 'TVS Jupiter',
-    'TVS Jupiter 110cc': 'TVS Jupiter',
-    'JUPITER BSVI - SMW': 'TVS Jupiter',
-    'Jupiter 110': 'TVS Jupiter',
-    'JUPITER BSVI-AOL': 'TVS Jupiter',
-    'Jupiter': 'TVS Jupiter',
-    'JUPITER CLASSIC BSVI': 'TVS Jupiter',
-    'Jupiter X': 'TVS Jupiter',
-    'JUPITER ZX BSVI - AOL': 'TVS Jupiter',
-    'JUPITER ZX DRUM SXC': 'TVS Jupiter',
-    'JUPITER ZX DISC BSVI-ISS': 'TVS Jupiter',
+
     # TVS Jupiter 125
-    'TVS JUPITER 125 DISC DT SXC OBDIIB': 'TVS Jupiter 125',
-    'TVS JUPITER 125 DRUM OBDIIB': 'TVS Jupiter 125',
-    'JUPITER 125 DISC SX': 'TVS Jupiter 125',
-    'TVS JUPITER 125 DISC SXC OBDIIB': 'TVS Jupiter 125',
-    'JUPITER 125 DRUM BSVI': 'TVS Jupiter 125',
-    'Jupiter 125': 'TVS Jupiter 125',
+    'TVS Jupiter 125': 'TVS Jupiter 125',
     'JUPITER 125 BSVI': 'TVS Jupiter 125',
-    'TVS JUPITER 125 DISC OBDIIB': 'TVS Jupiter 125',
+    'JUPITER 125 DRUM BSVI': 'TVS Jupiter 125',
     'JUPITER 125 SMW BSVI': 'TVS Jupiter 125',
+
     # TVS NTORQ 125
-    'TVS NTORQ 125 DISC BSVI': 'TVS NTORQ 125',
-    'NTORQ 125 SSE R.LCD OBD2B': 'TVS NTORQ 125',
-    'NTORQ 125 DISC R.LCD OBD2B': 'TVS NTORQ 125',
-    'NTORQ 125 RE R.LCD OBD2B': 'TVS NTORQ 125',
-    'TVS NTORQ 125 RACE XP BSVI OBDIIB': 'TVS NTORQ 125',
-    'ntorq 125': 'TVS NTORQ 125',
-    'TVS NTORQ 125 DISC BSVI OBDIIB': 'TVS NTORQ 125',
-    'TVS NTORQ 125 XT BSVI OBDIIB': 'TVS NTORQ 125',
-    'NTORQ 125 XT': 'TVS NTORQ 125',
+    'NTORQ 125 DISC – Race Edition BSVI': 'TVS NTORQ 125',
+    'NTORQ 125 DISC – Super Squad Edition': 'TVS NTORQ 125',
     'NTORQ 125 DRUM NC BSVI': 'TVS NTORQ 125',
-    'TVS NTORQ 125 DISC': 'TVS NTORQ 125',
-    'TVS NTORQ 125 DRUM BSVI': 'TVS NTORQ 125',
+    'TVS NTORQ 125': 'TVS NTORQ 125',
+    'TVS NTORQ 125 DISC BSVI': 'TVS NTORQ 125',
     'TVS NTORQ 125 RACE XP': 'TVS NTORQ 125',
-    'NTORQ 125 RACE XP OBDIIB TORQUE ASSIST': 'TVS NTORQ 125',
-    'TVS NTORQ 125 SUPER SQUAD BSVI OBDIIB': 'TVS NTORQ 125',
-    'Ntorq': 'TVS NTORQ 125',
-    'TVS NTorq': 'TVS NTORQ 125',
+    'TVS NTORQ 125 DRUM BSVI': 'TVS NTORQ 125',
+    'TVS NTORQ 125 DISC': 'TVS NTORQ 125',
+    'NTORQ 125 DISC – HBS': 'TVS NTORQ 125',
+    'NTORQ 125 DISC – SSE': 'TVS NTORQ 125',
+    'NTORQ 125 XT': 'TVS NTORQ 125',
+    'NTORQ 125 DISC â€“ Race Edition BSVI': 'TVS NTORQ 125',
+    'NTORQ 125 DISC â€“ SSE': 'TVS NTORQ 125',
+
+    # TVS Scooty Pep Plus
+    'Scooty Pep+ - BSVI': 'TVS Scooty Pep Plus',
+    'Scooty Pep+ Matte series-BSVI': 'TVS Scooty Pep Plus',
+    'TVS Scooty Pep Plus': 'TVS Scooty Pep Plus',
+    'Scooty Pep+ Spl Edition': 'TVS Scooty Pep Plus',
+    'Scooty PEP+': 'TVS Scooty Pep Plus',
+    'Scooty Pep+ -BSVI Tamil Ed': 'TVS Scooty Pep Plus',
+
     # TVS Radeon
-    'TVS RADEON 110 ES MAG BSVI-OBD IIA': 'TVS Radeon',
+    'TVS Radeon': 'TVS Radeon',
     'TVS RADEON - DISC BSVI': 'TVS Radeon',
-    'TVS RADEON BSVI DIGIDrum DT OBDIIA': 'TVS Radeon',
-    'RADEON DRUM DIGI OBDIIB': 'TVS Radeon',
-    'RADEON DISC DIGI OBDIIB': 'TVS Radeon',
-    'TVS RADEON 110 ES MAG REF BSVI': 'TVS Radeon',
-    'RADEON DRUM BLACK EDITION OBDIIB': 'TVS Radeon',
-    'TVS RADEON BSVI DIGI Disc Dual Tone': 'TVS Radeon',
-    'TVS RADEON BSVI DIGI Drum Dual Tone': 'TVS Radeon',
-    'TVS RADEON 110 ES MAG DRUM': 'TVS Radeon',
-    'TVS RADEON BSVI Disc Dual Tone': 'TVS Radeon',
-    'TVS RADEON - DIGI DRUM': 'TVS Radeon',
-    'TVS RADEON 110 ES MAG BSVI': 'TVS Radeon',
     'TVS RADEON 110 DUAL TONE': 'TVS Radeon',
-    'RADEON DRUM OBDIIB': 'TVS Radeon',
-    'Radeon': 'TVS Radeon',
-    'TVS RADEON - DIGI DISC': 'TVS Radeon',
+    'TVS RADEON 110 ES MAG BSVI': 'TVS Radeon',
+    'TVS RADEON 110 ES MAG REF BSVI': 'TVS Radeon',
+    'TVS RADEON BSVI Disc Dual Tone': 'TVS Radeon',
+    'TVS RADEON 110 ES MAG DRUM': 'TVS Radeon',
+    'TVS RADEON BSVI DIGI Drum Dual Tone': 'TVS Radeon',
+    'TVS RADEON BSVI DIGI Disc Dual Tone': 'TVS Radeon',
+
     # TVS Raider
-    'RAIDER - OBDIIB 1CH ABS': 'TVS Raider',
-    'RAIDER SX I-ECU OBDIIB': 'TVS Raider',
-    'RAIDER SS DISC OBDIIB': 'TVS Raider',
-    'RAIDER DRUM OBDIIB': 'TVS Raider',
-    'Raider': 'TVS Raider',
+    'TVS Raider': 'TVS Raider',
     'TVS RAIDER DISC': 'TVS Raider',
-    'TVS RAIDER DISC - SS': 'TVS Raider',
-    'RAIDER IGO I-ECU RD WH OBDIIB': 'TVS Raider',
-    'RAIDER DISC IGO I-ECU OBDIIB': 'TVS Raider',
-    'RAIDER SQD EDN I-ECU OBDIIB': 'TVS Raider',
-    'Raider LCD OBDIIB 1CH ABS': 'TVS Raider',
-    'TVS RAIDER DRUM': 'TVS Raider',
-    'RAIDER DISC OBDIIB': 'TVS Raider',
-    'TVS RAIDER DISC - LCD SX': 'TVS Raider',
-    'TVS RAIDER DISC - SSE': 'TVS Raider',
-    'TVS RAIDER DISC CONNECTED': 'TVS Raider',
+
     # TVS Ronin
-    'TVS RONIN 2CH MID SPECIAL EDI OBDIIB': 'TVS Ronin',
-    'TVS RONIN 2CH MID SPECIAL EDITION': 'TVS Ronin',
+    'TVS Ronin': 'TVS Ronin',
     'TVS RONIN 2CH MID': 'TVS Ronin',
     'TVS RONIN 1CH BASE+': 'TVS Ronin',
     'TVS RONIN 1CH BASE': 'TVS Ronin',
-    'TVS RONIN 1CH BASE-FL RED': 'TVS Ronin',
-    'TVS RONIN 1CH BASE-LNG Black - OBDIIB': 'TVS Ronin',
-    'TVS Ronin TD': 'TVS Ronin',
     'TVS RONIN 2CH MID SPL': 'TVS Ronin',
-    'TVS RONIN 1CH BASE-LNG Black': 'TVS Ronin',
-    'TVS RONIN 1CH BASE-FL RED - OBDIIB': 'TVS Ronin',
-    'Ronin': 'TVS Ronin',
-    # TVS Scooty Pep Plus
-    'Scooty Pep+ Spl Edition': 'TVS Scooty Pep Plus',
-    'Scooty Pep+ Matte series-BSVI': 'TVS Scooty Pep Plus',
-    'Scooty Pep+ -BSVI Tamil Ed': 'TVS Scooty Pep Plus',
-    'Scooty Pep+ - BSVI': 'TVS Scooty Pep Plus',
-    'Scooty PEP+': 'TVS Scooty Pep Plus',
-    # TVS Scooty Zest
-    'TVS ZEST - OBDIIB SXC NARDO GREY': 'TVS Scooty Zest',
-    'TVS ZEST - OBDIIB SXC BLACK': 'TVS Scooty Zest',
-    'TVS Zest 110': 'TVS Scooty Zest',
-    'TVS Zest': 'TVS Scooty Zest',
-    'Zest': 'TVS Scooty Zest',
+
     # TVS Sport
-    'SPORT ELS REFRESH OBDIIB': 'TVS Sport',
-    'Sport': 'TVS Sport',
-    'SPORT ES+ OBDIIB': 'TVS Sport',
-    'TVS SPORT ES-U559': 'TVS Sport',
-    'SPORT ES OBDIIB': 'TVS Sport',
-    'TVS SPORT KLS BSVI': 'TVS Sport',
-    'TVS SPORT ELS BSVI': 'TVS Sport',
+    'TVS Sport': 'TVS Sport',
     'TVS SPORT DURALIFE KS SWL BSVI': 'TVS Sport',
-    'TVS SPORT ELS BSVI-OBIIA': 'TVS Sport',
-    'TVS SPORT ELS BSVI-OBD IIA': 'TVS Sport',
+    'TVS SPORT ELS BSVI': 'TVS Sport',
+    'TVS SPORT KLS BSVI': 'TVS Sport',
+    'TVS SPORT ES-U559': 'TVS Sport',
+
     # TVS Star City Plus
-    'StarCity + ES BSVI': 'TVS Star City Plus',
-    'CITY+ DISC OBDIIB': 'TVS Star City Plus',
-    'TVS StaR city+': 'TVS Star City Plus',
-    'StarCity + ES DT BSVI': 'TVS Star City Plus',
     'STARCITY + ES DISC BSVI': 'TVS Star City Plus',
-    'CITY+ DRUM OBDIIB': 'TVS Star City Plus',
+    'StarCity + ES DT BSVI': 'TVS Star City Plus',
+    'TVS Star City Plus': 'TVS Star City Plus',
     'StarCity + BSIV  110 ES MAG WHL': 'TVS Star City Plus',
-    'StaR city+': 'TVS Star City Plus',
+    'StarCity + ES BSVI': 'TVS Star City Plus',
+
+    # TVS XL100
+    'TVS XL 100 COM BSVI': 'TVS XL100',
+    'TVS XL 100 COM iTs-BSVI': 'TVS XL100',
+    'TVS XL 100 HD BSIV – SBS': 'TVS XL100',
+    'TVS XL 100 HD BSVI': 'TVS XL100',
+    'TVS XL 100 HD iTs BSVI': 'TVS XL100',
+    'TVS XL 100 HD iTs Spl. Edition-BSVI': 'TVS XL100',
+    'TVS XL 100 HD iTs Winner Edition': 'TVS XL100',
+    'TVS XL100': 'TVS XL100',
+
+    # TVS Scooty Zest
+    'Scooty Zest Matte series – BSVI': 'TVS Scooty Zest',
+    'TVS Scooty Zest': 'TVS Scooty Zest',
+    'Scooty Zest – BSVI': 'TVS Scooty Zest',
+    'Scooty Zest Matte series â€“ BSVI': 'TVS Scooty Zest',
+
+    # TVS Apache RTR 160
+    'APACHE RTR 160 2V RM DISC BT': 'TVS Apache RTR 160',
+
+    # TVS Apache RTR 200 4V
+    'TVS Apache RTR 200 Fi E100': 'TVS Apache RTR 200 4V',
+
+    # TVS Raider
+    'TVS RAIDER DISC CONNECTED': 'TVS Raider',
+
+    # TVS Apache RTR 180
+    'APACHE RTR 180 RM': 'TVS Apache RTR 180',
+
+    # TVS Apache RR 310
+    'APACHE RR 310 BTO-DYNAMIC': 'TVS Apache RR 310',
+    'APACHE RR 310 BTO-RACE+DYN': 'TVS Apache RR 310',
+
+    # TVS NTORQ 125
+    'NTORQ 125 DISC ? SSE': 'TVS NTORQ 125',
+
+    # TVS Raider
+    'TVS RAIDER DISC - SS': 'TVS Raider',
+
+    # TVS NTORQ 125
+    'NTORQ 125 DISC ? Race Edition BSVI': 'TVS NTORQ 125',
+
+    # TVS Scooty Zest
+    'Scooty Zest Matte series ? BSVI': 'TVS Scooty Zest',
+    'Scooty Zest ? BSVI': 'TVS Scooty Zest',
+
+    # TVS Apache RR 310
+    'APACHE RR 310 BTO-RC REP+RC DYN+RD AL': 'TVS Apache RR 310',
+
+    # TVS Jupiter
+    'JUPITER ZX DRUM SXC': 'TVS Jupiter',
+
+    # TVS Raider
+    'TVS RAIDER DISC - SSE': 'TVS Raider',
+
+    # TVS Apache RTR 310
+    'TVS Apache RTR 310': 'TVS Apache RTR 310',
+
+    # TVS Apache RTR 160
+    'TVS Apache RTR160': 'TVS Apache RTR 160',
+    'TVS Apache 160': 'TVS Apache RTR 160',
+
+    # TVS Raider
+    'Raider': 'TVS Raider',
+
+    # TVS NTORQ 125
+    'ntorq 125': 'TVS NTORQ 125',
+
+    # TVS XL100
+    'TVS XL 100': 'TVS XL100',
+
+    # TVS Apache RR 310
+    'RR 310': 'TVS Apache RR 310',
+
+    # TVS Jupiter
+    'Jupiter': 'TVS Jupiter',
+
+    # TVS XL100
+    'XL 100': 'TVS XL100',
+
+    # TVS NTORQ 125
+    'Ntorq': 'TVS NTORQ 125',
+
+    # TVS Apache RTR 160
+    'RTR 160': 'TVS Apache RTR 160',
+
+    # TVS Jupiter 125
+    'JUPITER 125 DISC SX': 'TVS Jupiter 125',
+
+    # TVS iQube
+    'TVS iQube': 'TVS iQube',
+    'TVS IQube UG-New': 'TVS iQube',
+
+    # TVS Ronin
+    'TVS RONIN 2CH MID SPECIAL EDITION': 'TVS Ronin',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 ? BASE YEL': 'TVS Apache RTR 310',
+
+    # TVS iQube
+    'TVS IQube S-New': 'TVS iQube',
+
+    # TVS Apache RTR 160 4V
+    'TVS APACHE RTR 160 4V ? U626': 'TVS Apache RTR 160 4V',
+    'TVS APACHE RTR 160 4V - 2CH ABS BT': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 160
+    'Apache RTR': 'TVS Apache RTR 160',
+
+    # TVS Radeon
+    'Radeon': 'TVS Radeon',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 ? BASE BLK': 'TVS Apache RTR 310',
+
+    # TVS Sport
+    'Sport': 'TVS Sport',
+
     # TVS XL100
     'XL100': 'TVS XL100',
-    'XL 100': 'TVS XL100',
-    'TVS XL 100 HD iTs Spl. Edition-BSVI': 'TVS XL100',
-    'TVS XL 100 COM iTs- OBDIIB': 'TVS XL100',
-    'TVS XL 100 HD iTs BSVI': 'TVS XL100',
-    'TVS XL 100 HD BSVI': 'TVS XL100',
-    'TVS XL 100 COM iTs-BSVI': 'TVS XL100',
-    'TVS XL 100 COM BSVI': 'TVS XL100',
-    'TVS XL 100 HD iTs Winner Edition OBDIIB': 'TVS XL100',
-    'TVS XL 100 HD iTs OBDIIB': 'TVS XL100',
-    'TVS XL 100 HD iTs Winner Edition': 'TVS XL100',
-    'TVS XL 100 HD OBDIIB': 'TVS XL100',
-    'TVS XL 100': 'TVS XL100',
-    'TVS XL 100 HEAVY DUTY ES': 'TVS XL100',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 ? DYN YEL': 'TVS Apache RTR 310',
+
+    # TVS Apache RR 310
+    'APACHE RR 310 BTO - RACE': 'TVS Apache RR 310',
+
+    # TVS Jupiter 125
+    'Jupiter 125': 'TVS Jupiter 125',
+
+    # TVS Ronin
+    'Ronin': 'TVS Ronin',
+
+    # TVS Jupiter
+    'JUPITERBSVI SMW INS- OBDIIA': 'TVS Jupiter',
+
+    # TVS Scooty Zest
+    'Zest': 'TVS Scooty Zest',
+
+    # TVS Star City Plus
+    'StaR city+': 'TVS Star City Plus',
+
     # TVS iQube
-    'TVS IQUBE ELECTRIC S- MINT BLUE – GLOSSY': 'TVS iQube',
-    'TVS iQUBE ELECTRIC ST12 M52V S BLUE': 'TVS iQube',
-    'TVS iQube ST 5.1 kWh': 'TVS iQube',
-    'iQube': 'TVS iQube',
-    'TVS iQube ST 3.4 kWh': 'TVS iQube',
-    'TVS iQube S 3.4 kWh': 'TVS iQube',
-    'TVS IQube S-New': 'TVS iQube',
-    'TVS iQube 3.4 kWh': 'TVS iQube',
-    'TVS IQUBE ELECTRIC S- C BRONZE GLOSSY': 'TVS iQube',
-    'TVS iQube 2.2 kWh': 'TVS iQube',
-    'TVS IQUBE ST 17': 'TVS iQube',
-    'TVS IQube UG-New': 'TVS iQube',
-    'TVS iQUBE  S15 BEIGE  Fr Disc': 'TVS iQube',
-    'TVS iQUBE ELECTRIC ST12 M52V TG MTTE': 'TVS iQube',
-    'TVS iQUBE ELECTRIC SMARTXONNECT PEARL W': 'TVS iQube',
-    'TVS IQUBE ELECTRIC S-MERCURY GREY–GLOSSY': 'TVS iQube',
-    'TVS iQUBE  S15 BLACK Fr Disc': 'TVS iQube',
-    'IQUBE ST 12': 'TVS iQube',
-    'TVS iQube 11 Fr. Disc Beige': 'TVS iQube',
-    'TVS IQube S-Beige': 'TVS iQube',
-    'TVS iQUBE ELECTRIC SMARTXONNECT SHINIG.R': 'TVS iQube',
-    'TVS iQUBE ELECTRIC S -MINT BLUE – GLOSSY': 'TVS iQube',
-    'TVS IQUBE ST 17-Beige': 'TVS iQube',
-    'U759 iQUBE': 'TVS iQube',
-    'TVS IQube UG-Beige': 'TVS iQube',
-    'TVS iQUBE ELECTRIC SMARTXONNECT P.WHITE': 'TVS iQube',
-    'U759 iQUBE 11 Black': 'TVS iQube',
-    'TVS iQUBE ELECTRIC SMARTXONNECT T.GREY': 'TVS iQube',
-    'TVS iQUBE ELECTRIC S -C BRONZE GLOSSY': 'TVS iQube',
-    'TVS iQUBE ELECTRIC SMARTXONNECT T GREY': 'TVS iQube',
-    'TVS iQUBE ELECTRIC SMARTXONNECT 9 W BRWN': 'TVS iQube',
-    'TVS iQube 11 Fr. Disc black': 'TVS iQube',
-    'TVS iQube ELECTRIC ST 12 S BLUE': 'TVS iQube',
-    'TVS iQube ST': 'TVS iQube',
     'TVS IQUBE ELECTRIC 9': 'TVS iQube',
-    'TVS iQube ELECTRIC ST 17 S BLUE': 'TVS iQube',
-    'TVS iQube S': 'TVS iQube',
+
+    # TVS Apache RTR 160 4V
+    'TVS APACHE RTR 1604V? RM OBDIIA DRUM B.E': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 160
+    'TVS APACHE RTR 160-2V RM OBDIIA DRUM B.E': 'TVS Apache RTR 160',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 ? DYN BLK': 'TVS Apache RTR 310',
+
+    # TVS iQube
+    'TVS iQUBE ELECTRIC SMARTXONNECT 9 W BRWN': 'TVS iQube',
+    'TVS iQUBE ELECTRIC SMARTXONNECT T GREY': 'TVS iQube',
+    'TVS iQUBE ELECTRIC S -C BRONZE GLOSSY': 'TVS iQube',
+    'TVS iQUBE ELECTRIC SMARTXONNECT T.GREY': 'TVS iQube',
+    'TVS iQUBE ELECTRIC SMARTXONNECT P.WHITE': 'TVS iQube',
+    'TVS iQUBE ELECTRIC S -MINT BLUE â€“ GLOSSY': 'TVS iQube',
+    'TVS iQUBE ELECTRIC SMARTXONNECT SHINIG.R': 'TVS iQube',
+    'TVS IQUBE ELECTRIC S- MINT BLUE â€“ GLOSSY': 'TVS iQube',
     'TVS iQUBE ELECTRIC SMARTXONNECT 9P.WHITE': 'TVS iQube',
+    'TVS IQUBE ELECTRIC S- C BRONZE GLOSSY': 'TVS iQube',
+    'TVS iQUBE ELECTRIC ST12 M52V S BLUE': 'TVS iQube',
+    'TVS IQUBE ELECTRIC S-MERCURY GREYâ€“GLOSSY': 'TVS iQube',
     'TVS iQUBE ELECTRIC S MERCURY GREY': 'TVS iQube',
+    'TVS iQube ELECTRIC ST 12 S BLUE': 'TVS iQube',
+    'TVS iQUBE ELECTRIC SMARTXONNECT PEARL W': 'TVS iQube',
+    'TVS iQUBE ELECTRIC ST12 M52V TG MTTE': 'TVS iQube',
+    'TVS iQube ELECTRIC ST 17 S BLUE': 'TVS iQube',
+
+    # TVS Apache RTR 160
+    'TVS Apache RTR': 'TVS Apache RTR 160',
+    'TVS APACHE RTR 160 2V DISC BT RACING EDI': 'TVS Apache RTR 160',
+
+    # TVS NTORQ 125
+    'TVS NTorq': 'TVS NTORQ 125',
+
+    # TVS Scooty Zest
+    'TVS Zest': 'TVS Scooty Zest',
+
+    # TVS iQube
+    'TVS iQube ST': 'TVS iQube',
+    'TVS iQube S': 'TVS iQube',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DISC ALLOY SXC': 'TVS Jupiter',
+    'TVS JUPITER110 DRUM ALLOY SXC': 'TVS Jupiter',
+
+    # TVS Star City Plus
+    'TVS StaR city+': 'TVS Star City Plus',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DRUM': 'TVS Jupiter',
+
+    # TVS Ronin
+    'TVS RONIN 1CH BASE-LNG Black': 'TVS Ronin',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DRUM ALLOY': 'TVS Jupiter',
+
+    # TVS Ronin
+    'TVS RONIN 1CH BASE-FL RED': 'TVS Ronin',
+
+    # TVS iQube
+    'IQUBE ST 12': 'TVS iQube',
+
+    # TVS Raider
+    'TVS RAIDER DRUM': 'TVS Raider',
+
+    # TVS Apache RR 310
+    'APACHE RR310-OBDIIA-M23?BASE-RAR': 'TVS Apache RR 310',
+
+    # TVS Radeon
+    'TVS RADEON BSVI Drum ? Black Edn': 'TVS Radeon',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 ? DYN+DYN PRO YEL': 'TVS Apache RTR 310',
+
+    # TVS Apache RR 310
+    'APACHE RR310-OBDIIA-M23?DYN PRO-RCR TR': 'TVS Apache RR 310',
+    'APACHE RR310-OBDIIA-M23?BASE-SMG': 'TVS Apache RR 310',
+    'APACHE RR310-OBDIIA-M23?BASE W/O QS-RAR': 'TVS Apache RR 310',
+
+    # TVS Raider
+    'TVS RAIDER DISC - LCD SX': 'TVS Raider',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 ? DYN-PRO YEL': 'TVS Apache RTR 310',
+
+    # TVS iQube
+    'TVS IQUBE ST 17': 'TVS iQube',
+    'TVS iQube 2.2 kWh': 'TVS iQube',
+    'TVS iQube 3.4 kWh': 'TVS iQube',
+    'TVS iQube S 3.4 kWh': 'TVS iQube',
+    'TVS iQube ST 3.4 kWh': 'TVS iQube',
+
+    # TVS Apache RR 310
+    'APACHE RR310-OBDIIA-M23?DYN-RAR': 'TVS Apache RR 310',
+
+    # TVS iQube
+    'TVS iQube ST 5.1 kWh': 'TVS iQube',
+
+    # TVS Apache RTR 160 4V
+    'TVS APACHE RTR 160 4V USD ? 2CH': 'TVS Apache RTR 160 4V',
+
+    # TVS Jupiter
+    'TVS JUPITER SMW - INSW': 'TVS Jupiter',
+
+    # TVS Apache RR 310
+    'APACHE RR310-OBDIIA-M23?DYN PRO-SEP': 'TVS Apache RR 310',
+
+    # TVS Jupiter 125
+    'TVS JUPITER 125 DISC OBDIIB': 'TVS Jupiter 125',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DISC ALLOY SXC OBDIIB': 'TVS Jupiter',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH ? CHARCOAL EMBER': 'TVS Ronin',
+
+    # TVS Jupiter 125
+    'TVS JUPITER 125 DRUM OBDIIB': 'TVS Jupiter 125',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DRUM ALLOY SXC OBDIIB': 'TVS Jupiter',
+
+    # TVS Apache RR 310
+    'APACHE RR310-OBDIIA-M23?DYN+DYN PRO-SMG': 'TVS Apache RR 310',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DRUM ALLOY OBDIIB': 'TVS Jupiter',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH ? GLACIER SILVER': 'TVS Ronin',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DRUM OBDIIB': 'TVS Jupiter',
+
+    # TVS Jupiter 125
+    'TVS JUPITER 125 DISC SXC OBDIIB': 'TVS Jupiter 125',
+
+    # TVS Apache RTR 160
+    'TVS APACHE RTR160-OBDIIB 2V DRUM': 'TVS Apache RTR 160',
+    'TVS APACHE RTR160-OBDIIB 2V DISC': 'TVS Apache RTR 160',
+    'TVS APACHE RTR160-OBDIIB 2V DISC BT': 'TVS Apache RTR 160',
+
+    # TVS XL100
+    'TVS XL 100 HD iTs Winner Edition OBDIIB': 'TVS XL100',
+
+    # TVS NTORQ 125
+    'TVS NTORQ 125 RACE XP BSVI OBDIIB': 'TVS NTORQ 125',
+
+    # TVS XL100
+    'TVS XL 100 HD iTs OBDIIB': 'TVS XL100',
+
+    # TVS Radeon
+    'TVS RADEON 110 ES MAG BSVI-OBD IIA': 'TVS Radeon',
+
+    # TVS Apache RTR 180
+    'APACHE RTR 180 RM-OBIIA': 'TVS Apache RTR 180',
+
+    # TVS Sport
+    'TVS SPORT ELS BSVI-OBD IIA': 'TVS Sport',
+
+    # TVS Radeon
+    'TVS RADEON BSVI DIGIDrum DT OBDIIA': 'TVS Radeon',
+
+    # TVS Raider
+    'RAIDER IGO I-ECU RD WH OBDIIB': 'TVS Raider',
+
+    # TVS Apache RTR 160 4V
+    'TVSAPACHERTR1604V?OBDIIB 2CH USD': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 180
+    'APACHE RTR 180 RM-OBD IIA': 'TVS Apache RTR 180',
+
+    # TVS Sport
+    'TVS SPORT ELS BSVI-OBIIA': 'TVS Sport',
+
+    # TVS Ronin
+    'TVS RONIN 1CH BASE-LNG Black - OBDIIB': 'TVS Ronin',
+
+    # TVS Apache RTR 160
+    'TVS APACHE RTR160-OBDIIB 2V RAC ED': 'TVS Apache RTR 160',
+
+    # TVS Apache RR 310
+    'TVS Apache RR': 'TVS Apache RR 310',
+
+    # TVS Ronin
+    'TVS RONIN 1CH BASE-FL RED - OBDIIB': 'TVS Ronin',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 ? BASE BLK-OBD IIA': 'TVS Apache RTR 310',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH ? CHARCOAL EMBR OBDIIB': 'TVS Ronin',
+
+    # TVS Scooty Zest
+    'Scooty Zest Matte series ? OBDIIB': 'TVS Scooty Zest',
+    'Scooty Zest ? OBDIIB': 'TVS Scooty Zest',
+
+    # TVS Apache RR 310
+    'APACHE RR310-O2B-M24?BASE-RAR': 'TVS Apache RR 310',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH ? GLACIER SILVR OBDIIB': 'TVS Ronin',
+
+    # TVS NTORQ 125
+    'TVS NTORQ 125 SUPER SQUAD BSVI OBDIIB': 'TVS NTORQ 125',
+
+    # TVS XL100
+    'TVS XL 100 COM iTs- OBDIIB': 'TVS XL100',
+
+    # TVS Raider
+    'RAIDER SS DISC OBDIIB': 'TVS Raider',
+
+    # TVS Apache RTR 160 4V
+    'TVSAPACHERTR1604V–OBDIIB 2CH USD': 'TVS Apache RTR 160 4V',
+    'TVS APACHE RTR 160 4V USD – 2CH': 'TVS Apache RTR 160 4V',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH – CHARCOAL EMBR OBDIIB': 'TVS Ronin',
+
+    # TVS Radeon
+    'TVS RADEON BSVI Drum – Black Edn': 'TVS Radeon',
+
+    # TVS Scooty Zest
+    'Scooty Zest – OBDIIB': 'TVS Scooty Zest',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH – CHARCOAL EMBER': 'TVS Ronin',
+
+    # TVS Scooty Zest
+    'Scooty Zest Matte series – OBDIIB': 'TVS Scooty Zest',
+
+    # TVS NTORQ 125
+    'TVS NTORQ 125 DISC BSVI OBDIIB': 'TVS NTORQ 125',
+
+    # TVS Apache RTR 160
+    'TVS APACHE RTR160-OBDIIB 2V DRUM BLK.EDI': 'TVS Apache RTR 160',
+
+    # TVS Apache RR 310
+    'APACHE RR310-OBDIIA-M23–BASE-SMG': 'TVS Apache RR 310',
+
+    # TVS Sport
+    'SPORT ES OBDIIB': 'TVS Sport',
+
+    # TVS NTORQ 125
+    'TVS NTORQ 125 RACE EDT\xa0 BSVI OBDIIB': 'TVS NTORQ 125',
+
+    # TVS Radeon
+    'RADEON DRUM BLACK EDITION OBDIIB': 'TVS Radeon',
+
+    # TVS Ronin
+    'TVS RONIN 2CH MID SPECIAL EDI OBDIIB': 'TVS Ronin',
+
+    # TVS Apache RTR 160 4V
+    'TVS APACHE RTR1604V–OBDIIB SPL ED': 'TVS Apache RTR 160 4V',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH – GLACIER SILVER': 'TVS Ronin',
+
+    # TVS Apache RTR 160 4V
+    'TVS APACHE RTR 1604V– RM OBDIIA DRUM B.E': 'TVS Apache RTR 160 4V',
+
+    # TVS Raider
+    'RAIDER DISC OBDIIB': 'TVS Raider',
+
+    # TVS Apache RR 310
+    'APACHE RR310-O2B-M24–BASE-RAR': 'TVS Apache RR 310',
+    'APACHE RR310-OBDIIA-M23–DYN PRO-RCR TR': 'TVS Apache RR 310',
+
+    # TVS Sport
+    'SPORT ES+ OBDIIB': 'TVS Sport',
+
+    # TVS Raider
+    'RAIDER DRUM OBDIIB': 'TVS Raider',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH – GLACIER SILVR OBDIIB': 'TVS Ronin',
+
+    # TVS Radeon
+    'RADEON DRUM OBDIIB': 'TVS Radeon',
+
+    # TVS Apache RR 310
+    'APACHE RR310-O2B-M24–BASE W/O QS-RAR': 'TVS Apache RR 310',
+
+    # TVS Raider
+    'RAIDER SQD EDN I-ECU OBDIIB': 'TVS Raider',
+
+    # TVS Apache RR 310
+    'APACHE RR310-O2B-M24-BASE-GRY': 'TVS Apache RR 310',
+    'APACHE RR310-OBDIIA-M23–BASE-RAR': 'TVS Apache RR 310',
+
+    # TVS Radeon
+    'RADEON DISC DIGI OBDIIB': 'TVS Radeon',
+
+    # TVS NTORQ 125
+    'TVS NTORQ 125 XT BSVI OBDIIB': 'TVS NTORQ 125',
+
+    # TVS Raider
+    'RAIDER DISC IGO I-ECU OBDIIB': 'TVS Raider',
+
+    # TVS Radeon
+    'RADEON DRUM DIGI OBDIIB': 'TVS Radeon',
+
+    # TVS XL100
+    'TVS XL 100 HD OBDIIB': 'TVS XL100',
+
+    # TVS Ronin
+    'TVS RONIN 2CH MID SPECIAL EDITION - OBDI': 'TVS Ronin',
+    'TVS RONIN MID 2CH – CHARCOAL EMBER - OBD': 'TVS Ronin',
+
+    # TVS iQube
+    'TVS IQube UG-Beige': 'TVS iQube',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 – BASE BLK-OBD IIA': 'TVS Apache RTR 310',
+
+    # TVS Star City Plus
+    'CITY+ DRUM OBDIIB': 'TVS Star City Plus',
+
+    # TVS Jupiter 125
+    'TVS JUPITER 125 DISC DT SXC OBDIIB': 'TVS Jupiter 125',
+
+    # TVS Apache RR 310
+    'APACHE RR310-OBDIIA-M23–BASE W/O QS-RAR': 'TVS Apache RR 310',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310 – BASE YEL': 'TVS Apache RTR 310',
+
+    # TVS Apache RTR 180
+    'TVS APACHE RTR180-OBDIIB DISC': 'TVS Apache RTR 180',
+
+    # TVS Ronin
+    'TVS RONIN MID 2CH – GLACIER SILVER- OBD': 'TVS Ronin',
+
+    # TVS Apache RTR 200 4V
+    'TVS APACHE RTR 200 4V–OBDIIB 2CH': 'TVS Apache RTR 200 4V',
+
+    # TVS Apache RTR 160
+    '2024 TVS Apache RTR 160': 'TVS Apache RTR 160',
+
+    # TVS iQube
+    'TVS IQUBE ST 17-Beige': 'TVS iQube',
+
+    # TVS Apache RTR 200 4V
+    '2025 TVS Apache RTR 200 4V': 'TVS Apache RTR 200 4V',
+
+    # TVS Apache RTR 160
+    'TVS APACHE RTR 160 2V DC ABS': 'TVS Apache RTR 160',
+
+    # TVS iQube
+    'U759 iQUBE 11 Black': 'TVS iQube',
+
+    # TVS Star City Plus
+    'CITY+ DISC OBDIIB': 'TVS Star City Plus',
+
+    # TVS Apache RTR 310
+    '2024 TVS Apache RTR 310': 'TVS Apache RTR 310',
+
+    # TVS Raider
+    'RAIDER SX I-ECU OBDIIB': 'TVS Raider',
+
+    # TVS iQube
+    'TVS iQube 11 Fr. Disc black': 'TVS iQube',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310-O2B-M24-BASE-RC-RED': 'TVS Apache RTR 310',
+
+    # TVS iQube
+    'TVS IQube S-Beige': 'TVS iQube',
+    'iQube': 'TVS iQube',
+
+    # TVS Apache RTR 200 4V
+    '2024 TVS Apache RTR 200 4V': 'TVS Apache RTR 200 4V',
+
+    # TVS Apache RTR 310
+    'Apache RTR 310': 'TVS Apache RTR 310',
+
+    # TVS Apache RR 310
+    'Apache RR': 'TVS Apache RR 310',
+
+    # TVS Scooty Zest
+    'TVS Zest 110': 'TVS Scooty Zest',
+
+    # TVS Apache RTR 200 4V
+    'APACHE 200-4V PL TFT USD 2CH A.EDI': 'TVS Apache RTR 200 4V',
+
+    # TVS NTORQ 125
+    'NTORQ 125 RACE XP OBDIIB TORQUE ASSIST': 'TVS NTORQ 125',
+
+    # TVS XL100
+    'TVS XL 100 HEAVY DUTY ES': 'TVS XL100',
+
+    # TVS Raider
+    'RAIDER - OBDIIB 1CH ABS': 'TVS Raider',
+
+    # TVS Sport
+    'SPORT ELS REFRESH OBDIIB': 'TVS Sport',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310-O2B-M24- BASE-GL BLK': 'TVS Apache RTR 310',
+
+    # TVS Apache RTR 200 4V
+    'APACHE  200 4V – PL 2CH USD+TFT OBDIIB': 'TVS Apache RTR 200 4V',
+
+    # TVS XL100
+    'TVS XL 100 HD iTs – SBS Spl. Edition': 'TVS XL100',
+
+    # TVS Radeon
+    'TVS RADEON - DIGI DISC': 'TVS Radeon',
+
+    # TVS Scooty Zest
+    'TVS ZEST - OBDIIB SXC BLACK': 'TVS Scooty Zest',
+    'TVS ZEST - OBDIIB SXC NARDO GREY': 'TVS Scooty Zest',
+
+    # TVS Apache RTR 160 4V
+    'APACHE 160-4V PL TFT USD 2CH A.EDI': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RR 310
+    'APACHE RR310-O2B-M24–BASE-SMG': 'TVS Apache RR 310',
+
+    # TVS Apache RTR 160
+    'APACHE 160-2V Disc 2CH A -EDI OBDIIB': 'TVS Apache RTR 160',
+
+    # TVS Apache RTR 160 4V
+    'APACHE  160 4V â€“ PL 2CH USD+TFT OBDIIB': 'TVS Apache RTR 160 4V',
+
+    # TVS Radeon
+    'TVS RADEON - DIGI DRUM': 'TVS Radeon',
+
+    # TVS iQube
+    'U759 iQUBE': 'TVS iQube',
+
+    # TVS Ronin
+    'TVS Ronin TD': 'TVS Ronin',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310-O2B-M24-DYN-RC-RED': 'TVS Apache RTR 310',
+
+    # TVS Ronin
+    'TVS RONIN BASE OBIIB 1CH – MATTE WHITE': 'TVS Ronin',
+
+    # TVS Apache RTR 200 4V
+    'APACHE  200 4V â€“ PL 2CH USD+TFT OBDIIB': 'TVS Apache RTR 200 4V',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310-O2B-M24-DYN-PRO+ SP BLU': 'TVS Apache RTR 310',
+    'APACHE RTR 310 – BASE BLK': 'TVS Apache RTR 310',
+    'APACHE RR310-O2B-M24-DYN-SEP-BLU': 'TVS Apache RTR 310',
+    'APACHE RTR 310-O2B-M24-BASE-BLK YEL': 'TVS Apache RTR 310',
+    'APACHE RTR 310-O2B-M25-DYN+DYPR-GBLK GLD': 'TVS Apache RTR 310',
+
+    # TVS Apache RTR 200 4V
+    'TVS Apache RTR 200': 'TVS Apache RTR 200 4V',
+
+    # TVS Apache RTR 160
+    'TVS Apache 2V': 'TVS Apache RTR 160',
+    'TVS Apache': 'TVS Apache RTR 160',
+
+    # TVS Jupiter
+    'Jupiter Disc SXC OBDIIB – SPL': 'TVS Jupiter',
+
+    # TVS Apache RTR 160 4V
+    'TVS APACHE RTR 1604V-OBDIIB DISC BLK.EDI': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 160
+    'TVS APACHE RTR 160-OBDIIB 2V DC ABS': 'TVS Apache RTR 160',
+
+    # TVS Apache RR 310
+    'APACHE RR 310-O2B-M25-DYN+DYPR-GBLK GLD': 'TVS Apache RR 310',
+    'APACHE RR310-O2B-M24-DYN PRO-SEP-BLU': 'TVS Apache RR 310',
+
+    # TVS Jupiter
+    'TVS JUPITER110 DRUM SMW OBDIIB': 'TVS Jupiter',
+
+    # TVS Apache RTR 160 4V
+    'APACHE  160 4V – PL 2CH USD OBDIIB': 'TVS Apache RTR 160 4V',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310-O2B-M24-DYN+DYPR-RC-RED': 'TVS Apache RTR 310',
+
+    # TVS NTORQ 125
+    'NTORQ 125 SSE R.LCD OBD2B': 'TVS NTORQ 125',
+    'NTORQ 125 DISC R.LCD OBD2B': 'TVS NTORQ 125',
+    'NTORQ 125 RE R.LCD OBD2B': 'TVS NTORQ 125',
+
+    # TVS Apache RTR 160 4V
+    'APACHE  160 4V – PL DISC B.T OBDIIB': 'TVS Apache RTR 160 4V',
+
+    # TVS Raider
+    'Raider LCD OBDIIB 1CH ABS': 'TVS Raider',
+
+    # TVS iQube
+    'TVS iQUBE  S15 BLACK Fr Disc': 'TVS iQube',
+
+    # TVS Apache RTR 180
+    'APACHE 180-2V Disc 1CH A -EDI OBDIIB': 'TVS Apache RTR 180',
+
+    # TVS Jupiter
+    'TVS Jupiter 110 Special Edition': 'TVS Jupiter',
+
+    # TVS iQube
+    'TVS iQUBE  S15 BEIGE  Fr Disc': 'TVS iQube',
+
+    # TVS Apache RTR 160 4V
+    'APACHE  160 4V – PL DISC SPL ED OBDIIB': 'TVS Apache RTR 160 4V',
+
+    # TVS Jupiter
+    'TVS Jupiter 110cc': 'TVS Jupiter',
+    'Jupiter 110': 'TVS Jupiter',
+    'Jupiter X': 'TVS Jupiter',
+
+    # TVS iQube
+    'TVS iQube 11 Fr. Disc Beige': 'TVS iQube',
+
+    # TVS Apache RTR 310
+    'APACHE RTR 310-O2B-M24-DYN PRO-RC-RED TR': 'TVS Apache RTR 310',
 }
+# Lead model map uses the same 345-entry lookup as the retail map
+LEAD_MODEL_MAP = PURCHASED_MODEL_MAP
 
 def normalize_lead_model(mdl):
-    """Map raw lead ModelName to canonical model name using lookup table."""
+    """Map raw lead ModelName to canonical model name using lookup table, with keyword fallback."""
     mdl = str(mdl or '').strip()
     if not mdl: return 'Unknown'
-    return LEAD_MODEL_MAP.get(mdl, mdl)
+    mapped = LEAD_MODEL_MAP.get(mdl)
+    if mapped is not None and str(mapped).strip().upper() not in ('', 'NA', 'N/A', 'NAN', 'NONE'):
+        return mapped
+    # Fallback: keyword matching (catches long variant names not in the lookup table)
+    return normalize_purchased_model(mdl)
 
 def normalize_purchased_model(pm):
     """Map raw purchasedModel string to canonical lead-model name."""
@@ -473,7 +858,9 @@ def normalize_purchased_model(pm):
     if not pm: return 'Unknown'
     # Try exact match (handles both proper unicode and corrupted encodings via keyword fallback)
     if pm in PURCHASED_MODEL_MAP:
-        return PURCHASED_MODEL_MAP[pm]
+        val = str(PURCHASED_MODEL_MAP[pm] or '').strip()
+        if val and val.upper() not in ('NA', 'N/A', 'NAN', 'NONE'):
+            return val
     pu = pm.upper()
     # Keyword-based fallback for variants not in the explicit map
     if 'RR 310' in pu or 'RR310' in pu:                          return 'TVS Apache RR 310'
@@ -486,15 +873,17 @@ def normalize_purchased_model(pm):
     if 'JUPITER 125' in pu:                                       return 'TVS Jupiter 125'
     if ('JUPITER' in pu or 'JUPTR' in pu) and '125' not in pu:   return 'TVS Jupiter'
     if 'NTORQ' in pu and '150' not in pu:                        return 'TVS NTORQ 125'
-    if 'IQUBE' in pu or 'IQUE' in pu:                            return 'TVS iQube S'
+    if 'NTORQ' in pu or 'NTRQ' in pu:                            return 'Unknown'
+    if 'IQUBE' in pu or 'IQUE' in pu:                            return 'TVS iQube'
     if 'RONIN' in pu:                                             return 'TVS Ronin'
     if 'RADEON' in pu:                                            return 'TVS Radeon'
+    if 'ORBITER' in pu:                                           return 'Unknown'
     if 'SPORT' in pu and 'TVS' not in pu.replace('TVS SPORT',''):return 'TVS Sport'
     if 'SPORT' in pu:                                             return 'TVS Sport'
     if 'XL 100' in pu or 'XL100' in pu:                          return 'TVS XL100'
     if 'ZEST' in pu:                                              return 'TVS Scooty Zest'
     if 'STAR CITY' in pu or 'STARCITY' in pu or 'CITY+' in pu:  return 'TVS Star City Plus'
-    return pm  # unmapped — keep raw for now
+    return 'Unknown'
 
 LEAD_COL_MAP = {
     'opty_id':     'SorceLeadId',
@@ -849,19 +1238,41 @@ def build_payload(all_leads, retail_map):
     total = len(all_leads)
     print(f"Aggregating {total:,} leads…", flush=True)
 
-    for i, (_, row) in enumerate(all_leads.iterrows()):
+    import gc as _gc
+
+    # Extract columns to numpy arrays — avoids pandas Series overhead per row
+    _c = all_leads.columns.tolist()
+    def _col(name, default=''):
+        return all_leads[name].fillna(default).astype(str).values if name in _c else [default] * total
+
+    _lids   = all_leads['SorceLeadId'].fillna('').astype(str).values
+    _lms    = _col('LeadMonth')
+    _srcs   = _col('Source')
+    _lts    = _col('LeadType')
+    _mdls   = _col('ModelName')
+    _sts    = _col('State')
+    _zones  = _col('Zone', '0')
+    _bds    = _col('BuyingDays', '0')
+    _cities = _col('CityName')
+    _dls    = all_leads[dl_col].fillna('').astype(str).values if dl_col and dl_col in _c else None
+
+    del all_leads, _c  # free ~500 MB DataFrame now that we have arrays
+    _gc.collect()
+
+    for i in range(total):
         if i % 100000 == 0 and i > 0:
             print(f"  {i:,}/{total:,} ({100*i//total}%)", flush=True)
 
-        lid  = to_id(row.get('SorceLeadId', ''))
-        lm   = str(row.get('LeadMonth',  '') or '').strip()
-        src  = str(row.get('Source',     '') or '').strip() or 'Unknown'
-        lt   = str(row.get('LeadType',   '') or '').strip() or 'Unknown'
-        mdl  = normalize_lead_model(row.get('ModelName', ''))
-        st   = str(row.get('State',      '') or '').strip().title() or 'Unknown'
-        zone = str(row.get('Zone',       '') or '').strip() or 'Unknown'
-        bd   = str(row.get('BuyingDays', '') or '0').strip() or '0'
-        city = str(row.get('CityName',   '') or '').strip() or 'Unknown'
+        lid  = to_id(_lids[i])
+        lm   = _lms[i].strip()
+        src  = _srcs[i].strip() or 'Unknown'
+        if src in ('Non-MS', 'Non MS', 'Non- MS'): src = 'Non CPS'
+        lt   = _lts[i].strip() or 'Unknown'
+        mdl  = normalize_lead_model(_mdls[i])
+        st   = _sts[i].strip().title() or 'Unknown'
+        zone = _zones[i].strip() or 'Unknown'
+        bd   = _bds[i].strip() or '0'
+        city = _cities[i].strip() or 'Unknown'
 
         if not lm or not lid: continue
 
@@ -891,8 +1302,8 @@ def build_payload(all_leads, retail_map):
         bump(stcm,    f"{sti}|{cti}|{li}",  is_ret, rtype)
         bump(univ,    f"{mi}|{si}|{sti}|{tti}|{li}", is_ret, rtype)
 
-        if dl_col:
-            dl  = str(row.get(dl_col, '') or '').strip() or 'Unknown'
+        if _dls is not None:
+            dl  = _dls[i].strip() or 'Unknown'
             dli = ix(dl_idx, dl_arr, dl)
             bump(cdm,  f"{cti}|{dli}|{li}",      is_ret, rtype)
             bump(cdsm, f"{cti}|{dli}|{si}|{li}", is_ret, rtype)
@@ -992,10 +1403,46 @@ print("=" * 60, flush=True)
 print("TVS Lead Disposition — Daily Data Push", flush=True)
 print("=" * 60, flush=True)
 
-# 1. Historical retail files (Apr'25–Apr'26)
-print(f"\n[1/5] Loading historical retail files from {HIST_DIR}…", flush=True)
-retail_map = load_hist_retail_map()
-print(f"  Historical retail map: {len(retail_map):,} entries", flush=True)
+# 1. Historical data (Apr'25–Apr'26) — prefer cache (faster/less RAM); fall back to XLSB
+_xlsb_present = any(
+    os.path.exists(os.path.join(HIST_DIR, s['path']))
+    for s in HIST_LEAD_FILES + HIST_RETAIL_FILES
+)
+_cache_exists = HIST_CACHE_PATH.exists()
+
+if _xlsb_present and not _cache_exists:
+    print(f"\n[1/5] Loading historical retail files from {HIST_DIR}…", flush=True)
+    retail_map = load_hist_retail_map()
+    print(f"  Historical retail map: {len(retail_map):,} entries", flush=True)
+
+    print("\n[3/5] Loading historical lead files (Apr'25–Apr'26)…", flush=True)
+    hist_leads = load_hist_leads()
+    print(f"  Historical leads total: {len(hist_leads):,}", flush=True)
+
+    # Save cache so GitHub Actions can use this data without the local files
+    _cache_data = {
+        'generated': datetime.now(timezone.utc).isoformat(),
+        'retail_map': retail_map,
+        'leads': hist_leads.to_dict('records'),
+    }
+    with gzip.open(HIST_CACHE_PATH, 'wt', encoding='utf-8') as _cf:
+        json.dump(_cache_data, _cf, separators=(',', ':'))
+    print(f"  Cache saved → {HIST_CACHE_PATH} ({HIST_CACHE_PATH.stat().st_size / 1024:.0f} KB)", flush=True)
+    del _cache_data  # free ~400 MB of dict memory before aggregation
+
+elif _cache_exists:
+    print(f"\n[1/5] Loading historical data from cache {HIST_CACHE_PATH}…", flush=True)
+    with gzip.open(HIST_CACHE_PATH, 'rt', encoding='utf-8') as _cf:
+        _cache_data = json.load(_cf)
+    retail_map = _cache_data['retail_map']
+    hist_leads = pd.DataFrame(_cache_data['leads'])
+    print(f"  Cache generated: {_cache_data.get('generated','?')}", flush=True)
+    print(f"  Historical retail map: {len(retail_map):,} entries  leads: {len(hist_leads):,}", flush=True)
+
+else:
+    print("\n[1/5] No local XLSB files and no cache found — skipping historical data.", flush=True)
+    retail_map = {}
+    hist_leads = pd.DataFrame()
 
 # 2. Online retail master — merge on top (online is authoritative for same ID)
 print("\n[2/5] Loading online retail master…", flush=True)
@@ -1007,10 +1454,8 @@ for lid, info in online_rmap.items():
     new_online += 1
 print(f"  Online entries merged: {new_online:,}  Combined total: {len(retail_map):,}", flush=True)
 
-# 3. Historical leads (Apr'25–Apr'26) from files
-print("\n[3/5] Loading historical lead files (Apr'25–Apr'26)…", flush=True)
-hist_leads = load_hist_leads()
-print(f"  Historical leads total: {len(hist_leads):,}", flush=True)
+# 3. (historical leads loaded above in step 1)
+print(f"\n[3/5] Historical leads: {len(hist_leads):,} rows", flush=True)
 
 # 4. Online leads (May'26+ only)
 print(f"\n[4/5] Loading online lead sheets ({ONLINE_START}+)…", flush=True)
@@ -1044,24 +1489,26 @@ all_leads = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 print(f"  Historical: {len(hist_leads):,}  Online: {len(online_leads):,}  Total: {len(all_leads):,}",
       flush=True)
 
-matched_lids = {to_id(v) for v in all_leads['SorceLeadId'].dropna() if to_id(v)}
-synthetic    = make_synthetic_leads(retail_df, matched_lids)
-if len(synthetic):
-    all_leads = pd.concat([all_leads, synthetic], ignore_index=True)
-    print(f"  Synthetic gap-fill rows: {len(synthetic):,}", flush=True)
 print(f"  Grand total rows: {len(all_leads):,}", flush=True)
 
+import gc; gc.collect()
 print("\nAggregating and pushing…", flush=True)
 payload  = build_payload(all_leads, retail_map)
 json_str = json.dumps(payload, separators=(',', ':'))
 print(f"\nPayload size: {len(json_str)/1024:.1f} KB", flush=True)
+
+# Save payload locally for cross-validation
+_payload_path = Path(__file__).parent / 'tvs_last_payload.json'
+with open(_payload_path, 'w', encoding='utf-8') as _f:
+    json.dump(payload, _f)
+print(f"Payload saved to {_payload_path}", flush=True)
 
 print("POSTing to Apps Script…", flush=True)
 url  = APPS_SCRIPT_URL + "?secret=" + SECRET
 data = json_str.encode("utf-8")
 req  = urllib.request.Request(url, data=data, method="POST",
        headers={"Content-Type": "application/json"})
-with urllib.request.urlopen(req, timeout=60) as resp:
+with urllib.request.urlopen(req, timeout=120) as resp:
     body = resp.read().decode()
 print(f"Response: {body}", flush=True)
 
