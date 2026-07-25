@@ -1550,19 +1550,33 @@ else:
     retail_map = {}
     hist_leads  = pd.DataFrame()
 
-# ── Step 2: Live retail master (overwrites hist for matching sourceLeadId) ─────
+# ── Step 2: Live retail master (overwrites hist for ONLINE_START+ months only) ─
+# hist_cache is the authoritative source for Apr'25–Jun'26. Live retail must NOT
+# overwrite those entries — doing so replaces the accurate hist DMS/Call Out value
+# (from the Excel "DMS/Call Out" column) with the live classification (Purchased From
+# logic), which incorrectly reclassifies many historical DMS entries as Call Out.
+# Only Jul'26+ entries are the true "online" period; those freely overwrite hist.
 print("\n[2/5] Loading live retail master from Google Sheet…", flush=True)
 retail_df    = fetch_retails()
 online_rmap  = build_retail_map(retail_df)
+_online_added = _online_skipped = 0
 for lid, info in online_rmap.items():
-    retail_map[lid] = info          # online always overwrites hist for same lid
+    if month_order(info.get('rm', '')) >= ONLINE_START_ORDER:
+        retail_map[lid] = info   # Jul'26+ entries: live is authoritative
+        _online_added += 1
+    else:
+        _online_skipped += 1     # pre-Jul'26 entries: hist_cache is authoritative, keep it
+
+print(f"  Live retail: {len(online_rmap):,} total  "
+      f"| {_online_added:,} added/updated (Jul'26+)  "
+      f"| {_online_skipped:,} skipped (hist authoritative for pre-{ONLINE_START})", flush=True)
 
 # Remove retail entries whose Retail_Attribution_Date is before LEAD_MASTER_START (Apr'25).
 # Dashboard scope begins Apr'25; Jan'25–Mar'25 retails must not appear anywhere.
 _pre_filter = len(retail_map)
 retail_map  = {lid: info for lid, info in retail_map.items()
                if month_order(info.get('rm', '')) >= LEAD_MASTER_START_ORDER}
-print(f"  Online retail entries: {len(online_rmap):,}  Combined total after {LEAD_MASTER_START} filter: {len(retail_map):,}"
+print(f"  Combined total after {LEAD_MASTER_START} filter: {len(retail_map):,}"
       f"  (removed {_pre_filter - len(retail_map):,} pre-{LEAD_MASTER_START} entries)", flush=True)
 
 # ── Step 3: Historical leads (already loaded in step 1) ───────────────────────
