@@ -1,4 +1,5 @@
-TVS/hist_cache.json.gz
+# hist_cache.json.gz is intentionally committed — it contains compiled historical
+# data that GitHub Actions needs.  Do NOT add it here.
 *.xlsb
 *.xlsx
 *.pptx
