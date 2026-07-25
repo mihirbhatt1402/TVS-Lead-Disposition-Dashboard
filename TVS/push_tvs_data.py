@@ -43,9 +43,9 @@ LEAD_SHEETS = [
 HIST_DIR        = os.environ.get('TVS_HIST_DIR', r'C:\Users\mihir.bhatt\Desktop\New folder (2)')
 HIST_CACHE_PATH = Path(__file__).parent / 'hist_cache.json.gz'
 
-# Online sheets are only used for months from ONLINE_START onwards; historical Excel covers
-# everything before this.  Deduplication (keep='last') ensures online wins for any overlap.
-ONLINE_START = "May'26"
+# Online sheets are only used for months from ONLINE_START onwards; historical Excel (Apr'25–Jun'26)
+# is the authoritative source for everything before this.
+ONLINE_START = "Jul'26"
 
 # Lead master column map: sheet column → canonical name
 # purchasedModel (raw from retail sheet) → canonical lead-model name
