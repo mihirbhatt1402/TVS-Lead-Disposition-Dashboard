@@ -1491,6 +1491,41 @@ print(f"  Historical: {len(hist_leads):,}  Online: {len(online_leads):,}  Total:
 
 print(f"  Grand total rows: {len(all_leads):,}", flush=True)
 
+# Gap-fill pass: add synthetic lead rows for retail IDs with no matching lead row.
+# Two sources: (a) live retail sheet lids, (b) hist_cache-only lids not in live sheet.
+_matched_lids = set(all_leads['SorceLeadId'].unique()) if len(all_leads) > 0 else set()
+
+# (a) Live retail sheet — make_synthetic_leads already handles this cleanly
+_synth_live = make_synthetic_leads(retail_df, _matched_lids)
+if len(_synth_live) > 0:
+    print(f"  Synthetic (live retail, no lead row): {len(_synth_live):,}", flush=True)
+    all_leads = pd.concat([all_leads, _synth_live], ignore_index=True)
+    _matched_lids.update(_synth_live['SorceLeadId'].unique())
+
+# (b) Hist_cache-only retail entries whose lids are absent from lead data AND live sheet
+_synth_hist_cols = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
+                    'State','Zone','BuyingDays','CityName','DealerName']
+_synth_hist_rows = []
+for _lid, _info in retail_map.items():
+    if _lid in _matched_lids:
+        continue
+    _rm = _info.get('rm', '')
+    _lm = _rm or lid_to_month(_lid)
+    if not _lm:
+        continue
+    _synth_hist_rows.append({
+        'SorceLeadId': _lid, 'LeadMonth': _lm,
+        'ModelName': normalize_purchased_model(_info.get('pm', '')) or 'Unknown',
+        'Source': 'Unknown', 'LeadType': 'Unknown', 'State': 'Unknown',
+        'Zone': 'Unknown', 'BuyingDays': '0', 'CityName': 'Unknown', 'DealerName': 'Unknown',
+    })
+if _synth_hist_rows:
+    _synth_hist_df = pd.DataFrame(_synth_hist_rows, columns=_synth_hist_cols)
+    print(f"  Synthetic (hist-only retail, no lead row): {len(_synth_hist_df):,}", flush=True)
+    all_leads = pd.concat([all_leads, _synth_hist_df], ignore_index=True)
+
+print(f"  Grand total after gap-fill: {len(all_leads):,}", flush=True)
+
 import gc; gc.collect()
 print("\nAggregating and pushing…", flush=True)
 payload  = build_payload(all_leads, retail_map)
