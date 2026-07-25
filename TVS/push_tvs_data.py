@@ -62,6 +62,11 @@ HIST_CACHE_PATH = Path(__file__).parent / 'hist_cache.json.gz'
 # is the authoritative source for everything before this.
 ONLINE_START = "Jul'26"
 
+# Earliest month for which CRM lead data exists. Gap-fill rows are never created for months
+# before this — retails in Jan'25–Mar'25 have no lead counterpart by design (lead master
+# starts Apr'25) and must not generate synthetic lead rows in the dashboard.
+LEAD_MASTER_START = "Apr'25"
+
 # Lead master column map: sheet column → canonical name
 # purchasedModel (raw from retail sheet) → canonical lead-model name
 PURCHASED_MODEL_MAP = {
@@ -969,7 +974,8 @@ def month_order(lm):
     except Exception:
         return 0
 
-ONLINE_START_ORDER = month_order(ONLINE_START)
+ONLINE_START_ORDER      = month_order(ONLINE_START)
+LEAD_MASTER_START_ORDER = month_order(LEAD_MASTER_START)
 
 def proxy_get(action, extra_params=None, timeout=120):
     params = {'action': action, 'secret': SECRET}
@@ -1102,13 +1108,16 @@ def build_retail_map(retail_df):
     return rmap
 
 def make_synthetic_leads(retail_df, matched_lids):
-    """Create lead rows for retailed IDs absent from all lead sheets."""
+    """Create lead rows for retailed IDs absent from all lead sheets.
+    Skips retail months before LEAD_MASTER_START — no CRM lead data exists for those months.
+    """
     rows = []
     for _, row in retail_df.iterrows():
         lid = to_id(row.get('sourceLeadId', ''))
         if not lid or lid in matched_lids: continue
         rm    = parse_ym(row.get('Retail_Attribution_Date', ''))
         lm    = rm or lid_to_month(lid)
+        if month_order(lm) < LEAD_MASTER_START_ORDER: continue   # no leads exist before Apr'25
         model = str(row.get('purchasedModel', '') or '').strip() or 'Unknown'
         rows.append({
             'SorceLeadId': lid, 'LeadMonth': lm, 'ModelName': model,
@@ -1547,7 +1556,14 @@ retail_df    = fetch_retails()
 online_rmap  = build_retail_map(retail_df)
 for lid, info in online_rmap.items():
     retail_map[lid] = info          # online always overwrites hist for same lid
-print(f"  Online retail entries: {len(online_rmap):,}  Combined total: {len(retail_map):,}", flush=True)
+
+# Remove retail entries whose Retail_Attribution_Date is before LEAD_MASTER_START (Apr'25).
+# Dashboard scope begins Apr'25; Jan'25–Mar'25 retails must not appear anywhere.
+_pre_filter = len(retail_map)
+retail_map  = {lid: info for lid, info in retail_map.items()
+               if month_order(info.get('rm', '')) >= LEAD_MASTER_START_ORDER}
+print(f"  Online retail entries: {len(online_rmap):,}  Combined total after {LEAD_MASTER_START} filter: {len(retail_map):,}"
+      f"  (removed {_pre_filter - len(retail_map):,} pre-{LEAD_MASTER_START} entries)", flush=True)
 
 # ── Step 3: Historical leads (already loaded in step 1) ───────────────────────
 print(f"\n[3/5] Historical leads: {len(hist_leads):,} rows", flush=True)
@@ -1595,38 +1611,10 @@ if len(all_leads) > 0 and 'SorceLeadId' in all_leads.columns:
 
 print(f"  Unique leads: {len(all_leads):,}", flush=True)
 
-# Gap-fill: create synthetic lead rows for retail IDs that have no matching lead row.
-# This ensures every retail is visible in the dashboard even if its lead is missing.
-_matched_lids = set(all_leads['SorceLeadId'].unique()) if len(all_leads) > 0 else set()
-_synth = make_synthetic_leads(retail_df, _matched_lids)
-if len(_synth) > 0:
-    print(f"  Synthetic lead rows (retail exists, no lead row): {len(_synth):,}", flush=True)
-    all_leads     = pd.concat([all_leads, _synth], ignore_index=True)
-    _matched_lids.update(_synth['SorceLeadId'].unique())
-
-# Also gap-fill from hist retail entries whose lids are absent from all lead data
-_synth_hist_rows = []
-for _lid, _info in retail_map.items():
-    if _lid in _matched_lids:
-        continue
-    _rm = _info.get('rm', '')
-    _lm = _rm or lid_to_month(_lid)
-    if not _lm:
-        continue
-    _synth_hist_rows.append({
-        'SorceLeadId': _lid, 'LeadMonth': _lm,
-        'ModelName': normalize_purchased_model(_info.get('pm', '')) or 'Unknown',
-        'Source': 'Unknown', 'LeadType': 'Unknown', 'State': 'Unknown',
-        'Zone': 'Unknown', 'BuyingDays': '0', 'CityName': 'Unknown', 'DealerName': 'Unknown',
-    })
-if _synth_hist_rows:
-    _cols = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
-             'State','Zone','BuyingDays','CityName','DealerName']
-    _synth_hist_df = pd.DataFrame(_synth_hist_rows, columns=_cols)
-    print(f"  Synthetic lead rows (hist retail only, no lead): {len(_synth_hist_df):,}", flush=True)
-    all_leads = pd.concat([all_leads, _synth_hist_df], ignore_index=True)
-
-print(f"  Grand total after gap-fill: {len(all_leads):,}", flush=True)
+# Gap-fill is disabled: only real CRM leads appear in the dashboard.
+# Retails without a matching CRM lead are counted only when a real lead record exists.
+# This eliminates Unknown Source / Unknown Model / Unknown LeadType from all dimensions.
+print(f"  Grand total: {len(all_leads):,}", flush=True)
 
 import gc; gc.collect()
 print("\nAggregating and pushing…", flush=True)
