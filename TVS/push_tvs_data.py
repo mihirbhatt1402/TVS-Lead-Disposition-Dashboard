@@ -10,12 +10,11 @@ JOIN: lead.opty_id  ↔  retail.sourceLeadId
 RETAIL MONTH: retail.Retail_Attribution_Date
 """
 
-import json, sys, re, time, os, gzip
+import json, sys, re, time
 import pandas as pd
 import requests
 import urllib.request
 from pathlib import Path
-from datetime import datetime, timezone
 
 MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
@@ -36,10 +35,7 @@ LEAD_SHEETS = [
     {'id': '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',  'tab': 'TVS', 'label': 'LeadSheet-7 (current)'},
 ]
 
-# Historical lead/retail files (Apr'25–Apr'26). Override via TVS_HIST_DIR env var.
-HIST_DIR       = os.environ.get('TVS_HIST_DIR', r'C:\Users\mihir.bhatt\Desktop\New folder (2)')
-HIST_CACHE_PATH = Path(__file__).parent / 'hist_cache.json.gz'
-ONLINE_START   = "May'26"  # online sheets are only used from this month onwards
+ONLINE_START = "May'26"
 
 # Lead master column map: sheet column → canonical name
 # purchasedModel (raw from retail sheet) → canonical lead-model name
@@ -1099,94 +1095,6 @@ def make_synthetic_leads(retail_df, matched_lids):
             'State','Zone','BuyingDays','CityName','DealerName']
     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
 
-# ─── Historical data loaders (file-based, Apr'25–Apr'26) ─────────────────────
-
-HIST_LEAD_FILES = [
-    {'path': 'Leads Data Master_Leads_FY_25_26 Part 1.xlsb', 'engine': 'pyxlsb',  'sheet': 'Raw Data'},
-    {'path': 'Leads Data Master_Leads_FY_25_26 Part 2.xlsx', 'engine': 'openpyxl', 'sheet': 0},
-    {'path': 'Leads Data Master_Leads_FY_25_26 Part 3.xlsx', 'engine': 'openpyxl', 'sheet': 'Sheet1'},
-    {'path': 'Leads Data Master_Leads_FY_26_27.xlsb',        'engine': 'pyxlsb',   'sheet': 'Raw Data'},
-]
-
-HIST_RETAIL_FILES = [
-    {'path': 'Retail Data Master_Retails_FY_25_26.xlsb',       'engine': 'pyxlsb', 'pm_col': 'Purchased Model 2'},
-    {'path': 'Retail Data Master_Retails_FY_26_27 (1).xlsb',   'engine': 'pyxlsb', 'pm_col': 'Purchased Model'},
-]
-
-_FILE_LEAD_RENAME = {
-    'Lead Type':   'LeadType',
-    'Dealer_Name': 'DealerName',
-    'Lead Month':  'LeadMonth',
-}
-
-def standardize_file_leads(df):
-    """Normalize file-based lead DataFrame to canonical pipeline format."""
-    df = df.rename(columns={k: v for k, v in _FILE_LEAD_RENAME.items() if k in df.columns}).copy()
-    df['SorceLeadId'] = df['SorceLeadId'].apply(to_id)
-    df['LeadMonth']   = df.get('LeadMonth', pd.Series(dtype=str)).apply(
-                            lambda v: norm_month(str(v or '').strip()))
-    if 'State' in df.columns:
-        df['State'] = df['State'].astype(str).str.strip().str.title()
-    if 'BuyingDays' not in df.columns: df['BuyingDays'] = '0'
-    if 'Zone'       not in df.columns: df['Zone']       = 'Unknown'
-    keep = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
-            'State','Zone','BuyingDays','CityName','DealerName']
-    out = df[[c for c in keep if c in df.columns]].copy()
-    # Drop rows with no ID or no month
-    out = out[out['SorceLeadId'].str.len() > 0]
-    out = out[out['LeadMonth'].str.len() > 0]
-    return out
-
-def load_hist_leads():
-    """Read all historical lead files, return combined standardized DataFrame."""
-    dfs = []
-    for spec in HIST_LEAD_FILES:
-        path = os.path.join(HIST_DIR, spec['path'])
-        if not os.path.exists(path):
-            print(f"  SKIP (not found): {spec['path']}", flush=True)
-            continue
-        try:
-            print(f"  Reading {spec['path']}…", flush=True)
-            df = pd.read_excel(path, sheet_name=spec['sheet'], engine=spec['engine'])
-            df = standardize_file_leads(df)
-            months = sorted(df['LeadMonth'].unique())
-            print(f"    {len(df):,} leads, months: {months}", flush=True)
-            dfs.append(df)
-        except Exception as e:
-            print(f"  WARNING: Could not load {spec['path']}: {e}", flush=True)
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
-def load_hist_retail_map():
-    """Build {SorceLeadId → {rm, rtype, pm}} from historical retail files."""
-    rmap = {}
-    for spec in HIST_RETAIL_FILES:
-        path = os.path.join(HIST_DIR, spec['path'])
-        if not os.path.exists(path):
-            print(f"  SKIP (not found): {spec['path']}", flush=True)
-            continue
-        try:
-            print(f"  Reading {spec['path']}…", flush=True)
-            df = pd.read_excel(path, sheet_name=0, engine=spec['engine'])
-            pm_col = spec['pm_col']
-            df['xlid'] = df['SorceLeadId'].apply(to_id)
-            df['xrm']  = df['Retail Month'].astype(str).str.strip().apply(norm_month)
-            df['xpm']  = df[pm_col].apply(normalize_purchased_model)
-            df['xrt']  = df['DMS/Call Out'].fillna('').astype(str).str.strip()
-            valid = df[df['xlid'].str.len() > 0].copy()
-            # Deduplicate: first occurrence of each lid within this file wins
-            deduped = valid.drop_duplicates(subset=['xlid'], keep='first')
-            records = deduped[['xlid','xrm','xpm','xrt']].to_dict('records')
-            added = 0
-            for r in records:
-                lid = r['xlid']
-                if lid in rmap: continue  # earlier file already has this lid
-                rmap[lid] = {'rm': r['xrm'], 'rtype': r['xrt'], 'pm': r['xpm']}
-                added += 1
-            print(f"    {added:,} entries added  (file has {len(valid):,} valid rows)", flush=True)
-        except Exception as e:
-            print(f"  WARNING: Could not load {spec['path']}: {e}", flush=True)
-    return rmap
-
 # ─── Core aggregation ─────────────────────────────────────────────────────────
 
 def build_payload(all_leads, retail_map):
@@ -1403,62 +1311,14 @@ print("=" * 60, flush=True)
 print("TVS Lead Disposition — Daily Data Push", flush=True)
 print("=" * 60, flush=True)
 
-# 1. Historical data (Apr'25–Apr'26) — prefer cache (faster/less RAM); fall back to XLSB
-_xlsb_present = any(
-    os.path.exists(os.path.join(HIST_DIR, s['path']))
-    for s in HIST_LEAD_FILES + HIST_RETAIL_FILES
-)
-_cache_exists = HIST_CACHE_PATH.exists()
+# 1. Online retail master
+print("\n[1/3] Loading online retail master…", flush=True)
+retail_df  = fetch_retails()
+retail_map = build_retail_map(retail_df)
+print(f"  Retail map: {len(retail_map):,} entries", flush=True)
 
-if _xlsb_present and not _cache_exists:
-    print(f"\n[1/5] Loading historical retail files from {HIST_DIR}…", flush=True)
-    retail_map = load_hist_retail_map()
-    print(f"  Historical retail map: {len(retail_map):,} entries", flush=True)
-
-    print("\n[3/5] Loading historical lead files (Apr'25–Apr'26)…", flush=True)
-    hist_leads = load_hist_leads()
-    print(f"  Historical leads total: {len(hist_leads):,}", flush=True)
-
-    # Save cache so GitHub Actions can use this data without the local files
-    _cache_data = {
-        'generated': datetime.now(timezone.utc).isoformat(),
-        'retail_map': retail_map,
-        'leads': hist_leads.to_dict('records'),
-    }
-    with gzip.open(HIST_CACHE_PATH, 'wt', encoding='utf-8') as _cf:
-        json.dump(_cache_data, _cf, separators=(',', ':'))
-    print(f"  Cache saved → {HIST_CACHE_PATH} ({HIST_CACHE_PATH.stat().st_size / 1024:.0f} KB)", flush=True)
-    del _cache_data  # free ~400 MB of dict memory before aggregation
-
-elif _cache_exists:
-    print(f"\n[1/5] Loading historical data from cache {HIST_CACHE_PATH}…", flush=True)
-    with gzip.open(HIST_CACHE_PATH, 'rt', encoding='utf-8') as _cf:
-        _cache_data = json.load(_cf)
-    retail_map = _cache_data['retail_map']
-    hist_leads = pd.DataFrame(_cache_data['leads'])
-    print(f"  Cache generated: {_cache_data.get('generated','?')}", flush=True)
-    print(f"  Historical retail map: {len(retail_map):,} entries  leads: {len(hist_leads):,}", flush=True)
-
-else:
-    print("\n[1/5] No local XLSB files and no cache found — skipping historical data.", flush=True)
-    retail_map = {}
-    hist_leads = pd.DataFrame()
-
-# 2. Online retail master — merge on top (online is authoritative for same ID)
-print("\n[2/5] Loading online retail master…", flush=True)
-retail_df   = fetch_retails()
-online_rmap = build_retail_map(retail_df)
-new_online  = 0
-for lid, info in online_rmap.items():
-    retail_map[lid] = info   # online overwrites historical for the same lid
-    new_online += 1
-print(f"  Online entries merged: {new_online:,}  Combined total: {len(retail_map):,}", flush=True)
-
-# 3. (historical leads loaded above in step 1)
-print(f"\n[3/5] Historical leads: {len(hist_leads):,} rows", flush=True)
-
-# 4. Online leads (May'26+ only)
-print(f"\n[4/5] Loading online lead sheets ({ONLINE_START}+)…", flush=True)
+# 2. Online leads (May'26+)
+print(f"\n[2/3] Loading online lead sheets ({ONLINE_START}+)…", flush=True)
 lead_dfs  = []
 rtype_map = {}
 for sheet in LEAD_SHEETS:
@@ -1467,7 +1327,6 @@ for sheet in LEAD_SHEETS:
         raw.columns = [c.strip() for c in raw.columns]
         rtype_map.update(extract_rtype_map(raw))
         std = standardize_leads(raw)
-        # Only keep leads from ONLINE_START onwards — historical files cover earlier months
         std = std[std['LeadMonth'].apply(month_order) >= ONLINE_START_ORDER]
         lead_dfs.append(std)
         print(f"  {sheet['label']}: {len(std):,} rows ({ONLINE_START}+)", flush=True)
@@ -1481,57 +1340,25 @@ for lid, info in rtype_map.items():
         if info['rm'] and not retail_map[lid]['rm']:
             retail_map[lid]['rm'] = info['rm']
 
-# 5. Combine all leads + synthetic gap-fill + aggregate
-print("\n[5/5] Combining leads, gap-fill, and aggregating…", flush=True)
-online_leads = pd.concat(lead_dfs, ignore_index=True) if lead_dfs else pd.DataFrame()
-parts = [df for df in [hist_leads, online_leads] if len(df) > 0]
-all_leads = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-print(f"  Historical: {len(hist_leads):,}  Online: {len(online_leads):,}  Total: {len(all_leads):,}",
-      flush=True)
+# 3. Gap-fill + aggregate
+print("\n[3/3] Combining leads, gap-fill, and aggregating…", flush=True)
+all_leads = pd.concat(lead_dfs, ignore_index=True) if lead_dfs else pd.DataFrame()
+print(f"  Online leads: {len(all_leads):,}", flush=True)
 
-# Deduplicate: same lid can appear in both hist and online sheets (FY26-27 XLSB overlaps
-# with online lead sheets). Keep 'last' so online data wins over hist for overlapping lids.
 if len(all_leads) > 0 and 'SorceLeadId' in all_leads.columns:
     before_dedup = len(all_leads)
     all_leads = all_leads.drop_duplicates(subset=['SorceLeadId'], keep='last')
     dupes = before_dedup - len(all_leads)
     if dupes:
-        print(f"  Deduplicated {dupes:,} duplicate lead rows (same lid in hist+online)", flush=True)
+        print(f"  Deduplicated {dupes:,} duplicate lead rows", flush=True)
 
 print(f"  Grand total rows: {len(all_leads):,}", flush=True)
 
-# Gap-fill pass: add synthetic lead rows for retail IDs with no matching lead row.
-# Two sources: (a) live retail sheet lids, (b) hist_cache-only lids not in live sheet.
 _matched_lids = set(all_leads['SorceLeadId'].unique()) if len(all_leads) > 0 else set()
-
-# (a) Live retail sheet — make_synthetic_leads already handles this cleanly
 _synth_live = make_synthetic_leads(retail_df, _matched_lids)
 if len(_synth_live) > 0:
-    print(f"  Synthetic (live retail, no lead row): {len(_synth_live):,}", flush=True)
+    print(f"  Synthetic (retail, no lead row): {len(_synth_live):,}", flush=True)
     all_leads = pd.concat([all_leads, _synth_live], ignore_index=True)
-    _matched_lids.update(_synth_live['SorceLeadId'].unique())
-
-# (b) Hist_cache-only retail entries whose lids are absent from lead data AND live sheet
-_synth_hist_cols = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
-                    'State','Zone','BuyingDays','CityName','DealerName']
-_synth_hist_rows = []
-for _lid, _info in retail_map.items():
-    if _lid in _matched_lids:
-        continue
-    _rm = _info.get('rm', '')
-    _lm = _rm or lid_to_month(_lid)
-    if not _lm:
-        continue
-    _synth_hist_rows.append({
-        'SorceLeadId': _lid, 'LeadMonth': _lm,
-        'ModelName': normalize_purchased_model(_info.get('pm', '')) or 'Unknown',
-        'Source': 'Unknown', 'LeadType': 'Unknown', 'State': 'Unknown',
-        'Zone': 'Unknown', 'BuyingDays': '0', 'CityName': 'Unknown', 'DealerName': 'Unknown',
-    })
-if _synth_hist_rows:
-    _synth_hist_df = pd.DataFrame(_synth_hist_rows, columns=_synth_hist_cols)
-    print(f"  Synthetic (hist-only retail, no lead row): {len(_synth_hist_df):,}", flush=True)
-    all_leads = pd.concat([all_leads, _synth_hist_df], ignore_index=True)
 
 print(f"  Grand total after gap-fill: {len(all_leads):,}", flush=True)
 

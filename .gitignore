@@ -1,0 +1,6 @@
+TVS/hist_cache.json.gz
+*.xlsb
+*.xlsx
+*.pptx
+__pycache__/
+*.pyc
