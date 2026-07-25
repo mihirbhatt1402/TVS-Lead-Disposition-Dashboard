@@ -6,8 +6,9 @@ DATA SOURCES
   Leads (historical) : Excel files on local disk → baked into hist_cache.json.gz (committed)
                        Coverage: Apr'25 – Jun'26  (2,634,996 rows across 4 workbooks)
   Leads (live)       : 7 Google Sheets via Apps Script proxy (Jul'26 onwards)
-  Retails (historical): Excel files on local disk → baked into hist_cache.json.gz
-                        Coverage: Jan'25 – Mar'26  (351,385 entries, 1 workbook)
+  Retails (historical): Excel files on local disk -> baked into hist_cache.json.gz
+                        Coverage: Jan'25 – Jul'26  (~384,217 unique entries after null-enquiryId exclusion,
+                        1 workbook, sheet='Retails'; excludes 30,427 bulk-import rows with no CRM match)
   Retails (live)     : Google Sheet via Apps Script proxy (all dates, overwrites hist per lid)
 
 JOIN: Lead.opty_id = Retail.sourceLeadId  (primary-key join, date/source never matter)
@@ -16,10 +17,9 @@ MERGE: hist leads + live leads deduped by SorceLeadId (keep='last'; live wins on
        hist retail map + live retail map merged by sourceLeadId (live overwrites hist per key)
 """
 
-import json, sys, re, time, os, gzip
+import json, sys, re, time, os, gzip, base64
 import pandas as pd
 import requests
-import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -1084,10 +1084,9 @@ def build_retail_map(retail_df):
         pm = normalize_purchased_model(row.get('purchasedModel', ''))
         if has_pf:
             pf = str(row.get('Purchased From', '') or '').strip()
-            rtype = '' if pf else 'DMS'
-            if pf: rtype = 'Call Out'
+            rtype = 'Call Out' if pf else 'DMS'
         else:
-            rtype = ''
+            rtype = 'DMS'
         rmap[lid] = {'rm': rm, 'rtype': rtype, 'pm': pm}
     return rmap
 
@@ -1123,10 +1122,10 @@ HIST_LEAD_FILES = [
 
 # Historical Retail Master.
 # NOTE: Although the filename references FY26-27, this workbook already contains
-# historical retail data covering Jan'25 through Mar'26 (351,385 entries).
+# historical retail data covering Jan'25 through Jul'26 (data sheet: 'Retails').
 # Update this list only if a newer historical retail master is provided.
 HIST_RETAIL_FILES = [
-    {'path': 'Retail Data Master_Retails_FY_26_27 (1).xlsb', 'engine': 'pyxlsb'},
+    {'path': 'Retail Data Master_Retails_FY_26_27 (1).xlsb', 'engine': 'pyxlsb', 'sheet': 'Retails'},
 ]
 
 # Column rename map for historical lead Excel files
@@ -1205,7 +1204,10 @@ def load_hist_leads():
     return combined
 
 def load_hist_retail_map():
-    """Build {sourceLeadId → {rm, rtype, pm}} from historical retail Excel files."""
+    """Build {sourceLeadId -> {rm, rtype, pm}} from historical retail Excel files.
+    Rows with null enquiryId are excluded (bulk-import artifacts; match zero leads).
+    Retail type is read directly from the DMS/Call Out column in the workbook.
+    """
     rmap = {}
     for spec in HIST_RETAIL_FILES:
         path = os.path.join(HIST_DIR, spec['path'])
@@ -1214,7 +1216,17 @@ def load_hist_retail_map():
             continue
         try:
             print(f"  Reading {spec['path']}…", flush=True)
-            df = pd.read_excel(path, sheet_name=0, engine=spec['engine'])
+            df = pd.read_excel(path, sheet_name=spec.get('sheet', 0), engine=spec['engine'])
+
+            # Exclude rows with null enquiryId — these are bulk-import artifacts
+            # (concentrated in Jan-Mar'25, 0 lead matches) excluded from the
+            # business-approved retail count (388,094).
+            if 'enquiryId' in df.columns:
+                raw_count = len(df)
+                df = df[df['enquiryId'].notna()].copy()
+                excluded = raw_count - len(df)
+                if excluded:
+                    print(f"    Excluded {excluded:,} rows with null enquiryId (raw={raw_count:,})", flush=True)
 
             # --- primary key: accept either casing ---
             id_col = next((c for c in df.columns if c.lower() in ('sorceLeadId', 'sourceleadid')), None)
@@ -1496,7 +1508,7 @@ if _xlsb_present and not _cache_exists:
     }
     with gzip.open(HIST_CACHE_PATH, 'wt', encoding='utf-8') as _cf:
         json.dump(_cache_data, _cf, separators=(',', ':'))
-    print(f"  hist_cache saved → {HIST_CACHE_PATH} ({HIST_CACHE_PATH.stat().st_size//1024:,} KB)", flush=True)
+    print(f"  hist_cache saved -> {HIST_CACHE_PATH} ({HIST_CACHE_PATH.stat().st_size//1024:,} KB)", flush=True)
     del _cache_data
 
 elif _cache_exists:
@@ -1541,10 +1553,13 @@ for sheet in LEAD_SHEETS:
     except Exception as e:
         print(f"  WARNING: Could not load {sheet['label']}: {e}", flush=True)
 
-# Override rtype from embedded sheet columns (DMS_Retail_Month / Retail By)
+# Override rtype from embedded sheet columns (DMS_Retail_Month / Retail By).
+# Only override when Retail By is non-empty — empty values must not erase the
+# DMS/Call Out already set by the retail master (Purchased From or DMS/Call Out col).
 for lid, info in rtype_map.items():
     if lid in retail_map:
-        retail_map[lid]['rtype'] = info['rtype']
+        if info['rtype']:
+            retail_map[lid]['rtype'] = info['rtype']
         if info['rm'] and not retail_map[lid]['rm']:
             retail_map[lid]['rm'] = info['rm']
 
@@ -1610,16 +1625,28 @@ with open(_payload_path, 'w', encoding='utf-8') as _f:
     json.dump(payload, _f)
 print(f"Payload saved to {_payload_path}", flush=True)
 
-print("POSTing to Apps Script…", flush=True)
-url  = APPS_SCRIPT_URL + "?secret=" + SECRET
-data = json_str.encode("utf-8")
-req  = urllib.request.Request(url, data=data, method="POST",
-       headers={"Content-Type": "application/json"})
+# Compress the payload: gzip + base64 → ~5-8 MB instead of ~50 MB.
+# Apps Script doPost decompresses the "gz" envelope before processing.
+_raw_bytes  = json_str.encode('utf-8')
+_compressed = gzip.compress(_raw_bytes, compresslevel=6)
+_envelope   = json.dumps({'gz': base64.b64encode(_compressed).decode('ascii')},
+                          separators=(',', ':'))
+print(f"POSTing to Apps Script… ({len(_envelope)/1024:.0f} KB compressed, "
+      f"was {len(json_str)/1024:.0f} KB raw)", flush=True)
+del _raw_bytes, _compressed, json_str
+
 body = None
 for _attempt in range(3):
     try:
-        with urllib.request.urlopen(req, timeout=240) as resp:
-            body = resp.read().decode()
+        _resp = requests.post(
+            APPS_SCRIPT_URL,
+            data=_envelope.encode('utf-8'),
+            params={'secret': SECRET},
+            headers={'Content-Type': 'application/json'},
+            timeout=(60, 1800),   # 60 s connect, 30 min read
+        )
+        _resp.raise_for_status()
+        body = _resp.text
         break
     except Exception as _e:
         print(f"  POST attempt {_attempt+1} failed: {_e}", flush=True)
