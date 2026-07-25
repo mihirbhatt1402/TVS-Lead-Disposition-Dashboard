@@ -1489,6 +1489,15 @@ all_leads = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 print(f"  Historical: {len(hist_leads):,}  Online: {len(online_leads):,}  Total: {len(all_leads):,}",
       flush=True)
 
+# Deduplicate: same lid can appear in both hist and online sheets (FY26-27 XLSB overlaps
+# with online lead sheets). Keep 'last' so online data wins over hist for overlapping lids.
+if len(all_leads) > 0 and 'SorceLeadId' in all_leads.columns:
+    before_dedup = len(all_leads)
+    all_leads = all_leads.drop_duplicates(subset=['SorceLeadId'], keep='last')
+    dupes = before_dedup - len(all_leads)
+    if dupes:
+        print(f"  Deduplicated {dupes:,} duplicate lead rows (same lid in hist+online)", flush=True)
+
 print(f"  Grand total rows: {len(all_leads):,}", flush=True)
 
 # Gap-fill pass: add synthetic lead rows for retail IDs with no matching lead row.
