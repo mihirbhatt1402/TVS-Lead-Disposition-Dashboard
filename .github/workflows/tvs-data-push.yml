@@ -37,4 +37,5 @@ jobs:
           echo "Last run: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > last_run.txt
           git add last_run.txt
           git commit -m "chore: pipeline run $(date -u '+%Y-%m-%d') [skip ci]"
+          git pull --rebase
           git push
