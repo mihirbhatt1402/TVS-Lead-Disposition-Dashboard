@@ -1543,11 +1543,22 @@ url  = APPS_SCRIPT_URL + "?secret=" + SECRET
 data = json_str.encode("utf-8")
 req  = urllib.request.Request(url, data=data, method="POST",
        headers={"Content-Type": "application/json"})
-with urllib.request.urlopen(req, timeout=120) as resp:
-    body = resp.read().decode()
+body = None
+for _attempt in range(3):
+    try:
+        with urllib.request.urlopen(req, timeout=240) as resp:
+            body = resp.read().decode()
+        break
+    except Exception as _e:
+        print(f"  POST attempt {_attempt+1} failed: {_e}", flush=True)
+        if _attempt < 2:
+            print("  Retrying in 30s…", flush=True)
+            time.sleep(30)
+        else:
+            raise
 print(f"Response: {body}", flush=True)
 
-if '"ok":true' not in body:
+if not body or '"ok":true' not in body:
     print("ERROR: Apps Script did not confirm success!", file=sys.stderr)
     sys.exit(1)
 
