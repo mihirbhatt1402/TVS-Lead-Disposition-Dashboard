@@ -4,12 +4,16 @@ Runs via GitHub Actions at 12:00 PM IST every day.
 
 DATA SOURCES
   Leads (historical) : Excel files on local disk → baked into hist_cache.json.gz (committed)
-  Leads (live)       : 7 Google Sheets via Apps Script proxy (May'26+)
+                       Coverage: Apr'25 – Jun'26  (2,634,996 rows across 4 workbooks)
+  Leads (live)       : 7 Google Sheets via Apps Script proxy (Jul'26 onwards)
   Retails (historical): Excel files on local disk → baked into hist_cache.json.gz
-  Retails (live)     : Google Sheet via Apps Script proxy (all dates, overwrites hist)
+                        Coverage: Jan'25 – Mar'26  (351,385 entries, 1 workbook)
+  Retails (live)     : Google Sheet via Apps Script proxy (all dates, overwrites hist per lid)
 
 JOIN: Lead.opty_id = Retail.sourceLeadId  (primary-key join, date/source never matter)
 RETAIL MONTH: Retail_Attribution_Date drives all retail calculations
+MERGE: hist leads + live leads deduped by SorceLeadId (keep='last'; live wins on overlap)
+       hist retail map + live retail map merged by sourceLeadId (live overwrites hist per key)
 """
 
 import json, sys, re, time, os, gzip
@@ -1107,6 +1111,9 @@ def make_synthetic_leads(retail_df, matched_lids):
 
 # ─── Historical file specs ────────────────────────────────────────────────────
 
+# Historical Lead Master.
+# Coverage: Apr'25 – Jun'26  (2,634,996 rows across 4 workbooks).
+# Update this list only if a newer historical lead master is provided.
 HIST_LEAD_FILES = [
     {'path': 'Leads Data Master_Leads_FY_25_26 Part 1.xlsb', 'engine': 'pyxlsb',  'sheet': 'Raw Data'},
     {'path': 'Leads Data Master_Leads_FY_25_26 Part 2.xlsx', 'engine': 'openpyxl', 'sheet': 0},
@@ -1114,9 +1121,11 @@ HIST_LEAD_FILES = [
     {'path': 'Leads Data Master_Leads_FY_26_27.xlsb',        'engine': 'pyxlsb',   'sheet': 'Raw Data'},
 ]
 
+# Historical Retail Master.
+# NOTE: Although the filename references FY26-27, this workbook already contains
+# historical retail data covering Jan'25 through Mar'26 (351,385 entries).
+# Update this list only if a newer historical retail master is provided.
 HIST_RETAIL_FILES = [
-    # This file covers Jan'25–Mar'26 (351,385 entries) despite the FY_26_27 name.
-    # It is the only historical retail Excel provided; no separate FY_25_26 file exists.
     {'path': 'Retail Data Master_Retails_FY_26_27 (1).xlsb', 'engine': 'pyxlsb'},
 ]
 
