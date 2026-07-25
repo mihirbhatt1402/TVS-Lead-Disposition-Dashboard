@@ -1,14 +1,24 @@
 """
 TVS Lead Disposition — Daily Data Push
-Runs via GitHub Actions at 12:00 PM IST every day.
+Runs via GitHub Actions at 11:30 AM IST every day.
+
+PRODUCTION EXECUTION FLOW
+  GitHub Actions → Load hist_cache.json.gz → Download Live Leads (GSheets)
+  → Download Live Retail (GSheet) → Merge Historical + Live
+  → Lead-Retail Reconciliation → Generate Payload → Compress → Push to Apps Script
+  → Update Firebase → Dashboard Refreshed
 
 DATA SOURCES
-  Leads (historical) : Excel files on local disk → baked into hist_cache.json.gz (committed)
-                       Coverage: Apr'25 – Jun'26  (2,634,996 rows across 4 workbooks)
+  Leads (historical) : hist_cache.json.gz — permanent production source (committed to git)
+                       Coverage: Apr'25 – Jun'26  (2,634,996 rows, permanently frozen)
+                       [Bootstrap only] Excel files on local disk were a one-time source used
+                       to generate the cache. They are never accessed during normal production.
   Leads (live)       : 7 Google Sheets via Apps Script proxy (Jul'26 onwards)
-  Retails (historical): Excel files on local disk -> baked into hist_cache.json.gz
-                        Coverage: Jan'25 – Jul'26  (~384,217 unique entries after null-enquiryId exclusion,
-                        1 workbook, sheet='Retails'; excludes 30,427 bulk-import rows with no CRM match)
+  Retails (historical): hist_cache.json.gz — permanent production source (committed to git)
+                        Coverage: Jan'25 – Jun'26  (384,217 entries after null-enquiryId
+                        exclusion; excludes 30,427 bulk-import rows with no CRM match;
+                        permanently frozen)
+                        [Bootstrap only] Excel files on local disk were a one-time source.
   Retails (live)     : Google Sheet via Apps Script proxy (all dates, overwrites hist per lid)
 
 JOIN: Lead.opty_id = Retail.sourceLeadId  (primary-key join, date/source never matter)
@@ -42,8 +52,9 @@ LEAD_SHEETS = [
     {'id': '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',  'tab': 'TVS', 'label': 'LeadSheet-7 (current)'},
 ]
 
-# Historical Excel files are on the developer's machine; their data is compiled into
-# hist_cache.json.gz which is committed so GitHub Actions can use it without the raw files.
+# Bootstrap/DR only: local path to historical Excel files, used only when rebuilding
+# hist_cache.json.gz from scratch. Never accessed during normal production runs
+# (the committed cache is always present on GitHub Actions).
 HIST_DIR        = os.environ.get('TVS_HIST_DIR', r'C:\Users\mihir.bhatt\Desktop\New folder (2)')
 HIST_CACHE_PATH = Path(__file__).parent / 'hist_cache.json.gz'
 
@@ -1110,9 +1121,10 @@ def make_synthetic_leads(retail_df, matched_lids):
 
 # ─── Historical file specs ────────────────────────────────────────────────────
 
-# Historical Lead Master.
-# Coverage: Apr'25 – Jun'26  (2,634,996 rows across 4 workbooks).
-# Update this list only if a newer historical lead master is provided.
+# Historical Lead Master — bootstrap/DR only.
+# These files are NEVER read during normal production runs. hist_cache.json.gz is the
+# permanent production source. Only needed if the cache must be rebuilt from scratch.
+# Coverage: Apr'25 – Jun'26  (2,634,996 rows across 4 workbooks; permanently frozen).
 HIST_LEAD_FILES = [
     {'path': 'Leads Data Master_Leads_FY_25_26 Part 1.xlsb', 'engine': 'pyxlsb',  'sheet': 'Raw Data'},
     {'path': 'Leads Data Master_Leads_FY_25_26 Part 2.xlsx', 'engine': 'openpyxl', 'sheet': 0},
@@ -1120,10 +1132,11 @@ HIST_LEAD_FILES = [
     {'path': 'Leads Data Master_Leads_FY_26_27.xlsb',        'engine': 'pyxlsb',   'sheet': 'Raw Data'},
 ]
 
-# Historical Retail Master.
-# NOTE: Although the filename references FY26-27, this workbook already contains
-# historical retail data covering Jan'25 through Jul'26 (data sheet: 'Retails').
-# Update this list only if a newer historical retail master is provided.
+# Historical Retail Master — bootstrap/DR only.
+# These files are NEVER read during normal production runs. hist_cache.json.gz is the
+# permanent production source. Only needed if the cache must be rebuilt from scratch.
+# NOTE: Although the filename references FY26-27, the 'Retails' sheet covers Jan'25–Jun'26
+# (384,217 entries after null-enquiryId exclusion; permanently frozen).
 HIST_RETAIL_FILES = [
     {'path': 'Retail Data Master_Retails_FY_26_27 (1).xlsb', 'engine': 'pyxlsb', 'sheet': 'Retails'},
 ]
@@ -1481,14 +1494,14 @@ print("=" * 60, flush=True)
 print("TVS Lead Disposition — Daily Data Push", flush=True)
 print("=" * 60, flush=True)
 
-# ── Step 1: Historical baseline (Excel → hist_cache) ──────────────────────────
-# If local Excel files are present and no cache exists yet, build the cache.
-# GitHub Actions always uses the pre-built cache (Excel files are not on CI).
-_xlsb_present = any(
+# ── Step 1: Historical data ───────────────────────────────────────────────────
+# PRODUCTION: load the committed hist_cache.json.gz (always present on GitHub Actions).
+# BOOTSTRAP (local only): if the cache is absent AND local Excel files exist, rebuild it.
+_cache_exists = HIST_CACHE_PATH.exists()
+_xlsb_present = (not _cache_exists) and any(
     os.path.exists(os.path.join(HIST_DIR, s['path']))
     for s in HIST_LEAD_FILES + HIST_RETAIL_FILES
 )
-_cache_exists = HIST_CACHE_PATH.exists()
 
 if _xlsb_present and not _cache_exists:
     print(f"\n[1/5] Building hist_cache from local Excel files in {HIST_DIR}…", flush=True)
@@ -1522,7 +1535,9 @@ elif _cache_exists:
     del _cache_data
 
 else:
-    print("\n[1/5] No Excel files and no hist_cache — starting from scratch (live data only).", flush=True)
+    # This branch should never fire in production — hist_cache.json.gz is always committed.
+    print("\n[1/5] WARNING: hist_cache.json.gz not found and no local Excel files present.", flush=True)
+    print("              This should not occur in production. Continuing with live data only.", flush=True)
     retail_map = {}
     hist_leads  = pd.DataFrame()
 
