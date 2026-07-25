@@ -1115,9 +1115,8 @@ HIST_LEAD_FILES = [
 ]
 
 HIST_RETAIL_FILES = [
-    # FY25-26 retail file — add when available; columns expected: SorceLeadId/sourceLeadId,
-    # Retail Month or Retail_Attribution_Date, Purchased Model / purchasedModel, DMS/Call Out
-    # {'path': 'Retail Data Master_Retails_FY_25_26.xlsb', 'engine': 'pyxlsb'},
+    # This file covers Jan'25–Mar'26 (351,385 entries) despite the FY_26_27 name.
+    # It is the only historical retail Excel provided; no separate FY_25_26 file exists.
     {'path': 'Retail Data Master_Retails_FY_26_27 (1).xlsb', 'engine': 'pyxlsb'},
 ]
 
