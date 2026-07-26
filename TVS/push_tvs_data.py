@@ -1407,8 +1407,6 @@ def build_payload(all_leads, retail_map):
         bump(cm,      f"{cti}|{li}",           is_ret, rtype)
         bump(csm,     f"{cti}|{si}|{li}",   is_ret, rtype)
         bump(stcm,    f"{sti}|{cti}|{li}",  is_ret, rtype)
-        ubump(u_cm,  f"{cti}|{li}",         f"{cti}|{uli}",         is_ret, rtype)
-        ubump(u_csm, f"{cti}|{si}|{li}",   f"{cti}|{si}|{uli}",   is_ret, rtype)
         bump(univ,    f"{mi}|{si}|{sti}|{tti}|{li}", is_ret, rtype)
 
         if _dls is not None:
@@ -1436,6 +1434,8 @@ def build_payload(all_leads, retail_map):
         ubump(u_bdm,     f"{bd}|{si}|{li}",         f"{bd}|{si}|{uli}",         is_ret, rtype)
         ubump(u_stcm,    f"{sti}|{cti}|{li}",       f"{sti}|{cti}|{uli}",       is_ret, rtype)
         ubump(u_univ,    f"{mi}|{si}|{sti}|{tti}|{li}", f"{mi}|{si}|{sti}|{tti}|{uli}", is_ret, rtype)
+        ubump(u_cm,  f"{cti}|{li}",         f"{cti}|{uli}",         is_ret, rtype)
+        ubump(u_csm, f"{cti}|{si}|{li}",   f"{cti}|{si}|{uli}",   is_ret, rtype)
 
         if dl_col:
             ubump(u_stdm, f"{sti}|{dli}|{li}", f"{sti}|{dli}|{uli}", is_ret, rtype)
