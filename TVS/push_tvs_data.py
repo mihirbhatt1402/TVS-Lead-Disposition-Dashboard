@@ -1100,8 +1100,16 @@ def build_retail_map(retail_df):
         rm = parse_ym(row.get('Retail_Attribution_Date', ''))
         pm = normalize_purchased_model(row.get('purchasedModel', ''))
         if has_pf:
-            pf = str(row.get('Purchased From', '') or '').strip()
-            rtype = 'Call Out' if pf else 'DMS'
+            _pf = row.get('Purchased From', '')
+            try:
+                # float('nan') is truthy in Python; str(nan)='nan' which is also truthy.
+                # Must explicitly detect all blank representations from GSheet/pandas.
+                _pf_blank = (_pf is None or
+                             (isinstance(_pf, float) and pd.isna(_pf)) or
+                             str(_pf).strip().lower() in ('', 'nan', 'none', 'null', 'na', 'n/a'))
+            except Exception:
+                _pf_blank = True
+            rtype = 'DMS' if _pf_blank else 'Call Out'
         else:
             rtype = 'DMS'
         rmap[lid] = {'rm': rm, 'rtype': rtype, 'pm': pm}
@@ -1596,10 +1604,13 @@ for sheet in LEAD_SHEETS:
         print(f"  WARNING: Could not load {sheet['label']}: {e}", flush=True)
 
 # Override rtype from embedded sheet columns (DMS_Retail_Month / Retail By).
-# Only override when Retail By is non-empty — empty values must not erase the
-# DMS/Call Out already set by the retail master (Purchased From or DMS/Call Out col).
+# Only override when Retail By is non-empty AND retail month is Jul'26+ (ONLINE_START).
+# Pre-Jul'26 hist retail types are authoritative and must not be overwritten by live sheets.
 for lid, info in rtype_map.items():
     if lid in retail_map:
+        _rm_ord = month_order(info.get('rm', ''))
+        if 0 < _rm_ord < ONLINE_START_ORDER:
+            continue   # hist retail month — live sheet must not override
         if info['rtype']:
             retail_map[lid]['rtype'] = info['rtype']
         if info['rm'] and not retail_map[lid]['rm']:

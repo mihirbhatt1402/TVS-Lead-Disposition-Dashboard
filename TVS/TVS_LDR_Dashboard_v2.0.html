@@ -2307,6 +2307,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
   const [metrics,    setMetrics]    = useState(['leads']);
   const [sortBy,     setSortBy]     = useState('__total__');
   const [sortDir,    setSortDir]    = useState('desc');
+  const [sortMetric, setSortMetric] = useState(null); // null = primary metric; set when clicking a specific metric column
   const [topN,       setTopN]       = useState(20);
   const [collapsed,  setCollapsed]  = useState(new Set());
   const [addRowOpen, setAddRowOpen] = useState(false);
@@ -2556,18 +2557,32 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
       const total = rowTotal(entry.sub, pm);
       rows.push({ label, entry, total });
     }
+    const effM = sortMetric || pm; // effective metric for column-based sort
     rows.sort((a, b) => {
       let av, bv;
-      if (sortBy === '__total__') { av = a.total; bv = b.total; }
+      if (sortBy === '__total__') {
+        // when sortMetric is set (multi-metric mode), sort by that metric's row total
+        if (sortMetric) {
+          av = [...a.entry.sub.values()].reduce((s,v) => s + getMetricVal(v, sortMetric), 0);
+          bv = [...b.entry.sub.values()].reduce((s,v) => s + getMetricVal(v, sortMetric), 0);
+        } else { av = a.total; bv = b.total; }
+      }
       else if (sortBy === '__label__') { av = a.label; bv = b.label; }
-      else { av = getMetricVal(a.entry.sub.get(sortBy), pm); bv = getMetricVal(b.entry.sub.get(sortBy), pm); }
+      else if (sortBy.startsWith('__c0__')) {
+        // outer group header sort: sum all columns in this c0 group
+        const c0 = sortBy.slice(6);
+        const colSep = COL_SEP;
+        av = [...a.entry.sub].reduce((s,[k,v]) => k.slice(0,k.indexOf(colSep)<0?k.length:k.indexOf(colSep))===c0 ? s+getMetricVal(v,effM) : s, 0);
+        bv = [...b.entry.sub].reduce((s,[k,v]) => k.slice(0,k.indexOf(colSep)<0?k.length:k.indexOf(colSep))===c0 ? s+getMetricVal(v,effM) : s, 0);
+      }
+      else { av = getMetricVal(a.entry.sub.get(sortBy), effM); bv = getMetricVal(b.entry.sub.get(sortBy), effM); }
       if (av === bv) return 0;
       if (typeof av === 'string') return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
       return sortDir === 'asc' ? av - bv : bv - av;
     });
     const filtered = rowDims.includes('mdl') ? rows.filter(r => r.label !== 'Unknown') : rows;
     return topN > 0 ? filtered.slice(0, topN) : filtered;
-  }, [pivotResult, pm, sortBy, sortDir, topN]);
+  }, [pivotResult, pm, sortBy, sortDir, topN, sortMetric]);
 
   const grandTotals = useMemo(() => {
     if (!pivotResult) return { colVals: {}, gl: 0, gr: 0 };
@@ -2803,9 +2818,14 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
       /* SORT — hide per-column sort when 2 col dims (composite keys aren't readable labels) */
       ce('div', null,
         ce('div', { style:{fontSize:10,fontWeight:700,color:'#64748B',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6} }, 'Sort By'),
-        ce('select', { value:sortBy, onChange:e=>setSortBy(e.target.value), style:selSt },
+        ce('select', {
+          value: (sortBy==='__total__'||sortBy==='__label__') ? sortBy : '__col__',
+          onChange: e => { setSortBy(e.target.value); setSortMetric(null); },
+          style: selSt
+        },
           ce('option',{value:'__total__'},'Total'),
           ce('option',{value:'__label__'},'Row Label'),
+          (sortBy!=='__total__'&&sortBy!=='__label__') && ce('option',{value:'__col__',disabled:true},'Column ↓↑'),
           ...(!hasC2 ? orderedCols.slice(0,8).map(c => ce('option',{key:c,value:c}, c.length>15?c.slice(0,14)+'…':c)) : [])
         )
       ),
@@ -2892,7 +2912,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
                       minWidth: i===0 ? 140 : 110,
                       borderRight: i===rowDims.length-1 ? `1px solid ${txt==='#fff'?'rgba(255,255,255,0.15)':'rgba(0,0,0,0.1)'}` : 'none',
                       cursor: i===0 ? 'pointer' : 'default', userSelect:'none' },
-              onClick: i===0 ? ()=>{ sortBy==='__label__' ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy('__label__'), setSortDir('desc')); } : undefined
+              onClick: i===0 ? ()=>{ sortBy==='__label__' ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy('__label__'), setSortDir('desc'), setSortMetric(null)); } : undefined
             }, (DIMS.find(d=>d.key===dim)?.label||dim) + (i===0&&sortBy==='__label__'?(sortDir==='asc'?' ↑':' ↓'):''));
 
           const rows = [];
@@ -2907,22 +2927,27 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               }, rowDims.map(k=>DIMS.find(d=>d.key===k)?.label||k).join(' → ')),
 
               ...(hasC2
-                // col1 group cells
-                ? colGroups.map(({c0, span}, gi) =>
-                    ce('th', { key:`cg_${c0}`, colSpan: span * metrics.length,
+                // col1 group cells — each clickable to sort by that group's total
+                ? colGroups.map(({c0, span}, gi) => {
+                    const sk = '__c0__' + c0;
+                    const active = sortBy === sk;
+                    return ce('th', { key:`cg_${c0}`, colSpan: span * metrics.length,
                       style:{ padding:'7px 12px', textAlign:'center', fontWeight:700, whiteSpace:'nowrap',
-                              color:topTxt, background:topBg,
-                              borderLeft: gi===0 ? 'none' : '1px solid rgba(0,0,0,0.1)' }
-                    }, c0)
-                  )
-                // col values each spanning metrics (single col dim + multiMetric)
-                : orderedCols.map((col, ci) =>
-                    ce('th', { key:`cv_${col}`, colSpan: metrics.length,
+                              color:topTxt, background:topBg, cursor:'pointer', userSelect:'none',
+                              borderLeft: gi===0 ? 'none' : '1px solid rgba(0,0,0,0.1)' },
+                      onClick: () => { active ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy(sk), setSortDir('desc'), setSortMetric(null)); }
+                    }, c0 + (active ? (sortDir==='asc'?' ↑':' ↓') : ''));
+                  })
+                // col values each spanning metrics (single col dim + multiMetric) — clickable
+                : orderedCols.map((col, ci) => {
+                    const active = sortBy === col;
+                    return ce('th', { key:`cv_${col}`, colSpan: metrics.length,
                       style:{ padding:'7px 12px', textAlign:'center', fontWeight:700, whiteSpace:'nowrap',
-                              color:topTxt, background:topBg,
-                              borderLeft: ci===0 ? 'none' : '1px solid rgba(0,0,0,0.1)' }
-                    }, col)
-                  )
+                              color:topTxt, background:topBg, cursor:'pointer', userSelect:'none',
+                              borderLeft: ci===0 ? 'none' : '1px solid rgba(0,0,0,0.1)' },
+                      onClick: () => { active ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy(col), setSortDir('desc'), setSortMetric(null)); }
+                    }, col + (active ? (sortDir==='asc'?' ↑':' ↓') : ''));
+                  })
               ),
 
               ce('th', { colSpan: metrics.length,
@@ -2969,43 +2994,49 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               const groupBorder = hasC2 && (ci===0 || thisC0!==prevC0);
 
               if (multiMetric) {
-                return metrics.map((m, mi) =>
-                  ce('th', { key:`bot_${ck}_${m}`,
+                // multi-metric: each (column × metric) cell is independently sortable
+                return metrics.map((m, mi) => {
+                  const active = sortBy === ck && sortMetric === m;
+                  return ce('th', { key:`bot_${ck}_${m}`,
                     style:{ padding:'6px 10px', textAlign:'right', fontWeight:500, whiteSpace:'nowrap',
                             fontSize:11, color:botTxt, background:botBg,
+                            cursor:'pointer', userSelect:'none',
                             borderLeft: mi===0&&groupBorder ? '1px solid rgba(255,255,255,0.15)'
-                                       : mi===0&&ci>0&&!hasC2 ? '1px solid rgba(255,255,255,0.1)' : 'none' }
-                  }, METRICS.find(x=>x.key===m)?.label||m)
-                );
+                                       : mi===0&&ci>0&&!hasC2 ? '1px solid rgba(255,255,255,0.1)' : 'none' },
+                    onClick: () => { active ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy(ck), setSortMetric(m), setSortDir('desc')); }
+                  }, (METRICS.find(x=>x.key===m)?.label||m) + (active?(sortDir==='asc'?' ↑':' ↓'):''));
+                });
               }
-              // single metric
+              // single metric — always sortable
               const colLabel = hasC2
                 ? ck.slice(ck.indexOf(COL_SEP) + 1)
                 : ck;
-              const sortable = !multiMetric;
+              const active = sortBy === ck && !sortMetric;
               return [ce('th', { key:`bot_${ck}`,
                 style:{ padding: numHdrRows>1?'6px 12px':'10px 12px', textAlign:'right',
-                        fontWeight:600, whiteSpace:'nowrap', minWidth: multiMetric?68:80,
+                        fontWeight:600, whiteSpace:'nowrap', minWidth:80,
                         color:botTxt, background:botBg,
                         borderLeft: groupBorder ? '1px solid rgba(255,255,255,0.15)'
                                    : ci>0&&!hasC2 ? '1px solid rgba(255,255,255,0.1)' : 'none',
-                        cursor: sortable ? 'pointer' : 'default', userSelect:'none' },
-                onClick: sortable ? ()=>{ sortBy===ck ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy(ck), setSortDir('desc')); } : undefined
-              }, colLabel + (sortable&&sortBy===ck?(sortDir==='asc'?' ↑':' ↓'):''))];
+                        cursor:'pointer', userSelect:'none' },
+                onClick: ()=>{ active ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy(ck), setSortDir('desc'), setSortMetric(null)); }
+              }, colLabel + (active?(sortDir==='asc'?' ↑':' ↓'):''))];
             }),
 
-            // TOTAL header(s)
+            // TOTAL header(s) — always sortable (per metric in multi-metric mode)
             ...metrics.map((m, mi) => {
-              const sortable = !multiMetric;
+              const active = sortBy==='__total__' && (!multiMetric || sortMetric===m);
               return ce('th', { key:`btot_${m}`,
                 style:{ padding: numHdrRows>1?'6px 10px':'10px 12px', textAlign:'right',
                         fontWeight:700, whiteSpace:'nowrap',
                         fontSize: multiMetric?11:13, color:botTxt, background:botBg,
                         borderLeft: mi===0 ? '2px solid rgba(255,255,255,0.3)' : 'none',
-                        cursor: sortable ? 'pointer' : 'default', userSelect:'none' },
-                onClick: sortable ? ()=>{ sortBy==='__total__' ? setSortDir(d=>d==='asc'?'desc':'asc') : (setSortBy('__total__'), setSortDir('desc')); } : undefined
-              }, multiMetric ? (METRICS.find(x=>x.key===m)?.label||m)
-                             : ('TOTAL'+(sortBy==='__total__'?(sortDir==='asc'?' ↑':' ↓'):'')));
+                        cursor:'pointer', userSelect:'none' },
+                onClick: () => {
+                  if (active) setSortDir(d=>d==='asc'?'desc':'asc');
+                  else { setSortBy('__total__'); setSortMetric(multiMetric?m:null); setSortDir('desc'); }
+                }
+              }, (multiMetric ? (METRICS.find(x=>x.key===m)?.label||m) : 'TOTAL') + (active?(sortDir==='asc'?' ↑':' ↓'):''));
             })
           ));
 
