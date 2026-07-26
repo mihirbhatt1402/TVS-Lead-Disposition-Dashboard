@@ -1,16 +1,16 @@
-"""
-HIST CACHE REBUILD — from new Lead Master files (FY25-26 + FY26-27 combined).
+﻿"""
+HIST CACHE REBUILD â€” from new Lead Master files (FY25-26 + FY26-27 combined).
 
 Source files (all in HIST_DIR):
-  - Leads Data Master_Leads_FY_25_26 Part 1.xlsb  → sheet 'Raw Data'
-  - Leads Data Master_Leads_FY_25_26 Part 2.xlsx   → sheet 'Sheet1'
-  - Leads Data Master_Leads_FY_25_26 & FY_26_27 Part 3.xlsx → sheet 'Sheet1'
+  - Leads Data Master_Leads_FY_25_26 Part 1.xlsb  â†’ sheet 'Raw Data'
+  - Leads Data Master_Leads_FY_25_26 Part 2.xlsx   â†’ sheet 'Sheet1'
+  - Leads Data Master_Leads_FY_25_26 & FY_26_27 Part 3.xlsx â†’ sheet 'Sheet1'
 
 These files contain BOTH lead data AND retail reconciliation in each row:
   - Lead data:   opty_id, Lead Month, ModelName, Source, Lead Type, Dealer_Name,
                  City, State, Zone, Enquiry ID
   - Retail data: DMS/Call Out (retail type), Retail Month, purchasedModel
-                 → rows with blank DMS/Call Out = not yet retailed
+                 â†’ rows with blank DMS/Call Out = not yet retailed
 
 Output: TVS/hist_cache.json.gz  (replaces previous cache completely)
 
@@ -25,16 +25,16 @@ HIST_DIR        = os.environ.get('TVS_HIST_DIR', r'C:\Users\mihir.bhatt\Desktop\
 HIST_CACHE_PATH = Path(__file__).parent / 'hist_cache.json.gz'
 MONTH_NAMES     = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 LEAD_MASTER_START       = "Apr'25"
-LEAD_MASTER_START_ORDER = 2504   # Apr'25 → 25*100+4
+LEAD_MASTER_START_ORDER = 2504   # Apr'25 â†’ 25*100+4
 
-# ─── Source file specs ────────────────────────────────────────────────────────
+# â”€â”€â”€ Source file specs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 NEW_LEAD_FILES = [
     {'path': 'Leads Data Master_Leads_FY_25_26 Part 1.xlsb',            'engine': 'pyxlsb',  'sheet': 'Raw Data'},
     {'path': 'Leads Data Master_Leads_FY_25_26 Part 2.xlsx',             'engine': 'openpyxl','sheet': 'Sheet1'},
     {'path': 'Leads Data Master_Leads_FY_25_26 & FY_26_27 Part 3.xlsx', 'engine': 'openpyxl','sheet': 'Sheet1'},
 ]
 
-# ─── Helpers (mirror push_tvs_data.py exactly) ────────────────────────────────
+# â”€â”€â”€ Helpers (mirror push_tvs_data.py exactly) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def norm_month(s):
     s = str(s or '').strip()
@@ -85,10 +85,10 @@ def _excel_serial_to_month(val):
         pass
     return parse_ym(val)
 
-# ─── Read and process each file ───────────────────────────────────────────────
+# â”€â”€â”€ Read and process each file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 all_leads_dfs = []
-retail_map    = {}     # {to_id(opty_id) → {rm, rtype, pm}}
+retail_map    = {}     # {to_id(opty_id) â†’ {rm, rtype, pm}}
 
 print("=" * 65)
 print("HIST CACHE REBUILD")
@@ -105,35 +105,35 @@ for spec in NEW_LEAD_FILES:
     df = pd.read_excel(path, sheet_name=spec['sheet'], engine=spec['engine'])
     print(f"  {len(df):,} rows, {len(df.columns)} cols  ({time.time()-t0:.0f}s)", flush=True)
 
-    # ── Column validation ──────────────────────────────────────────────────
+    # â”€â”€ Column validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     missing = [c for c in ['opty_id','Lead Month','ModelName','Source','Lead Type',
                            'Dealer_Name','City','State','Zone','DMS/Call Out','Retail Month']
                if c not in df.columns]
     if missing:
         print(f"  WARNING: missing columns: {missing}", flush=True)
 
-    # ── Normalize lead ID ──────────────────────────────────────────────────
+    # â”€â”€ Normalize lead ID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     df['_lid'] = df['opty_id'].apply(to_id)
     blank_ids  = (df['_lid'] == '').sum()
     if blank_ids:
         print(f"  Skipping {blank_ids:,} rows with blank opty_id", flush=True)
     df = df[df['_lid'] != ''].copy()
 
-    # ── Normalize Lead Month ───────────────────────────────────────────────
+    # â”€â”€ Normalize Lead Month â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     df['_lm'] = df['Lead Month'].apply(lambda v: norm_month(str(v or '').strip()))
     invalid_lm = df[df['_lm'].apply(lambda s: not is_valid_month(s))]
     if len(invalid_lm):
         print(f"  Fallback-parse for {len(invalid_lm):,} rows with non-standard Lead Month", flush=True)
         df.loc[invalid_lm.index, '_lm'] = df.loc[invalid_lm.index, 'Lead Created Date'].apply(parse_ym)
 
-    # ── Filter: Lead Month < Apr'25 excluded ──────────────────────────────
+    # â”€â”€ Filter: Lead Month < Apr'25 excluded â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     before = len(df)
     df = df[df['_lm'].apply(month_order) >= LEAD_MASTER_START_ORDER].copy()
     removed = before - len(df)
     if removed:
         print(f"  Removed {removed:,} rows with Lead Month < {LEAD_MASTER_START}", flush=True)
 
-    # ── Build leads DataFrame ─────────────────────────────────────────────
+    # â”€â”€ Build leads DataFrame â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     leads_df = pd.DataFrame({
         'SorceLeadId': df['_lid'],
         'LeadMonth':   df['_lm'],
@@ -149,11 +149,11 @@ for spec in NEW_LEAD_FILES:
     all_leads_dfs.append(leads_df)
     print(f"  {len(leads_df):,} lead rows added to buffer", flush=True)
 
-    # ── Build retail_map from DMS/Call Out column ─────────────────────────
+    # â”€â”€ Build retail_map from DMS/Call Out column â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     retailed = df[df['DMS/Call Out'].fillna('').astype(str).str.strip().isin(['DMS','Call Out'])].copy()
     print(f"  {len(retailed):,} retailed rows (DMS/Call Out in DMS|Call Out)", flush=True)
 
-    # Retail month — prefer 'Retail Month' column, fallback to Retail_Attribution_Date
+    # Retail month â€” prefer 'Retail Month' column, fallback to Retail_Attribution_Date
     if 'Retail Month' in df.columns:
         retailed['_rm'] = retailed['Retail Month'].apply(lambda v: norm_month(str(v or '').strip()))
     elif 'Retail_Attribution_Date' in df.columns:
@@ -161,9 +161,21 @@ for spec in NEW_LEAD_FILES:
     else:
         retailed['_rm'] = ''
 
-    # Purchased model
+    # Purchased model â€” treat numeric 0 (Excel unfilled default) as blank;
+    # fall back to ModelName (enquired model) when purchasedModel is blank/0.
     pm_col = next((c for c in df.columns if c.lower() in ('purchasedmodel','purchased model')), None)
-    retailed['_pm'] = retailed[pm_col].apply(lambda v: str(v or '').strip()) if pm_col else ''
+    def _resolve_pm(row):
+        raw = row[pm_col] if pm_col else None
+        try:
+            pm = '' if (raw is None or (isinstance(raw, float) and pd.isna(raw))
+                        or str(raw).strip() in ('', '0', 'nan', 'none', 'null', 'na', 'n/a')) \
+                  else str(raw).strip()
+        except Exception:
+            pm = ''
+        if not pm:
+            pm = str(row.get('ModelName', '') or '').strip()
+        return pm
+    retailed['_pm'] = retailed.apply(_resolve_pm, axis=1)
 
     added = skipped_bad_rm = dup = 0
     for _, row in retailed.iterrows():
@@ -185,14 +197,14 @@ for spec in NEW_LEAD_FILES:
 
     print(f"  retail_map: +{added:,} new  |  {dup:,} duplicates skipped  |  {skipped_bad_rm:,} bad retail month", flush=True)
 
-# ─── Merge all leads & deduplicate ────────────────────────────────────────────
-print("\nMerging and deduplicating leads…", flush=True)
+# â”€â”€â”€ Merge all leads & deduplicate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+print("\nMerging and deduplicating leadsâ€¦", flush=True)
 hist_leads = pd.concat(all_leads_dfs, ignore_index=True)
 before_dedup = len(hist_leads)
 hist_leads = hist_leads.drop_duplicates(subset=['SorceLeadId'], keep='last')
-print(f"  Combined: {before_dedup:,}  → after dedup: {len(hist_leads):,}  (removed {before_dedup-len(hist_leads):,})", flush=True)
+print(f"  Combined: {before_dedup:,}  â†’ after dedup: {len(hist_leads):,}  (removed {before_dedup-len(hist_leads):,})", flush=True)
 
-# ─── Validation summary ────────────────────────────────────────────────────────
+# â”€â”€â”€ Validation summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 print("\n" + "="*65)
 print("VALIDATION")
 print("="*65)
@@ -224,8 +236,8 @@ print(f"  CO entries  : {co_total:,}")
 blank_rt = sum(1 for v in retail_map.values() if not v['rtype'])
 print(f"  Blank rtype : {blank_rt:,}  (must be 0)")
 
-# ─── Write hist_cache.json.gz ─────────────────────────────────────────────────
-print(f"\nWriting {HIST_CACHE_PATH}…", flush=True)
+# â”€â”€â”€ Write hist_cache.json.gz â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+print(f"\nWriting {HIST_CACHE_PATH}â€¦", flush=True)
 cache_data = {
     'generated':  datetime.now(timezone.utc).isoformat(),
     'retail_map': retail_map,
@@ -244,3 +256,4 @@ print(f"  hist_cache.json.gz: {size_kb:,} KB")
 print(f"  Leads:              {len(hist_leads):,}")
 print(f"  Retail map:         {len(retail_map):,}  (DMS={dms_total:,} + CO={co_total:,})")
 print(f"\nNext: commit TVS/hist_cache.json.gz and push.")
+
