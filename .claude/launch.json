@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "7823", "--directory", "C:\\Users\\mihir.bhatt\\Desktop\\HMSI RW Dashboard\\Local folder"],
+      "port": 7823
+    },
+    {
+      "name": "jy-dashboard",
+      "runtimeExecutable": "powershell.exe",
+      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\mihir.bhatt\\Desktop\\HMSI RW Dashboard\\Local folder\\.claude\\server.ps1"],
+      "port": 7823
+    },
+    {
+      "name": "daily-trigger-dashboard",
+      "runtimeExecutable": "powershell.exe",
+      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\mihir.bhatt\\Desktop\\Daily Trigger Dashboard\\.claude\\server.ps1"],
+      "port": 7824
+    },
+    {
+      "name": "bajaj-engine",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "7825", "--directory", "C:\\Users\\mihir.bhatt\\Desktop\\Work\\Bajaj\\Bajaj-Model-Retail-Engine"],
+      "port": 7825
+    },
+    {
+      "name": "tvs-engine",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "7826", "--directory", "C:\\Users\\mihir.bhatt\\Desktop\\Work\\TVS\\tvs_repo"],
+      "port": 7826
+    }
+  ]
+}

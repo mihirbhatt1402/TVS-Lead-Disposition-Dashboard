@@ -1,0 +1,931 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yamaha Retail Engine - India Yamaha Motor</title>
+<script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#f5f6fa;color:#1e293b;min-height:100vh;font-size:13px}
+.app-header{display:flex;align-items:center;justify-content:space-between;height:56px;padding:0 28px;background:#fff;border-bottom:1px solid #e4e6ef;position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.header-left{display:flex;align-items:center;gap:14px}
+.app-logo{width:36px;height:36px;background:linear-gradient(135deg,#001E5F,#E60026);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff;flex-shrink:0}
+.app-title{font-size:16px;font-weight:700;color:#1e293b;letter-spacing:-.02em}
+.app-sub{font-size:10.5px;color:#6b7280;margin-top:1px}
+.main-content{padding:22px 28px;max-width:1600px;margin:0 auto}
+.subtab-nav{display:flex;gap:4px;background:#fff;border:1px solid #e4e6ef;border-radius:10px;padding:4px;margin-bottom:20px;width:fit-content;flex-wrap:wrap}
+.subtab-btn{padding:7px 16px;border:none;background:transparent;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;color:#6b7280;transition:all .15s;font-family:inherit;white-space:nowrap}
+.subtab-btn.active{background:#1e293b;color:#fff;font-weight:600}
+.subtab-btn:hover:not(.active){background:#f0f2f7;color:#1e293b}
+.card{background:#fff;border:1px solid #e4e6ef;border-radius:10px;padding:16px;margin-bottom:16px}
+.card-title{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#6b7280;margin-bottom:12px}
+.card-hdr{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.card-hdr .card-title{margin-bottom:0}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.kpi-card{background:#fff;border:1px solid #e4e6ef;border-radius:8px;padding:14px 16px;border-top:3px solid #2563eb}
+.kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#6b7280;font-weight:600;margin-bottom:6px}
+.kpi-value{font-size:22px;font-weight:700;color:#1e293b;font-family:'Courier New',monospace;line-height:1}
+.kpi-sub{font-size:10px;color:#94a3b8;margin-top:4px}
+.stat-bar{display:flex;align-items:center;gap:16px;padding:12px 16px;background:#f8fafc;border:1px solid #e4e6ef;border-radius:8px;margin-bottom:16px;flex-wrap:wrap}
+.stat-item{display:flex;flex-direction:column;gap:2px}
+.stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#9ca3af;font-weight:600}
+.stat-val{font-size:16px;font-weight:700;color:#1e293b;font-family:'Courier New',monospace}
+.filter-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.filter-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#9ca3af}
+.sel{padding:5px 10px;border:1px solid #e4e6ef;border-radius:6px;font-size:11.5px;background:#fff;color:#374151;cursor:pointer;font-family:inherit;outline:none}
+.sel:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.1)}
+.grid-wrap{border:1px solid #e4e6ef;border-radius:8px;width:100%;overflow-x:auto}
+.dg thead th{position:sticky;top:0;z-index:2}
+.dg th.lc{position:sticky;top:0;left:0;z-index:3}
+.dg td.lc{position:sticky;left:0;z-index:1}
+.dg{border-collapse:collapse;font-size:11px;min-width:100%;background:#fff}
+.dg th{background:#f8fafc;border-bottom:2px solid #e2e8f0;border-right:1px solid #eaecf0;padding:7px 10px;text-align:right;font-weight:600;color:#374151;white-space:nowrap;position:sticky;top:0;z-index:2}
+.dg th.lc{text-align:left;position:sticky;top:0;left:0;z-index:3;background:#f8fafc;border-right:2px solid #e2e8f0;min-width:160px}
+.dg td{border-bottom:1px solid #f0f2f7;border-right:1px solid #f0f2f7;padding:5px 10px;text-align:right;color:#374151;font-family:'Courier New',monospace;white-space:nowrap}
+.dg td.lc{text-align:left;font-family:inherit;font-weight:500;color:#1e293b;position:sticky;left:0;z-index:1;background:inherit;border-right:2px solid #e2e8f0}
+.dg tbody tr:hover td{background:#f8fafc!important}
+.dg tfoot td{background:#1e293b!important;color:#fff;font-weight:700;border-color:#374151}
+.dg tfoot td.lc{background:#1e293b!important;position:sticky;left:0;z-index:1}
+.chart-pair{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.chart-box{position:relative;height:250px}
+@media(max-width:900px){.chart-pair{grid-template-columns:1fr}}
+.var-good{color:#166534;font-weight:700}
+.var-ok{color:#a16207;font-weight:600}
+.var-bad{color:#dc2626;font-weight:700}
+.signal-row{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#64748b;padding:10px 14px;background:#f8fafc;border-radius:7px;border:1px solid #e4e6ef;margin-bottom:12px}
+.sig-item{display:flex;align-items:center;gap:5px}
+.sig-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;background:#eff6ff;color:#2563eb}
+.tag-amber{background:#fffbeb;color:#b45309}
+.tag-green{background:#f0fdf4;color:#166534}
+.helper{font-size:11px;color:#94a3b8;padding:4px 0}
+.data-label{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11px;font-weight:600;color:#15803d}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.fade-up{animation:fadeUp .2s ease both}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+'use strict';
+const {useState,useEffect,useMemo,useRef}=React;
+const ce=React.createElement;
+
+/* ── CONSTANTS ─────────────────────────────────────────────────── */
+const VERSION='10.0';
+const MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+/* ── HARDCODED DATA ────────────────────────────────────────────── */
+const MRE_VHN=[{mo:"Jan'25",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Jan'25",st:"Andhra Pradesh",r:5},{mo:"Jan'25",st:"Arunachal Pradesh",r:5},{mo:"Jan'25",st:"Assam",r:5},{mo:"Jan'25",st:"Bihar",r:6},{mo:"Jan'25",st:"Chandigarh",r:0},{mo:"Jan'25",st:"Chhattisgarh",r:1},{mo:"Jan'25",st:"UT of DNH and DD",r:0},{mo:"Jan'25",st:"Delhi",r:0},{mo:"Jan'25",st:"Goa",r:0},{mo:"Jan'25",st:"Gujarat",r:3},{mo:"Jan'25",st:"Haryana",r:0},{mo:"Jan'25",st:"Himachal Pradesh",r:6},{mo:"Jan'25",st:"Jammu and Kashmir",r:0},{mo:"Jan'25",st:"Jharkhand",r:5},{mo:"Jan'25",st:"Karnataka",r:13},{mo:"Jan'25",st:"Kerala",r:7},{mo:"Jan'25",st:"Lakshadweep",r:0},{mo:"Jan'25",st:"Madhya Pradesh",r:3},{mo:"Jan'25",st:"Maharashtra",r:12},{mo:"Jan'25",st:"Manipur",r:0},{mo:"Jan'25",st:"Meghalaya",r:1},{mo:"Jan'25",st:"Mizoram",r:1},{mo:"Jan'25",st:"Nagaland",r:1},{mo:"Jan'25",st:"Odisha",r:2},{mo:"Jan'25",st:"Puducherry",r:0},{mo:"Jan'25",st:"Punjab",r:1},{mo:"Jan'25",st:"Rajasthan",r:3},{mo:"Jan'25",st:"Sikkim",r:0},{mo:"Jan'25",st:"Telangana",r:1},{mo:"Jan'25",st:"Tripura",r:12},{mo:"Jan'25",st:"Uttar Pradesh",r:5},{mo:"Jan'25",st:"Uttarakhand",r:1},{mo:"Jan'25",st:"West Bengal",r:34},{mo:"Feb'25",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Feb'25",st:"Andhra Pradesh",r:3},{mo:"Feb'25",st:"Arunachal Pradesh",r:6},{mo:"Feb'25",st:"Assam",r:6},{mo:"Feb'25",st:"Bihar",r:6},{mo:"Feb'25",st:"Chandigarh",r:0},{mo:"Feb'25",st:"Chhattisgarh",r:2},{mo:"Feb'25",st:"UT of DNH and DD",r:0},{mo:"Feb'25",st:"Delhi",r:3},{mo:"Feb'25",st:"Goa",r:162},{mo:"Feb'25",st:"Gujarat",r:24},{mo:"Feb'25",st:"Haryana",r:5},{mo:"Feb'25",st:"Himachal Pradesh",r:5},{mo:"Feb'25",st:"Jammu and Kashmir",r:1},{mo:"Feb'25",st:"Jharkhand",r:6},{mo:"Feb'25",st:"Karnataka",r:18},{mo:"Feb'25",st:"Kerala",r:51},{mo:"Feb'25",st:"Lakshadweep",r:0},{mo:"Feb'25",st:"Madhya Pradesh",r:10},{mo:"Feb'25",st:"Maharashtra",r:15},{mo:"Feb'25",st:"Manipur",r:1},{mo:"Feb'25",st:"Meghalaya",r:3},{mo:"Feb'25",st:"Mizoram",r:1},{mo:"Feb'25",st:"Nagaland",r:1},{mo:"Feb'25",st:"Odisha",r:8},{mo:"Feb'25",st:"Puducherry",r:3},{mo:"Feb'25",st:"Punjab",r:1},{mo:"Feb'25",st:"Rajasthan",r:4},{mo:"Feb'25",st:"Sikkim",r:0},{mo:"Feb'25",st:"Tripura",r:0},{mo:"Feb'25",st:"Tamil Nadu",r:87},{mo:"Feb'25",st:"Uttar Pradesh",r:8},{mo:"Feb'25",st:"Uttarakhand",r:1},{mo:"Feb'25",st:"West Bengal",r:36},{mo:"Mar'25",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Mar'25",st:"Andhra Pradesh",r:42},{mo:"Mar'25",st:"Arunachal Pradesh",r:3},{mo:"Mar'25",st:"Assam",r:24},{mo:"Mar'25",st:"Bihar",r:93},{mo:"Mar'25",st:"Chandigarh",r:0},{mo:"Mar'25",st:"Chhattisgarh",r:13},{mo:"Mar'25",st:"UT of DNH and DD",r:1},{mo:"Mar'25",st:"Delhi",r:15},{mo:"Mar'25",st:"Goa",r:610},{mo:"Mar'25",st:"Gujarat",r:112},{mo:"Mar'25",st:"Haryana",r:8},{mo:"Mar'25",st:"Himachal Pradesh",r:5},{mo:"Mar'25",st:"Jammu and Kashmir",r:2},{mo:"Mar'25",st:"Jharkhand",r:19},{mo:"Mar'25",st:"Karnataka",r:124},{mo:"Mar'25",st:"Kerala",r:540},{mo:"Mar'25",st:"Lakshadweep",r:0},{mo:"Mar'25",st:"Madhya Pradesh",r:18},{mo:"Mar'25",st:"Maharashtra",r:347},{mo:"Mar'25",st:"Manipur",r:0},{mo:"Mar'25",st:"Meghalaya",r:1},{mo:"Mar'25",st:"Mizoram",r:8},{mo:"Mar'25",st:"Nagaland",r:1},{mo:"Mar'25",st:"Odisha",r:105},{mo:"Mar'25",st:"Puducherry",r:20},{mo:"Mar'25",st:"Punjab",r:1},{mo:"Mar'25",st:"Rajasthan",r:10},{mo:"Mar'25",st:"Sikkim",r:0},{mo:"Mar'25",st:"Tripura",r:1},{mo:"Mar'25",st:"Tamil Nadu",r:606},{mo:"Mar'25",st:"Uttar Pradesh",r:41},{mo:"Mar'25",st:"Uttarakhand",r:4},{mo:"Mar'25",st:"West Bengal",r:88},{mo:"Apr'25",st:"Andaman &amp; Nicobar Island",r:5},{mo:"Apr'25",st:"Andhra Pradesh",r:187},{mo:"Apr'25",st:"Arunachal Pradesh",r:25},{mo:"Apr'25",st:"Assam",r:203},{mo:"Apr'25",st:"Bihar",r:379},{mo:"Apr'25",st:"Chandigarh",r:5},{mo:"Apr'25",st:"Chhattisgarh",r:62},{mo:"Apr'25",st:"UT of DNH and DD",r:4},{mo:"Apr'25",st:"Delhi",r:80},{mo:"Apr'25",st:"Goa",r:570},{mo:"Apr'25",st:"Gujarat",r:349},{mo:"Apr'25",st:"Haryana",r:52},{mo:"Apr'25",st:"Himachal Pradesh",r:12},{mo:"Apr'25",st:"Jammu and Kashmir",r:29},{mo:"Apr'25",st:"Jharkhand",r:122},{mo:"Apr'25",st:"Karnataka",r:549},{mo:"Apr'25",st:"Kerala",r:1003},{mo:"Apr'25",st:"Lakshadweep",r:0},{mo:"Apr'25",st:"Madhya Pradesh",r:111},{mo:"Apr'25",st:"Maharashtra",r:1310},{mo:"Apr'25",st:"Manipur",r:13},{mo:"Apr'25",st:"Meghalaya",r:2},{mo:"Apr'25",st:"Mizoram",r:10},{mo:"Apr'25",st:"Nagaland",r:0},{mo:"Apr'25",st:"Odisha",r:404},{mo:"Apr'25",st:"Puducherry",r:60},{mo:"Apr'25",st:"Punjab",r:14},{mo:"Apr'25",st:"Rajasthan",r:74},{mo:"Apr'25",st:"Sikkim",r:1},{mo:"Apr'25",st:"Tripura",r:10},{mo:"Apr'25",st:"Tamil Nadu",r:2220},{mo:"Apr'25",st:"Uttar Pradesh",r:380},{mo:"Apr'25",st:"Uttarakhand",r:11},{mo:"Apr'25",st:"West Bengal",r:731},{mo:"May'25",st:"Andaman &amp; Nicobar Island",r:4},{mo:"May'25",st:"Andhra Pradesh",r:419},{mo:"May'25",st:"Arunachal Pradesh",r:62},{mo:"May'25",st:"Assam",r:678},{mo:"May'25",st:"Bihar",r:1132},{mo:"May'25",st:"Chandigarh",r:15},{mo:"May'25",st:"Chhattisgarh",r:122},{mo:"May'25",st:"UT of DNH and DD",r:8},{mo:"May'25",st:"Delhi",r:362},{mo:"May'25",st:"Goa",r:411},{mo:"May'25",st:"Gujarat",r:682},{mo:"May'25",st:"Haryana",r:111},{mo:"May'25",st:"Himachal Pradesh",r:31},{mo:"May'25",st:"Jammu and Kashmir",r:67},{mo:"May'25",st:"Jharkhand",r:335},{mo:"May'25",st:"Karnataka",r:1178},{mo:"May'25",st:"Kerala",r:1917},{mo:"May'25",st:"Lakshadweep",r:0},{mo:"May'25",st:"Madhya Pradesh",r:327},{mo:"May'25",st:"Maharashtra",r:2043},{mo:"May'25",st:"Manipur",r:1},{mo:"May'25",st:"Meghalaya",r:100},{mo:"May'25",st:"Mizoram",r:56},{mo:"May'25",st:"Nagaland",r:9},{mo:"May'25",st:"Odisha",r:843},{mo:"May'25",st:"Puducherry",r:160},{mo:"May'25",st:"Punjab",r:34},{mo:"May'25",st:"Rajasthan",r:138},{mo:"May'25",st:"Sikkim",r:4},{mo:"May'25",st:"Tamil Nadu",r:4430},{mo:"May'25",st:"Tripura",r:22},{mo:"May'25",st:"Uttar Pradesh",r:978},{mo:"May'25",st:"Uttarakhand",r:63},{mo:"May'25",st:"West Bengal",r:2594},{mo:"Jun'25",st:"Andaman &amp; Nicobar Island",r:11},{mo:"Jun'25",st:"Andhra Pradesh",r:682},{mo:"Jun'25",st:"Arunachal Pradesh",r:151},{mo:"Jun'25",st:"Assam",r:1352},{mo:"Jun'25",st:"Bihar",r:1628},{mo:"Jun'25",st:"Chandigarh",r:19},{mo:"Jun'25",st:"Chhattisgarh",r:182},{mo:"Jun'25",st:"UT of DNH and DD",r:6},{mo:"Jun'25",st:"Delhi",r:556},{mo:"Jun'25",st:"Goa",r:485},{mo:"Jun'25",st:"Gujarat",r:906},{mo:"Jun'25",st:"Haryana",r:223},{mo:"Jun'25",st:"Himachal Pradesh",r:76},{mo:"Jun'25",st:"Jammu and Kashmir",r:160},{mo:"Jun'25",st:"Jharkhand",r:662},{mo:"Jun'25",st:"Karnataka",r:1931},{mo:"Jun'25",st:"Kerala",r:2406},{mo:"Jun'25",st:"Ladakh",r:0},{mo:"Jun'25",st:"Lakshadweep",r:0},{mo:"Jun'25",st:"Madhya Pradesh",r:389},{mo:"Jun'25",st:"Maharashtra",r:2801},{mo:"Jun'25",st:"Manipur",r:9},{mo:"Jun'25",st:"Meghalaya",r:285},{mo:"Jun'25",st:"Mizoram",r:155},{mo:"Jun'25",st:"Nagaland",r:46},{mo:"Jun'25",st:"Odisha",r:1204},{mo:"Jun'25",st:"Puducherry",r:243},{mo:"Jun'25",st:"Punjab",r:47},{mo:"Jun'25",st:"Rajasthan",r:210},{mo:"Jun'25",st:"Sikkim",r:8},{mo:"Jun'25",st:"Tamil Nadu",r:8162},{mo:"Jun'25",st:"Tripura",r:61},{mo:"Jun'25",st:"Uttar Pradesh",r:1235},{mo:"Jun'25",st:"Uttarakhand",r:116},{mo:"Jun'25",st:"West Bengal",r:4428},{mo:"Jul'25",st:"Andaman &amp; Nicobar Island",r:7},{mo:"Jul'25",st:"Andhra Pradesh",r:883},{mo:"Jul'25",st:"Arunachal Pradesh",r:226},{mo:"Jul'25",st:"Assam",r:1541},{mo:"Jul'25",st:"Bihar",r:1533},{mo:"Jul'25",st:"Chandigarh",r:17},{mo:"Jul'25",st:"Chhattisgarh",r:248},{mo:"Jul'25",st:"UT of DNH and DD",r:12},{mo:"Jul'25",st:"Delhi",r:918},{mo:"Jul'25",st:"Goa",r:513},{mo:"Jul'25",st:"Gujarat",r:1090},{mo:"Jul'25",st:"Haryana",r:338},{mo:"Jul'25",st:"Himachal Pradesh",r:133},{mo:"Jul'25",st:"Jammu and Kashmir",r:218},{mo:"Jul'25",st:"Jharkhand",r:653},{mo:"Jul'25",st:"Karnataka",r:2548},{mo:"Jul'25",st:"Kerala",r:3082},{mo:"Jul'25",st:"Lakshadweep",r:0},{mo:"Jul'25",st:"Madhya Pradesh",r:518},{mo:"Jul'25",st:"Maharashtra",r:3670},{mo:"Jul'25",st:"Manipur",r:5},{mo:"Jul'25",st:"Meghalaya",r:599},{mo:"Jul'25",st:"Mizoram",r:250},{mo:"Jul'25",st:"Nagaland",r:49},{mo:"Jul'25",st:"Odisha",r:1250},{mo:"Jul'25",st:"Puducherry",r:279},{mo:"Jul'25",st:"Punjab",r:114},{mo:"Jul'25",st:"Rajasthan",r:388},{mo:"Jul'25",st:"Sikkim",r:27},{mo:"Jul'25",st:"Tamil Nadu",r:12149},{mo:"Jul'25",st:"Tripura",r:111},{mo:"Jul'25",st:"Uttar Pradesh",r:1305},{mo:"Jul'25",st:"Uttarakhand",r:174},{mo:"Jul'25",st:"West Bengal",r:4515},{mo:"Aug'25",st:"Andhra Pradesh",r:1173},{mo:"Aug'25",st:"Arunachal Pradesh",r:252},{mo:"Aug'25",st:"Assam",r:1845},{mo:"Aug'25",st:"Bihar",r:1526},{mo:"Aug'25",st:"Chandigarh",r:20},{mo:"Aug'25",st:"Chhattisgarh",r:274},{mo:"Aug'25",st:"UT of DNH and DD",r:10},{mo:"Aug'25",st:"Delhi",r:945},{mo:"Aug'25",st:"Goa",r:947},{mo:"Aug'25",st:"Gujarat",r:1514},{mo:"Aug'25",st:"Haryana",r:454},{mo:"Aug'25",st:"Himachal Pradesh",r:169},{mo:"Aug'25",st:"Jammu and Kashmir",r:205},{mo:"Aug'25",st:"Jharkhand",r:692},{mo:"Aug'25",st:"Karnataka",r:3644},{mo:"Aug'25",st:"Kerala",r:4714},{mo:"Aug'25",st:"Lakshadweep",r:1},{mo:"Aug'25",st:"Madhya Pradesh",r:596},{mo:"Aug'25",st:"Maharashtra",r:4558},{mo:"Aug'25",st:"Manipur",r:24},{mo:"Aug'25",st:"Meghalaya",r:618},{mo:"Aug'25",st:"Mizoram",r:213},{mo:"Aug'25",st:"Nagaland",r:38},{mo:"Aug'25",st:"Odisha",r:1379},{mo:"Aug'25",st:"Puducherry",r:314},{mo:"Aug'25",st:"Punjab",r:118},{mo:"Aug'25",st:"Rajasthan",r:515},{mo:"Aug'25",st:"Sikkim",r:22},{mo:"Aug'25",st:"Tamil Nadu",r:13659},{mo:"Aug'25",st:"Tripura",r:105},{mo:"Aug'25",st:"Uttar Pradesh",r:1238},{mo:"Aug'25",st:"Uttarakhand",r:232},{mo:"Aug'25",st:"West Bengal",r:4553},{mo:"Sep'25",st:"Andaman &amp; Nicobar Island",r:21},{mo:"Sep'25",st:"Andhra Pradesh",r:995},{mo:"Sep'25",st:"Arunachal Pradesh",r:204},{mo:"Sep'25",st:"Assam",r:2004},{mo:"Sep'25",st:"Bihar",r:811},{mo:"Sep'25",st:"Chandigarh",r:27},{mo:"Sep'25",st:"Chhattisgarh",r:313},{mo:"Sep'25",st:"UT of DNH and DD",r:8},{mo:"Sep'25",st:"Delhi",r:895},{mo:"Sep'25",st:"Goa",r:732},{mo:"Sep'25",st:"Gujarat",r:1737},{mo:"Sep'25",st:"Haryana",r:454},{mo:"Sep'25",st:"Himachal Pradesh",r:117},{mo:"Sep'25",st:"Jammu and Kashmir",r:186},{mo:"Sep'25",st:"Jharkhand",r:700},{mo:"Sep'25",st:"Karnataka",r:3217},{mo:"Sep'25",st:"Kerala",r:4062},{mo:"Sep'25",st:"Ladakh",r:0},{mo:"Sep'25",st:"Lakshadweep",r:2},{mo:"Sep'25",st:"Madhya Pradesh",r:622},{mo:"Sep'25",st:"Maharashtra",r:3969},{mo:"Sep'25",st:"Manipur",r:31},{mo:"Sep'25",st:"Meghalaya",r:640},{mo:"Sep'25",st:"Mizoram",r:325},{mo:"Sep'25",st:"Nagaland",r:43},{mo:"Sep'25",st:"Odisha",r:1854},{mo:"Sep'25",st:"Puducherry",r:319},{mo:"Sep'25",st:"Punjab",r:97},{mo:"Sep'25",st:"Rajasthan",r:465},{mo:"Sep'25",st:"Sikkim",r:21},{mo:"Sep'25",st:"Tamil Nadu",r:12286},{mo:"Sep'25",st:"Tripura",r:86},{mo:"Sep'25",st:"Uttar Pradesh",r:1097},{mo:"Sep'25",st:"Uttarakhand",r:218},{mo:"Sep'25",st:"West Bengal",r:5469},{mo:"Oct'25",st:"Andaman &amp; Nicobar Island",r:22},{mo:"Oct'25",st:"Andhra Pradesh",r:2555},{mo:"Oct'25",st:"Arunachal Pradesh",r:267},{mo:"Oct'25",st:"Assam",r:3352},{mo:"Oct'25",st:"Bihar",r:4423},{mo:"Oct'25",st:"Chandigarh",r:59},{mo:"Oct'25",st:"Chhattisgarh",r:1102},{mo:"Oct'25",st:"UT of DNH and DD",r:20},{mo:"Oct'25",st:"Delhi",r:1725},{mo:"Oct'25",st:"Goa",r:1538},{mo:"Oct'25",st:"Gujarat",r:3733},{mo:"Oct'25",st:"Haryana",r:979},{mo:"Oct'25",st:"Himachal Pradesh",r:172},{mo:"Oct'25",st:"Jammu and Kashmir",r:381},{mo:"Oct'25",st:"Jharkhand",r:1986},{mo:"Oct'25",st:"Karnataka",r:6589},{mo:"Oct'25",st:"Kerala",r:5089},{mo:"Oct'25",st:"Lakshadweep",r:0},{mo:"Oct'25",st:"Madhya Pradesh",r:2157},{mo:"Oct'25",st:"Maharashtra",r:9740},{mo:"Oct'25",st:"Manipur",r:17},{mo:"Oct'25",st:"Meghalaya",r:1126},{mo:"Oct'25",st:"Mizoram",r:363},{mo:"Oct'25",st:"Nagaland",r:16},{mo:"Oct'25",st:"Odisha",r:3668},{mo:"Oct'25",st:"Puducherry",r:449},{mo:"Oct'25",st:"Punjab",r:212},{mo:"Oct'25",st:"Rajasthan",r:1515},{mo:"Oct'25",st:"Sikkim",r:64},{mo:"Oct'25",st:"Tamil Nadu",r:19596},{mo:"Oct'25",st:"Tripura",r:199},{mo:"Oct'25",st:"Uttar Pradesh",r:4037},{mo:"Oct'25",st:"Uttarakhand",r:378},{mo:"Oct'25",st:"West Bengal",r:9769},{mo:"Nov'25",st:"Andaman &amp; Nicobar Island",r:34},{mo:"Nov'25",st:"Andhra Pradesh",r:2754},{mo:"Nov'25",st:"Arunachal Pradesh",r:208},{mo:"Nov'25",st:"Assam",r:1952},{mo:"Nov'25",st:"Bihar",r:3535},{mo:"Nov'25",st:"Chandigarh",r:35},{mo:"Nov'25",st:"Chhattisgarh",r:500},{mo:"Nov'25",st:"UT of DNH and DD",r:42},{mo:"Nov'25",st:"Delhi",r:1943},{mo:"Nov'25",st:"Goa",r:1072},{mo:"Nov'25",st:"Gujarat",r:2586},{mo:"Nov'25",st:"Haryana",r:780},{mo:"Nov'25",st:"Himachal Pradesh",r:484},{mo:"Nov'25",st:"Jammu and Kashmir",r:164},{mo:"Nov'25",st:"Jharkhand",r:1361},{mo:"Nov'25",st:"Karnataka",r:3742},{mo:"Nov'25",st:"Kerala",r:3871},{mo:"Nov'25",st:"Lakshadweep",r:1},{mo:"Nov'25",st:"Madhya Pradesh",r:1037},{mo:"Nov'25",st:"Maharashtra",r:8461},{mo:"Nov'25",st:"Manipur",r:26},{mo:"Nov'25",st:"Meghalaya",r:689},{mo:"Nov'25",st:"Mizoram",r:222},{mo:"Nov'25",st:"Nagaland",r:62},{mo:"Nov'25",st:"Odisha",r:1869},{mo:"Nov'25",st:"Puducherry",r:243},{mo:"Nov'25",st:"Punjab",r:270},{mo:"Nov'25",st:"Rajasthan",r:1530},{mo:"Nov'25",st:"Sikkim",r:40},{mo:"Nov'25",st:"Tamil Nadu",r:14536},{mo:"Nov'25",st:"Tripura",r:260},{mo:"Nov'25",st:"Uttar Pradesh",r:3205},{mo:"Nov'25",st:"Uttarakhand",r:596},{mo:"Nov'25",st:"West Bengal",r:9035},{mo:"Dec'25",st:"Andaman &amp; Nicobar Island",r:34},{mo:"Dec'25",st:"Andhra Pradesh",r:1495},{mo:"Dec'25",st:"Arunachal Pradesh",r:189},{mo:"Dec'25",st:"Assam",r:2170},{mo:"Dec'25",st:"Bihar",r:2042},{mo:"Dec'25",st:"Chandigarh",r:30},{mo:"Dec'25",st:"Chhattisgarh",r:364},{mo:"Dec'25",st:"UT of DNH and DD",r:28},{mo:"Dec'25",st:"Delhi",r:949},{mo:"Dec'25",st:"Goa",r:994},{mo:"Dec'25",st:"Gujarat",r:1523},{mo:"Dec'25",st:"Haryana",r:739},{mo:"Dec'25",st:"Himachal Pradesh",r:323},{mo:"Dec'25",st:"Jammu and Kashmir",r:146},{mo:"Dec'25",st:"Jharkhand",r:1039},{mo:"Dec'25",st:"Karnataka",r:3217},{mo:"Dec'25",st:"Kerala",r:4238},{mo:"Dec'25",st:"Lakshadweep",r:2},{mo:"Dec'25",st:"Madhya Pradesh",r:694},{mo:"Dec'25",st:"Maharashtra",r:5531},{mo:"Dec'25",st:"Manipur",r:21},{mo:"Dec'25",st:"Meghalaya",r:520},{mo:"Dec'25",st:"Mizoram",r:235},{mo:"Dec'25",st:"Nagaland",r:64},{mo:"Dec'25",st:"Odisha",r:1815},{mo:"Dec'25",st:"Puducherry",r:280},{mo:"Dec'25",st:"Punjab",r:187},{mo:"Dec'25",st:"Rajasthan",r:535},{mo:"Dec'25",st:"Sikkim",r:22},{mo:"Dec'25",st:"Tamil Nadu",r:13096},{mo:"Dec'25",st:"Tripura",r:157},{mo:"Dec'25",st:"Uttar Pradesh",r:1846},{mo:"Dec'25",st:"Uttarakhand",r:296},{mo:"Dec'25",st:"West Bengal",r:7239},{mo:"Jan'26",st:"Andaman &amp; Nicobar Island",r:38},{mo:"Jan'26",st:"Andhra Pradesh",r:1464},{mo:"Jan'26",st:"Arunachal Pradesh",r:158},{mo:"Jan'26",st:"Assam",r:2252},{mo:"Jan'26",st:"Bihar",r:2195},{mo:"Jan'26",st:"Chandigarh",r:45},{mo:"Jan'26",st:"Chhattisgarh",r:628},{mo:"Jan'26",st:"UT of DNH and DD",r:27},{mo:"Jan'26",st:"Delhi",r:1337},{mo:"Jan'26",st:"Goa",r:621},{mo:"Jan'26",st:"Gujarat",r:1938},{mo:"Jan'26",st:"Haryana",r:738},{mo:"Jan'26",st:"Himachal Pradesh",r:249},{mo:"Jan'26",st:"Jammu and Kashmir",r:90},{mo:"Jan'26",st:"Jharkhand",r:1118},{mo:"Jan'26",st:"Karnataka",r:4452},{mo:"Jan'26",st:"Kerala",r:3998},{mo:"Jan'26",st:"Lakshadweep",r:4},{mo:"Jan'26",st:"Madhya Pradesh",r:920},{mo:"Jan'26",st:"Maharashtra",r:6649},{mo:"Jan'26",st:"Manipur",r:39},{mo:"Jan'26",st:"Meghalaya",r:579},{mo:"Jan'26",st:"Mizoram",r:313},{mo:"Jan'26",st:"Nagaland",r:65},{mo:"Jan'26",st:"Odisha",r:2145},{mo:"Jan'26",st:"Puducherry",r:337},{mo:"Jan'26",st:"Punjab",r:224},{mo:"Jan'26",st:"Rajasthan",r:786},{mo:"Jan'26",st:"Sikkim",r:40},{mo:"Jan'26",st:"Tamil Nadu",r:20061},{mo:"Jan'26",st:"Tripura",r:199},{mo:"Jan'26",st:"Uttar Pradesh",r:2305},{mo:"Jan'26",st:"Uttarakhand",r:307},{mo:"Jan'26",st:"West Bengal",r:6373},{mo:"Feb'26",st:"Andhra Pradesh",r:1751},{mo:"Feb'26",st:"Arunachal Pradesh",r:163},{mo:"Feb'26",st:"Assam",r:2145},{mo:"Feb'26",st:"Bihar",r:2412},{mo:"Feb'26",st:"Chandigarh",r:37},{mo:"Feb'26",st:"Chhattisgarh",r:576},{mo:"Feb'26",st:"Delhi",r:1143},{mo:"Feb'26",st:"Goa",r:965},{mo:"Feb'26",st:"Gujarat",r:1736},{mo:"Feb'26",st:"Haryana",r:492},{mo:"Feb'26",st:"Himachal Pradesh",r:185},{mo:"Feb'26",st:"Jammu and Kashmir",r:167},{mo:"Feb'26",st:"Jharkhand",r:1156},{mo:"Feb'26",st:"Karnataka",r:4244},{mo:"Feb'26",st:"Kerala",r:4472},{mo:"Feb'26",st:"Lakshadweep",r:3},{mo:"Feb'26",st:"Madhya Pradesh",r:967},{mo:"Feb'26",st:"Maharashtra",r:5927},{mo:"Feb'26",st:"Manipur",r:39},{mo:"Feb'26",st:"Meghalaya",r:586},{mo:"Feb'26",st:"Mizoram",r:271},{mo:"Feb'26",st:"Nagaland",r:64},{mo:"Feb'26",st:"Odisha",r:2394},{mo:"Feb'26",st:"Puducherry",r:297},{mo:"Feb'26",st:"Punjab",r:211},{mo:"Feb'26",st:"Rajasthan",r:675},{mo:"Feb'26",st:"Sikkim",r:45},{mo:"Feb'26",st:"Tamil Nadu",r:17551},{mo:"Feb'26",st:"Tripura",r:161},{mo:"Feb'26",st:"UT of DNH and DD",r:29},{mo:"Feb'26",st:"Uttar Pradesh",r:2159},{mo:"Feb'26",st:"Uttarakhand",r:266},{mo:"Feb'26",st:"West Bengal",r:6551},{mo:"Mar'26",st:"Andaman &amp; Nicobar Island",r:35},{mo:"Mar'26",st:"Andhra Pradesh",r:2090},{mo:"Mar'26",st:"Arunachal Pradesh",r:218},{mo:"Mar'26",st:"Assam",r:2886},{mo:"Mar'26",st:"Bihar",r:2700},{mo:"Mar'26",st:"Chandigarh",r:45},{mo:"Mar'26",st:"Chhattisgarh",r:510},{mo:"Mar'26",st:"UT of DNH and DD",r:7},{mo:"Mar'26",st:"Delhi",r:1215},{mo:"Mar'26",st:"Goa",r:1173},{mo:"Mar'26",st:"Gujarat",r:2281},{mo:"Mar'26",st:"Haryana",r:679},{mo:"Mar'26",st:"Himachal Pradesh",r:211},{mo:"Mar'26",st:"Jammu and Kashmir",r:235},{mo:"Mar'26",st:"Jharkhand",r:1194},{mo:"Mar'26",st:"Karnataka",r:5108},{mo:"Mar'26",st:"Kerala",r:4423},{mo:"Mar'26",st:"Lakshadweep",r:3},{mo:"Mar'26",st:"Madhya Pradesh",r:932},{mo:"Mar'26",st:"Maharashtra",r:7522},{mo:"Mar'26",st:"Manipur",r:35},{mo:"Mar'26",st:"Meghalaya",r:592},{mo:"Mar'26",st:"Mizoram",r:231},{mo:"Mar'26",st:"Nagaland",r:68},{mo:"Mar'26",st:"Odisha",r:2708},{mo:"Mar'26",st:"Puducherry",r:324},{mo:"Mar'26",st:"Punjab",r:216},{mo:"Mar'26",st:"Rajasthan",r:1110},{mo:"Mar'26",st:"Sikkim",r:51},{mo:"Mar'26",st:"Tamil Nadu",r:15706},{mo:"Mar'26",st:"Tripura",r:140},{mo:"Mar'26",st:"Uttar Pradesh",r:2350},{mo:"Mar'26",st:"Uttarakhand",r:267},{mo:"Mar'26",st:"West Bengal",r:7661},{mo:"Apr'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Jul'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Jun'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"May'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Apr'24",st:"Andhra Pradesh",r:17},{mo:"Jul'24",st:"Andhra Pradesh",r:10},{mo:"Jun'24",st:"Andhra Pradesh",r:19},{mo:"May'24",st:"Andhra Pradesh",r:15},{mo:"Jul'24",st:"Arunachal Pradesh",r:9},{mo:"Jun'24",st:"Arunachal Pradesh",r:14},{mo:"May'24",st:"Arunachal Pradesh",r:24},{mo:"Apr'24",st:"Assam",r:13},{mo:"Jul'24",st:"Assam",r:16},{mo:"Jun'24",st:"Assam",r:12},{mo:"May'24",st:"Assam",r:15},{mo:"Apr'24",st:"Bihar",r:29},{mo:"Jul'24",st:"Bihar",r:16},{mo:"Jun'24",st:"Bihar",r:17},{mo:"May'24",st:"Bihar",r:23},{mo:"Apr'24",st:"Chandigarh",r:1},{mo:"Jul'24",st:"Chandigarh",r:2},{mo:"Jun'24",st:"Chandigarh",r:1},{mo:"May'24",st:"Chandigarh",r:0},{mo:"Apr'24",st:"Chhattisgarh",r:10},{mo:"Jul'24",st:"Chhattisgarh",r:3},{mo:"Jun'24",st:"Chhattisgarh",r:2},{mo:"May'24",st:"Chhattisgarh",r:2},{mo:"Apr'24",st:"Delhi",r:2},{mo:"Jul'24",st:"Delhi",r:2},{mo:"Jun'24",st:"Delhi",r:4},{mo:"May'24",st:"Delhi",r:5},{mo:"Apr'24",st:"Goa",r:1},{mo:"Jul'24",st:"Goa",r:0},{mo:"Jun'24",st:"Goa",r:1},{mo:"May'24",st:"Goa",r:0},{mo:"Apr'24",st:"Gujarat",r:5},{mo:"Jul'24",st:"Gujarat",r:2},{mo:"Jun'24",st:"Gujarat",r:6},{mo:"May'24",st:"Gujarat",r:5},{mo:"Apr'24",st:"Haryana",r:6},{mo:"Jul'24",st:"Haryana",r:1},{mo:"Jun'24",st:"Haryana",r:3},{mo:"May'24",st:"Haryana",r:2},{mo:"Apr'24",st:"Himachal Pradesh",r:2},{mo:"Jul'24",st:"Himachal Pradesh",r:2},{mo:"Jun'24",st:"Himachal Pradesh",r:2},{mo:"May'24",st:"Himachal Pradesh",r:2},{mo:"Apr'24",st:"Jammu and Kashmir",r:2},{mo:"Jul'24",st:"Jammu and Kashmir",r:1},{mo:"Jun'24",st:"Jammu and Kashmir",r:1},{mo:"May'24",st:"Jammu and Kashmir",r:0},{mo:"Apr'24",st:"Jharkhand",r:16},{mo:"Jul'24",st:"Jharkhand",r:8},{mo:"Jun'24",st:"Jharkhand",r:12},{mo:"May'24",st:"Jharkhand",r:10},{mo:"Apr'24",st:"Karnataka",r:29},{mo:"Jul'24",st:"Karnataka",r:12},{mo:"Jun'24",st:"Karnataka",r:14},{mo:"May'24",st:"Karnataka",r:23},{mo:"Apr'24",st:"Kerala",r:31},{mo:"Jul'24",st:"Kerala",r:10},{mo:"Jun'24",st:"Kerala",r:15},{mo:"May'24",st:"Kerala",r:19},{mo:"Jul'24",st:"Ladakh",r:0},{mo:"Jun'24",st:"Ladakh",r:0},{mo:"May'24",st:"Ladakh",r:0},{mo:"May'24",st:"Lakshadweep",r:1},{mo:"Apr'24",st:"Madhya Pradesh",r:3},{mo:"Jul'24",st:"Madhya Pradesh",r:3},{mo:"Jun'24",st:"Madhya Pradesh",r:6},{mo:"May'24",st:"Madhya Pradesh",r:7},{mo:"Apr'24",st:"Maharashtra",r:23},{mo:"Jul'24",st:"Maharashtra",r:6},{mo:"Jun'24",st:"Maharashtra",r:14},{mo:"May'24",st:"Maharashtra",r:11},{mo:"Apr'24",st:"Manipur",r:1},{mo:"Jul'24",st:"Manipur",r:1},{mo:"Jun'24",st:"Manipur",r:2},{mo:"May'24",st:"Manipur",r:0},{mo:"Apr'24",st:"Meghalaya",r:7},{mo:"Jul'24",st:"Meghalaya",r:2},{mo:"Jun'24",st:"Meghalaya",r:5},{mo:"May'24",st:"Meghalaya",r:5},{mo:"Apr'24",st:"Mizoram",r:0},{mo:"Jul'24",st:"Mizoram",r:3},{mo:"Jun'24",st:"Mizoram",r:1},{mo:"May'24",st:"Mizoram",r:1},{mo:"Apr'24",st:"Nagaland",r:1},{mo:"Jul'24",st:"Nagaland",r:1},{mo:"Jun'24",st:"Nagaland",r:1},{mo:"May'24",st:"Nagaland",r:2},{mo:"Apr'24",st:"Odisha",r:12},{mo:"Jul'24",st:"Odisha",r:8},{mo:"Jun'24",st:"Odisha",r:5},{mo:"May'24",st:"Odisha",r:4},{mo:"Apr'24",st:"Puducherry",r:0},{mo:"Jul'24",st:"Puducherry",r:0},{mo:"Jun'24",st:"Puducherry",r:1},{mo:"May'24",st:"Puducherry",r:0},{mo:"Apr'24",st:"Punjab",r:10},{mo:"Jul'24",st:"Punjab",r:7},{mo:"Jun'24",st:"Punjab",r:1},{mo:"May'24",st:"Punjab",r:4},{mo:"Apr'24",st:"Rajasthan",r:4},{mo:"Jul'24",st:"Rajasthan",r:4},{mo:"Jun'24",st:"Rajasthan",r:8},{mo:"May'24",st:"Rajasthan",r:2},{mo:"Apr'24",st:"Sikkim",r:3},{mo:"Jul'24",st:"Sikkim",r:0},{mo:"Jun'24",st:"Sikkim",r:0},{mo:"May'24",st:"Sikkim",r:0},{mo:"Apr'24",st:"Tamil Nadu",r:33},{mo:"Jul'24",st:"Tamil Nadu",r:23},{mo:"Jun'24",st:"Tamil Nadu",r:18},{mo:"May'24",st:"Tamil Nadu",r:25},{mo:"Apr'24",st:"Tripura",r:1},{mo:"Jul'24",st:"Tripura",r:0},{mo:"Jun'24",st:"Tripura",r:3},{mo:"May'24",st:"Tripura",r:0},{mo:"Apr'24",st:"UT of DNH and DD",r:1},{mo:"Jul'24",st:"UT of DNH and DD",r:1},{mo:"Jun'24",st:"UT of DNH and DD",r:0},{mo:"May'24",st:"UT of DNH and DD",r:0},{mo:"Apr'24",st:"Uttar Pradesh",r:24},{mo:"Jul'24",st:"Uttar Pradesh",r:11},{mo:"Jun'24",st:"Uttar Pradesh",r:16},{mo:"May'24",st:"Uttar Pradesh",r:19},{mo:"Apr'24",st:"Uttarakhand",r:3},{mo:"Jul'24",st:"Uttarakhand",r:2},{mo:"Jun'24",st:"Uttarakhand",r:3},{mo:"May'24",st:"Uttarakhand",r:6},{mo:"Apr'24",st:"West Bengal",r:135},{mo:"Jul'24",st:"West Bengal",r:84},{mo:"Jun'24",st:"West Bengal",r:69},{mo:"May'24",st:"West Bengal",r:97},{mo:"Aug'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Dec'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Nov'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Oct'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Sep'24",st:"Andaman &amp; Nicobar Island",r:0},{mo:"Aug'24",st:"Andhra Pradesh",r:6},{mo:"Dec'24",st:"Andhra Pradesh",r:5},{mo:"Nov'24",st:"Andhra Pradesh",r:8},{mo:"Oct'24",st:"Andhra Pradesh",r:5},{mo:"Sep'24",st:"Andhra Pradesh",r:6},{mo:"Aug'24",st:"Arunachal Pradesh",r:15},{mo:"Dec'24",st:"Arunachal Pradesh",r:1},{mo:"Nov'24",st:"Arunachal Pradesh",r:2},{mo:"Oct'24",st:"Arunachal Pradesh",r:6},{mo:"Sep'24",st:"Arunachal Pradesh",r:3},{mo:"Aug'24",st:"Assam",r:6},{mo:"Dec'24",st:"Assam",r:5},{mo:"Nov'24",st:"Assam",r:3},{mo:"Oct'24",st:"Assam",r:7},{mo:"Sep'24",st:"Assam",r:10},{mo:"Aug'24",st:"Bihar",r:8},{mo:"Dec'24",st:"Bihar",r:6},{mo:"Nov'24",st:"Bihar",r:20},{mo:"Oct'24",st:"Bihar",r:8},{mo:"Sep'24",st:"Bihar",r:7},{mo:"Aug'24",st:"Chandigarh",r:3},{mo:"Dec'24",st:"Chandigarh",r:0},{mo:"Nov'24",st:"Chandigarh",r:0},{mo:"Oct'24",st:"Chandigarh",r:0},{mo:"Sep'24",st:"Chandigarh",r:1},{mo:"Aug'24",st:"Chhattisgarh",r:1},{mo:"Dec'24",st:"Chhattisgarh",r:2},{mo:"Nov'24",st:"Chhattisgarh",r:2},{mo:"Oct'24",st:"Chhattisgarh",r:3},{mo:"Sep'24",st:"Chhattisgarh",r:2},{mo:"Aug'24",st:"Delhi",r:0},{mo:"Dec'24",st:"Delhi",r:0},{mo:"Nov'24",st:"Delhi",r:1},{mo:"Oct'24",st:"Delhi",r:0},{mo:"Sep'24",st:"Delhi",r:2},{mo:"Aug'24",st:"Goa",r:0},{mo:"Dec'24",st:"Goa",r:0},{mo:"Nov'24",st:"Goa",r:0},{mo:"Oct'24",st:"Goa",r:0},{mo:"Sep'24",st:"Goa",r:2},{mo:"Aug'24",st:"Gujarat",r:3},{mo:"Dec'24",st:"Gujarat",r:0},{mo:"Nov'24",st:"Gujarat",r:4},{mo:"Oct'24",st:"Gujarat",r:8},{mo:"Sep'24",st:"Gujarat",r:2},{mo:"Aug'24",st:"Haryana",r:4},{mo:"Dec'24",st:"Haryana",r:2},{mo:"Nov'24",st:"Haryana",r:1},{mo:"Oct'24",st:"Haryana",r:2},{mo:"Sep'24",st:"Haryana",r:8},{mo:"Aug'24",st:"Himachal Pradesh",r:0},{mo:"Dec'24",st:"Himachal Pradesh",r:8},{mo:"Nov'24",st:"Himachal Pradesh",r:2},{mo:"Oct'24",st:"Himachal Pradesh",r:5},{mo:"Sep'24",st:"Himachal Pradesh",r:2},{mo:"Aug'24",st:"Jammu and Kashmir",r:4},{mo:"Dec'24",st:"Jammu and Kashmir",r:0},{mo:"Nov'24",st:"Jammu and Kashmir",r:0},{mo:"Oct'24",st:"Jammu and Kashmir",r:2},{mo:"Sep'24",st:"Jammu and Kashmir",r:0},{mo:"Aug'24",st:"Jharkhand",r:5},{mo:"Dec'24",st:"Jharkhand",r:2},{mo:"Nov'24",st:"Jharkhand",r:8},{mo:"Oct'24",st:"Jharkhand",r:9},{mo:"Sep'24",st:"Jharkhand",r:5},{mo:"Aug'24",st:"Karnataka",r:15},{mo:"Dec'24",st:"Karnataka",r:11},{mo:"Nov'24",st:"Karnataka",r:14},{mo:"Oct'24",st:"Karnataka",r:13},{mo:"Sep'24",st:"Karnataka",r:13},{mo:"Aug'24",st:"Kerala",r:9},{mo:"Dec'24",st:"Kerala",r:6},{mo:"Nov'24",st:"Kerala",r:7},{mo:"Oct'24",st:"Kerala",r:9},{mo:"Sep'24",st:"Kerala",r:13},{mo:"Aug'24",st:"Lakshadweep",r:1},{mo:"Aug'24",st:"Madhya Pradesh",r:8},{mo:"Dec'24",st:"Madhya Pradesh",r:3},{mo:"Nov'24",st:"Madhya Pradesh",r:0},{mo:"Oct'24",st:"Madhya Pradesh",r:3},{mo:"Sep'24",st:"Madhya Pradesh",r:3},{mo:"Aug'24",st:"Maharashtra",r:14},{mo:"Dec'24",st:"Maharashtra",r:10},{mo:"Nov'24",st:"Maharashtra",r:8},{mo:"Oct'24",st:"Maharashtra",r:9},{mo:"Sep'24",st:"Maharashtra",r:11},{mo:"Aug'24",st:"Manipur",r:4},{mo:"Dec'24",st:"Manipur",r:1},{mo:"Nov'24",st:"Manipur",r:0},{mo:"Oct'24",st:"Manipur",r:0},{mo:"Sep'24",st:"Manipur",r:0},{mo:"Aug'24",st:"Meghalaya",r:3},{mo:"Dec'24",st:"Meghalaya",r:0},{mo:"Nov'24",st:"Meghalaya",r:2},{mo:"Oct'24",st:"Meghalaya",r:0},{mo:"Sep'24",st:"Meghalaya",r:0},{mo:"Aug'24",st:"Mizoram",r:2},{mo:"Dec'24",st:"Mizoram",r:0},{mo:"Nov'24",st:"Mizoram",r:2},{mo:"Oct'24",st:"Mizoram",r:2},{mo:"Sep'24",st:"Mizoram",r:1},{mo:"Aug'24",st:"Nagaland",r:1},{mo:"Dec'24",st:"Nagaland",r:1},{mo:"Nov'24",st:"Nagaland",r:0},{mo:"Oct'24",st:"Nagaland",r:0},{mo:"Sep'24",st:"Nagaland",r:3},{mo:"Aug'24",st:"Odisha",r:4},{mo:"Dec'24",st:"Odisha",r:2},{mo:"Nov'24",st:"Odisha",r:7},{mo:"Oct'24",st:"Odisha",r:5},{mo:"Sep'24",st:"Odisha",r:3},{mo:"Aug'24",st:"Puducherry",r:0},{mo:"Dec'24",st:"Puducherry",r:0},{mo:"Nov'24",st:"Puducherry",r:0},{mo:"Oct'24",st:"Puducherry",r:0},{mo:"Sep'24",st:"Puducherry",r:0},{mo:"Aug'24",st:"Punjab",r:3},{mo:"Dec'24",st:"Punjab",r:0},{mo:"Nov'24",st:"Punjab",r:3},{mo:"Oct'24",st:"Punjab",r:4},{mo:"Sep'24",st:"Punjab",r:2},{mo:"Aug'24",st:"Rajasthan",r:3},{mo:"Dec'24",st:"Rajasthan",r:3},{mo:"Nov'24",st:"Rajasthan",r:1},{mo:"Oct'24",st:"Rajasthan",r:3},{mo:"Sep'24",st:"Rajasthan",r:4},{mo:"Aug'24",st:"Sikkim",r:0},{mo:"Dec'24",st:"Sikkim",r:0},{mo:"Nov'24",st:"Sikkim",r:0},{mo:"Oct'24",st:"Sikkim",r:1},{mo:"Sep'24",st:"Sikkim",r:0},{mo:"Aug'24",st:"Tamil Nadu",r:16},{mo:"Dec'24",st:"Tamil Nadu",r:7},{mo:"Nov'24",st:"Tamil Nadu",r:11},{mo:"Oct'24",st:"Tamil Nadu",r:13},{mo:"Sep'24",st:"Tamil Nadu",r:19},{mo:"Aug'24",st:"Tripura",r:0},{mo:"Dec'24",st:"Tripura",r:0},{mo:"Nov'24",st:"Tripura",r:0},{mo:"Oct'24",st:"Tripura",r:1},{mo:"Sep'24",st:"Tripura",r:0},{mo:"Aug'24",st:"UT of DNH and DD",r:0},{mo:"Dec'24",st:"UT of DNH and DD",r:0},{mo:"Nov'24",st:"UT of DNH and DD",r:0},{mo:"Oct'24",st:"UT of DNH and DD",r:0},{mo:"Sep'24",st:"UT of DNH and DD",r:0},{mo:"Aug'24",st:"Uttar Pradesh",r:10},{mo:"Dec'24",st:"Uttar Pradesh",r:13},{mo:"Nov'24",st:"Uttar Pradesh",r:10},{mo:"Oct'24",st:"Uttar Pradesh",r:11},{mo:"Sep'24",st:"Uttar Pradesh",r:7},{mo:"Aug'24",st:"Uttarakhand",r:2},{mo:"Dec'24",st:"Uttarakhand",r:2},{mo:"Nov'24",st:"Uttarakhand",r:0},{mo:"Oct'24",st:"Uttarakhand",r:2},{mo:"Sep'24",st:"Uttarakhand",r:0},{mo:"Aug'24",st:"West Bengal",r:51},{mo:"Dec'24",st:"West Bengal",r:44},{mo:"Nov'24",st:"West Bengal",r:31},{mo:"Oct'24",st:"West Bengal",r:34},{mo:"Sep'24",st:"West Bengal",r:42},{mo:"Aug'25",st:"Andaman &amp; Nicobar Island",r:17},{mo:"Feb'26",st:"Andaman &amp; Nicobar Island",r:39},{mo:"Apr'24",st:"Arunachal Pradesh",r:35},{mo:"Apr'26",st:"Andaman &amp; Nicobar Island",r:40},{mo:"Apr'26",st:"Andhra Pradesh",r:1868},{mo:"Apr'26",st:"Arunachal Pradesh",r:247},{mo:"Apr'26",st:"Assam",r:3234},{mo:"Apr'26",st:"Bihar",r:2637},{mo:"Apr'26",st:"Chandigarh",r:48},{mo:"Apr'26",st:"Chhattisgarh",r:403},{mo:"Apr'26",st:"UT of DNH and DD",r:30},{mo:"Apr'26",st:"Delhi",r:1204},{mo:"Apr'26",st:"Goa",r:1046},{mo:"Apr'26",st:"Gujarat",r:1770},{mo:"Apr'26",st:"Haryana",r:651},{mo:"Apr'26",st:"Himachal Pradesh",r:265},{mo:"Apr'26",st:"Jammu and Kashmir",r:370},{mo:"Apr'26",st:"Jharkhand",r:1345},{mo:"Apr'26",st:"Karnataka",r:4063},{mo:"Apr'26",st:"Kerala",r:4028},{mo:"Apr'26",st:"Lakshadweep",r:2},{mo:"Apr'26",st:"Madhya Pradesh",r:911},{mo:"Apr'26",st:"Maharashtra",r:6090},{mo:"Apr'26",st:"Manipur",r:21},{mo:"Apr'26",st:"Meghalaya",r:683},{mo:"Apr'26",st:"Mizoram",r:373},{mo:"Apr'26",st:"Nagaland",r:100},{mo:"Apr'26",st:"Odisha",r:2563},{mo:"Apr'26",st:"Puducherry",r:337},{mo:"Apr'26",st:"Punjab",r:242},{mo:"Apr'26",st:"Rajasthan",r:702},{mo:"Apr'26",st:"Sikkim",r:34},{mo:"Apr'26",st:"Tamil Nadu",r:16496},{mo:"Apr'26",st:"Tripura",r:138},{mo:"Apr'26",st:"Uttar Pradesh",r:2486},{mo:"Apr'26",st:"Uttarakhand",r:389},{mo:"Apr'26",st:"West Bengal",r:7945},{mo:"May'26",st:"Andaman &amp; Nicobar Island",r:29},{mo:"May'26",st:"Andhra Pradesh",r:1755},{mo:"May'26",st:"Arunachal Pradesh",r:245},{mo:"May'26",st:"Assam",r:2935},{mo:"May'26",st:"Bihar",r:2876},{mo:"May'26",st:"Chandigarh",r:41},{mo:"May'26",st:"Chhattisgarh",r:372},{mo:"May'26",st:"Delhi",r:1155},{mo:"May'26",st:"Goa",r:962},{mo:"May'26",st:"Gujarat",r:1549},{mo:"May'26",st:"Haryana",r:547},{mo:"May'26",st:"Himachal Pradesh",r:236},{mo:"May'26",st:"Jammu and Kashmir",r:354},{mo:"May'26",st:"Jharkhand",r:1236},{mo:"May'26",st:"Karnataka",r:4606},{mo:"May'26",st:"Kerala",r:4461},{mo:"May'26",st:"Lakshadweep",r:3},{mo:"May'26",st:"Madhya Pradesh",r:850},{mo:"May'26",st:"Maharashtra",r:5184},{mo:"May'26",st:"Manipur",r:104},{mo:"May'26",st:"Meghalaya",r:718},{mo:"May'26",st:"Mizoram",r:179},{mo:"May'26",st:"Nagaland",r:136},{mo:"May'26",st:"Odisha",r:2074},{mo:"May'26",st:"Puducherry",r:351},{mo:"May'26",st:"Punjab",r:179},{mo:"May'26",st:"Rajasthan",r:753},{mo:"May'26",st:"Sikkim",r:53},{mo:"May'26",st:"Tamil Nadu",r:13769},{mo:"May'26",st:"Telangana",r:1404},{mo:"May'26",st:"Tripura",r:194},{mo:"May'26",st:"UT of DNH and DD",r:15},{mo:"May'26",st:"Uttar Pradesh",r:2479},{mo:"May'26",st:"Uttarakhand",r:383},{mo:"May'26",st:"West Bengal",r:8245}];
+const MRE_WS=[{mod:"XSR 150-200cc",mo:"Nov'25",ws:16359},{mod:"XSR 150-200cc",mo:"Mar'26",ws:6948},{mod:"XSR 150-200cc",mo:"Jan'26",ws:4087},{mod:"XSR 150-200cc",mo:"Feb'26",ws:924},{mod:"XSR 150-200cc",mo:"Apr'26",ws:6914},{mod:"XSR 150-200cc",mo:"Dec'25",ws:14951},{mod:"Aerox 150-200cc",mo:"Mar'26",ws:2557},{mod:"Aerox 150-200cc",mo:"Dec'23",ws:1302},{mod:"Aerox 150-200cc",mo:"Feb'25",ws:2220},{mod:"Aerox 150-200cc",mo:"Jan'26",ws:2841},{mod:"Aerox 150-200cc",mo:"Jan'25",ws:1770},{mod:"Aerox 150-200cc",mo:"Nov'23",ws:3602},{mod:"Aerox 150-200cc",mo:"May'24",ws:1671},{mod:"Aerox 150-200cc",mo:"Feb'24",ws:2047},{mod:"Aerox 150-200cc",mo:"Dec'24",ws:1248},{mod:"Aerox 150-200cc",mo:"Mar'25",ws:1991},{mod:"Aerox 150-200cc",mo:"Aug'23",ws:1782},{mod:"Aerox 150-200cc",mo:"Oct'24",ws:2826},{mod:"Aerox 150-200cc",mo:"Jul'24",ws:1548},{mod:"Aerox 150-200cc",mo:"Feb'26",ws:1938},{mod:"Aerox 150-200cc",mo:"Nov'25",ws:1116},{mod:"Aerox 150-200cc",mo:"May'25",ws:1760},{mod:"Aerox 150-200cc",mo:"Jul'25",ws:2239},{mod:"Aerox 150-200cc",mo:"Jul'23",ws:1185},{mod:"Aerox 150-200cc",mo:"Jun'24",ws:1593},{mod:"Aerox 150-200cc",mo:"Apr'26",ws:1708},{mod:"Aerox 150-200cc",mo:"Apr'25",ws:1484},{mod:"Aerox 150-200cc",mo:"Dec'25",ws:1031},{mod:"Aerox 150-200cc",mo:"Oct'25",ws:2889},{mod:"Aerox 150-200cc",mo:"Aug'24",ws:1998},{mod:"Aerox 150-200cc",mo:"Apr'24",ws:1902},{mod:"Aerox 150-200cc",mo:"Jan'24",ws:2653},{mod:"Aerox 150-200cc",mo:"Sep'25",ws:2901},{mod:"Aerox 150-200cc",mo:"Aug'25",ws:2424},{mod:"Aerox 150-200cc",mo:"Sep'24",ws:2142},{mod:"Aerox 150-200cc",mo:"Mar'24",ws:1704},{mod:"Aerox 150-200cc",mo:"Jun'25",ws:1743},{mod:"Aerox 150-200cc",mo:"Sep'23",ws:1570},{mod:"Aerox 150-200cc",mo:"Nov'24",ws:2019},{mod:"Aerox 150-200cc",mo:"Oct'23",ws:2604},{mod:"Fascino 90-125cc",mo:"Mar'26",ws:6671},{mod:"Fascino 90-125cc",mo:"Dec'23",ws:5579},{mod:"Fascino 90-125cc",mo:"May'25",ws:5251},{mod:"Fascino 90-125cc",mo:"May'23",ws:8422},{mod:"Fascino 90-125cc",mo:"Jan'25",ws:8261},{mod:"Fascino 90-125cc",mo:"Jan'26",ws:5697},{mod:"Fascino 90-125cc",mo:"Nov'23",ws:8565},{mod:"Fascino 90-125cc",mo:"Feb'25",ws:7938},{mod:"Fascino 90-125cc",mo:"Feb'24",ws:7708},{mod:"Fascino 90-125cc",mo:"Mar'25",ws:6634},{mod:"Fascino 90-125cc",mo:"Aug'23",ws:11752},{mod:"Fascino 90-125cc",mo:"Oct'24",ws:11329},{mod:"Fascino 90-125cc",mo:"Jul'24",ws:10052},{mod:"Fascino 90-125cc",mo:"Feb'26",ws:5798},{mod:"Fascino 90-125cc",mo:"Apr'23",ws:6300},{mod:"Fascino 90-125cc",mo:"Nov'25",ws:5306},{mod:"Fascino 90-125cc",mo:"Dec'24",ws:5475},{mod:"Fascino 90-125cc",mo:"Jul'25",ws:5450},{mod:"Fascino 90-125cc",mo:"May'24",ws:9330},{mod:"Fascino 90-125cc",mo:"Jul'23",ws:11710},{mod:"Fascino 90-125cc",mo:"Jun'24",ws:9254},{mod:"Fascino 90-125cc",mo:"Apr'26",ws:10430},{mod:"Fascino 90-125cc",mo:"Apr'25",ws:5678},{mod:"Fascino 90-125cc",mo:"Dec'25",ws:4630},{mod:"Fascino 90-125cc",mo:"Oct'25",ws:5361},{mod:"Fascino 90-125cc",mo:"Aug'24",ws:11128},{mod:"Fascino 90-125cc",mo:"Apr'24",ws:8824},{mod:"Fascino 90-125cc",mo:"Jan'24",ws:8176},{mod:"Fascino 90-125cc",mo:"Sep'25",ws:5955},{mod:"Fascino 90-125cc",mo:"Aug'25",ws:4849},{mod:"Fascino 90-125cc",mo:"Sep'24",ws:11491},{mod:"Fascino 90-125cc",mo:"Mar'24",ws:8311},{mod:"Fascino 90-125cc",mo:"Jun'25",ws:6125},{mod:"Fascino 90-125cc",mo:"Sep'23",ws:12014},{mod:"Fascino 90-125cc",mo:"Nov'24",ws:7921},{mod:"Fascino 90-125cc",mo:"Oct'23",ws:11610},{mod:"Fascino 90-125cc",mo:"Jun'23",ws:9572},{mod:"FZ 125-150cc",mo:"Mar'26",ws:17227},{mod:"FZ 125-150cc",mo:"Dec'23",ws:10783},{mod:"FZ 125-150cc",mo:"May'25",ws:12979},{mod:"FZ 125-150cc",mo:"May'23",ws:16919},{mod:"FZ 125-150cc",mo:"Jan'25",ws:11399},{mod:"FZ 125-150cc",mo:"Jan'26",ws:12477},{mod:"FZ 125-150cc",mo:"Nov'23",ws:16233},{mod:"FZ 125-150cc",mo:"Feb'25",ws:9589},{mod:"FZ 125-150cc",mo:"Feb'24",ws:14449},{mod:"FZ 125-150cc",mo:"Mar'25",ws:11583},{mod:"FZ 125-150cc",mo:"Aug'23",ws:13241},{mod:"FZ 125-150cc",mo:"Oct'24",ws:17874},{mod:"FZ 125-150cc",mo:"Jul'24",ws:10964},{mod:"FZ 125-150cc",mo:"Feb'26",ws:16852},{mod:"FZ 125-150cc",mo:"Apr'23",ws:20931},{mod:"FZ 125-150cc",mo:"Nov'25",ws:6478},{mod:"FZ 125-150cc",mo:"Dec'24",ws:8558},{mod:"FZ 125-150cc",mo:"Jul'25",ws:11110},{mod:"FZ 125-150cc",mo:"May'24",ws:14359},{mod:"FZ 125-150cc",mo:"Jul'23",ws:16651},{mod:"FZ 125-150cc",mo:"Jun'24",ws:12041},{mod:"FZ 125-150cc",mo:"Apr'26",ws:15729},{mod:"FZ 125-150cc",mo:"Apr'25",ws:13482},{mod:"FZ 125-150cc",mo:"Dec'25",ws:10291},{mod:"FZ 125-150cc",mo:"Oct'25",ws:16250},{mod:"FZ 125-150cc",mo:"Aug'24",ws:12253},{mod:"FZ 125-150cc",mo:"Apr'24",ws:13778},{mod:"FZ 125-150cc",mo:"Jan'24",ws:14678},{mod:"FZ 125-150cc",mo:"Sep'25",ws:16137},{mod:"FZ 125-150cc",mo:"Aug'25",ws:14323},{mod:"FZ 125-150cc",mo:"Sep'24",ws:13617},{mod:"FZ 125-150cc",mo:"Mar'24",ws:16154},{mod:"FZ 125-150cc",mo:"Jun'25",ws:10767},{mod:"FZ 125-150cc",mo:"Sep'23",ws:14872},{mod:"FZ 125-150cc",mo:"Nov'24",ws:14406},{mod:"FZ 125-150cc",mo:"Oct'23",ws:18000},{mod:"FZ 125-150cc",mo:"Jun'23",ws:16316},{mod:"MT 15 150-200cc",mo:"Mar'26",ws:9343},{mod:"MT 15 150-200cc",mo:"Dec'23",ws:6404},{mod:"MT 15 150-200cc",mo:"May'25",ws:7034},{mod:"MT 15 150-200cc",mo:"May'23",ws:7156},{mod:"MT 15 150-200cc",mo:"Jan'25",ws:10640},{mod:"MT 15 150-200cc",mo:"Jan'26",ws:11081},{mod:"MT 15 150-200cc",mo:"Nov'23",ws:9140},{mod:"MT 15 150-200cc",mo:"Feb'25",ws:9490},{mod:"MT 15 150-200cc",mo:"Feb'24",ws:10047},{mod:"MT 15 150-200cc",mo:"Mar'25",ws:9074},{mod:"MT 15 150-200cc",mo:"Aug'23",ws:7296},{mod:"MT 15 150-200cc",mo:"Oct'24",ws:13405},{mod:"MT 15 150-200cc",mo:"Jul'24",ws:9866},{mod:"MT 15 150-200cc",mo:"Feb'26",ws:9630},{mod:"MT 15 150-200cc",mo:"Apr'23",ws:4469},{mod:"MT 15 150-200cc",mo:"Nov'25",ws:3814},{mod:"MT 15 150-200cc",mo:"Dec'24",ws:5224},{mod:"MT 15 150-200cc",mo:"Jul'25",ws:8514},{mod:"MT 15 150-200cc",mo:"May'24",ws:14612},{mod:"MT 15 150-200cc",mo:"Jul'23",ws:5805},{mod:"MT 15 150-200cc",mo:"Jun'24",ws:11617},{mod:"MT 15 150-200cc",mo:"Apr'26",ws:6741},{mod:"MT 15 150-200cc",mo:"Apr'25",ws:7025},{mod:"MT 15 150-200cc",mo:"Dec'25",ws:4403},{mod:"MT 15 150-200cc",mo:"Oct'25",ws:13173},{mod:"MT 15 150-200cc",mo:"Aug'24",ws:9929},{mod:"MT 15 150-200cc",mo:"Apr'24",ws:13359},{mod:"MT 15 150-200cc",mo:"Jan'24",ws:15124},{mod:"MT 15 150-200cc",mo:"Sep'25",ws:11695},{mod:"MT 15 150-200cc",mo:"Aug'25",ws:10613},{mod:"MT 15 150-200cc",mo:"Sep'24",ws:12286},{mod:"MT 15 150-200cc",mo:"Mar'24",ws:10697},{mod:"MT 15 150-200cc",mo:"Jun'25",ws:7123},{mod:"MT 15 150-200cc",mo:"Sep'23",ws:8691},{mod:"MT 15 150-200cc",mo:"Nov'24",ws:9894},{mod:"MT 15 150-200cc",mo:"Oct'23",ws:8736},{mod:"MT 15 150-200cc",mo:"Jun'23",ws:9127},{mod:"R15 150-200cc",mo:"Mar'26",ws:8133},{mod:"R15 150-200cc",mo:"Dec'23",ws:7331},{mod:"R15 150-200cc",mo:"May'25",ws:5997},{mod:"R15 150-200cc",mo:"May'23",ws:11280},{mod:"R15 150-200cc",mo:"Jan'25",ws:8264},{mod:"R15 150-200cc",mo:"Jan'26",ws:8301},{mod:"R15 150-200cc",mo:"Nov'23",ws:11270},{mod:"R15 150-200cc",mo:"Feb'25",ws:7157},{mod:"R15 150-200cc",mo:"Feb'24",ws:11128},{mod:"R15 150-200cc",mo:"Mar'25",ws:6622},{mod:"R15 150-200cc",mo:"Aug'23",ws:10483},{mod:"R15 150-200cc",mo:"Oct'24",ws:11449},{mod:"R15 150-200cc",mo:"Jul'24",ws:8712},{mod:"R15 150-200cc",mo:"Feb'26",ws:9246},{mod:"R15 150-200cc",mo:"Apr'23",ws:11294},{mod:"R15 150-200cc",mo:"Nov'25",ws:4257},{mod:"R15 150-200cc",mo:"Dec'24",ws:4269},{mod:"R15 150-200cc",mo:"Jul'25",ws:6623},{mod:"R15 150-200cc",mo:"May'24",ws:10435},{mod:"R15 150-200cc",mo:"Jul'23",ws:10705},{mod:"R15 150-200cc",mo:"Jun'24",ws:8776},{mod:"R15 150-200cc",mo:"Apr'26",ws:9066},{mod:"R15 150-200cc",mo:"Apr'25",ws:4908},{mod:"R15 150-200cc",mo:"Dec'25",ws:5453},{mod:"R15 150-200cc",mo:"Oct'25",ws:7949},{mod:"R15 150-200cc",mo:"Aug'24",ws:8583},{mod:"R15 150-200cc",mo:"Apr'24",ws:11146},{mod:"R15 150-200cc",mo:"Jan'24",ws:9676},{mod:"R15 150-200cc",mo:"Sep'25",ws:9329},{mod:"R15 150-200cc",mo:"Aug'25",ws:7529},{mod:"R15 150-200cc",mo:"Sep'24",ws:10614},{mod:"R15 150-200cc",mo:"Mar'24",ws:10095},{mod:"R15 150-200cc",mo:"Jun'25",ws:4380},{mod:"R15 150-200cc",mo:"Sep'23",ws:11131},{mod:"R15 150-200cc",mo:"Nov'24",ws:7105},{mod:"R15 150-200cc",mo:"Oct'23",ws:12964},{mod:"R15 150-200cc",mo:"Jun'23",ws:10111},{mod:"R3 250-350cc",mo:"Feb'25",ws:54},{mod:"R3 250-350cc",mo:"Oct'25",ws:24},{mod:"R3 250-350cc",mo:"Jan'25",ws:2},{mod:"R3 250-350cc",mo:"May'24",ws:21},{mod:"R3 250-350cc",mo:"Feb'24",ws:140},{mod:"R3 250-350cc",mo:"Mar'25",ws:59},{mod:"R3 250-350cc",mo:"Dec'25",ws:2},{mod:"R3 250-350cc",mo:"Oct'24",ws:15},{mod:"R3 250-350cc",mo:"Jul'24",ws:6},{mod:"R3 250-350cc",mo:"May'25",ws:42},{mod:"R3 250-350cc",mo:"Jul'25",ws:8},{mod:"R3 250-350cc",mo:"Dec'24",ws:4},{mod:"R3 250-350cc",mo:"Jun'24",ws:6},{mod:"R3 250-350cc",mo:"Apr'25",ws:66},{mod:"R3 250-350cc",mo:"Nov'25",ws:5},{mod:"R3 250-350cc",mo:"Aug'24",ws:76},{mod:"R3 250-350cc",mo:"Apr'24",ws:34},{mod:"R3 250-350cc",mo:"Jan'24",ws:30},{mod:"R3 250-350cc",mo:"Aug'25",ws:4},{mod:"R3 250-350cc",mo:"Sep'24",ws:13},{mod:"R3 250-350cc",mo:"Mar'24",ws:36},{mod:"R3 250-350cc",mo:"Jun'25",ws:5},{mod:"R3 250-350cc",mo:"Sep'25",ws:10},{mod:"R3 250-350cc",mo:"Nov'24",ws:8},{mod:"Ray 90-125cc",mo:"Mar'26",ws:25798},{mod:"Ray 90-125cc",mo:"Dec'23",ws:8643},{mod:"Ray 90-125cc",mo:"May'25",ws:13023},{mod:"Ray 90-125cc",mo:"May'23",ws:9794},{mod:"Ray 90-125cc",mo:"Jan'25",ws:15209},{mod:"Ray 90-125cc",mo:"Jan'26",ws:19815},{mod:"Ray 90-125cc",mo:"Nov'23",ws:11402},{mod:"Ray 90-125cc",mo:"Feb'25",ws:14010},{mod:"Ray 90-125cc",mo:"Feb'24",ws:11019},{mod:"Ray 90-125cc",mo:"Mar'25",ws:14510},{mod:"Ray 90-125cc",mo:"Aug'23",ws:13668},{mod:"Ray 90-125cc",mo:"Oct'24",ws:18451},{mod:"Ray 90-125cc",mo:"Jul'24",ws:14690},{mod:"Ray 90-125cc",mo:"Feb'26",ws:22593},{mod:"Ray 90-125cc",mo:"Apr'23",ws:9945},{mod:"Ray 90-125cc",mo:"Nov'25",ws:21049},{mod:"Ray 90-125cc",mo:"Dec'24",ws:12002},{mod:"Ray 90-125cc",mo:"Jul'25",ws:16421},{mod:"Ray 90-125cc",mo:"May'24",ws:13794},{mod:"Ray 90-125cc",mo:"Jul'23",ws:15828},{mod:"Ray 90-125cc",mo:"Jun'24",ws:15184},{mod:"Ray 90-125cc",mo:"Apr'26",ws:17298},{mod:"Ray 90-125cc",mo:"Apr'25",ws:14183},{mod:"Ray 90-125cc",mo:"Dec'25",ws:14153},{mod:"Ray 90-125cc",mo:"Oct'25",ws:22738},{mod:"Ray 90-125cc",mo:"Aug'24",ws:16264},{mod:"Ray 90-125cc",mo:"Apr'24",ws:14055},{mod:"Ray 90-125cc",mo:"Jan'24",ws:12047},{mod:"Ray 90-125cc",mo:"Sep'25",ws:27280},{mod:"Ray 90-125cc",mo:"Aug'25",ws:20671},{mod:"Ray 90-125cc",mo:"Sep'24",ws:16542},{mod:"Ray 90-125cc",mo:"Mar'24",ws:11531},{mod:"Ray 90-125cc",mo:"Jun'25",ws:14274},{mod:"Ray 90-125cc",mo:"Sep'23",ws:15904},{mod:"Ray 90-125cc",mo:"Nov'24",ws:14428},{mod:"Ray 90-125cc",mo:"Oct'23",ws:13870},{mod:"Ray 90-125cc",mo:"Jun'23",ws:13441},{mod:"EC06 EV",mo:"Mar'26",ws:232},{mod:"EC06 EV",mo:"Feb'26",ws:92}];
+const MRE_ORG=[{mod:"SZ 125-150cc",mo:"Mar'26",st:"__ALL__",g:1},{mod:"R15 150-200cc",mo:"Mar'26",st:"__ALL__",g:12370},{mod:"R3 250-350cc",mo:"Mar'26",st:"__ALL__",g:634},{mod:"FZ25 200-250cc",mo:"Mar'26",st:"__ALL__",g:2},{mod:"XSR 150-200cc",mo:"Mar'26",st:"__ALL__",g:7827},{mod:"MT 15 150-200cc",mo:"Mar'26",st:"__ALL__",g:7328},{mod:"Crux 75-110cc",mo:"Mar'26",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"Mar'26",st:"__ALL__",g:13156},{mod:"EC06 EV",mo:"Mar'26",st:"__ALL__",g:987},{mod:"Fascino 90-125cc",mo:"Mar'26",st:"__ALL__",g:2776},{mod:"FZ 125-150cc",mo:"Mar'26",st:"__ALL__",g:13838},{mod:"Aerox 150-200cc",mo:"Mar'26",st:"__ALL__",g:2924},{mod:"R15 150-200cc",mo:"Oct'25",st:"__ALL__",g:27335},{mod:"Aerox 150-200cc",mo:"Oct'25",st:"__ALL__",g:4918},{mod:"FZ25 200-250cc",mo:"Oct'25",st:"__ALL__",g:3},{mod:"MT 15 150-200cc",mo:"Oct'25",st:"__ALL__",g:12958},{mod:"FZ 125-150cc",mo:"Oct'25",st:"__ALL__",g:20979},{mod:"XSR 150-200cc",mo:"Oct'25",st:"__ALL__",g:2313},{mod:"Ray 90-125cc",mo:"Oct'25",st:"__ALL__",g:20328},{mod:"Fascino 90-125cc",mo:"Oct'25",st:"__ALL__",g:4363},{mod:"SZ 125-150cc",mo:"Oct'25",st:"__ALL__",g:4},{mod:"R3 250-350cc",mo:"Oct'25",st:"__ALL__",g:888},{mod:"EC06 EV",mo:"Oct'25",st:"__ALL__",g:27},{mod:"SZ 125-150cc",mo:"Feb'26",st:"__ALL__",g:1},{mod:"R15 150-200cc",mo:"Feb'26",st:"__ALL__",g:12063},{mod:"R3 250-350cc",mo:"Feb'26",st:"__ALL__",g:690},{mod:"FZ25 200-250cc",mo:"Feb'26",st:"__ALL__",g:4},{mod:"XSR 150-200cc",mo:"Feb'26",st:"__ALL__",g:6783},{mod:"MT 15 150-200cc",mo:"Feb'26",st:"__ALL__",g:6350},{mod:"Crux 75-110cc",mo:"Feb'26",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"Feb'26",st:"__ALL__",g:12796},{mod:"EC06 EV",mo:"Feb'26",st:"__ALL__",g:725},{mod:"Fascino 90-125cc",mo:"Feb'26",st:"__ALL__",g:2393},{mod:"Saluto 110-125cc",mo:"Feb'26",st:"__ALL__",g:1},{mod:"FZ 125-150cc",mo:"Feb'26",st:"__ALL__",g:12820},{mod:"Aerox 150-200cc",mo:"Feb'26",st:"__ALL__",g:2646},{mod:"R15 150-200cc",mo:"Jan'25",st:"__ALL__",g:12204},{mod:"Aerox 150-200cc",mo:"Jan'25",st:"__ALL__",g:2954},{mod:"FZ25 200-250cc",mo:"Jan'25",st:"__ALL__",g:6},{mod:"MT 15 150-200cc",mo:"Jan'25",st:"__ALL__",g:13303},{mod:"FZ 125-150cc",mo:"Jan'25",st:"__ALL__",g:7537},{mod:"Crux 75-110cc",mo:"Jan'25",st:"__ALL__",g:1},{mod:"XSR 150-200cc",mo:"Jan'25",st:"__ALL__",g:1753},{mod:"Ray 90-125cc",mo:"Jan'25",st:"__ALL__",g:4798},{mod:"Fascino 90-125cc",mo:"Jan'25",st:"__ALL__",g:2362},{mod:"SZ 125-150cc",mo:"Jan'25",st:"__ALL__",g:2},{mod:"R3 250-350cc",mo:"Jan'25",st:"__ALL__",g:220},{mod:"R15 150-200cc",mo:"Oct'24",st:"__ALL__",g:41616},{mod:"FZ25 200-250cc",mo:"Oct'24",st:"__ALL__",g:942},{mod:"MT 15 150-200cc",mo:"Oct'24",st:"__ALL__",g:56379},{mod:"FZ 125-150cc",mo:"Oct'24",st:"__ALL__",g:36414},{mod:"Aerox 150-200cc",mo:"Oct'24",st:"__ALL__",g:7733},{mod:"XSR 150-200cc",mo:"Oct'24",st:"__ALL__",g:3109},{mod:"Ray 90-125cc",mo:"Oct'24",st:"__ALL__",g:22253},{mod:"Fascino 90-125cc",mo:"Oct'24",st:"__ALL__",g:15410},{mod:"R3 250-350cc",mo:"Oct'24",st:"__ALL__",g:599},{mod:"EC06 EV",mo:"Oct'24",st:"__ALL__",g:55},{mod:"SZ 125-150cc",mo:"May'26",st:"__ALL__",g:1},{mod:"R15 150-200cc",mo:"May'26",st:"__ALL__",g:13457},{mod:"R3 250-350cc",mo:"May'26",st:"__ALL__",g:782},{mod:"FZ25 200-250cc",mo:"May'26",st:"__ALL__",g:1},{mod:"XSR 150-200cc",mo:"May'26",st:"__ALL__",g:5806},{mod:"MT 15 150-200cc",mo:"May'26",st:"__ALL__",g:6791},{mod:"Crux 75-110cc",mo:"May'26",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"May'26",st:"__ALL__",g:13569},{mod:"EC06 EV",mo:"May'26",st:"__ALL__",g:1172},{mod:"Fascino 90-125cc",mo:"May'26",st:"__ALL__",g:3345},{mod:"Saluto 110-125cc",mo:"May'26",st:"__ALL__",g:3},{mod:"FZ 125-150cc",mo:"May'26",st:"__ALL__",g:12737},{mod:"Aerox 150-200cc",mo:"May'26",st:"__ALL__",g:2454},{mod:"SZ 125-150cc",mo:"Nov'25",st:"__ALL__",g:3},{mod:"R15 150-200cc",mo:"Nov'25",st:"__ALL__",g:15742},{mod:"R3 250-350cc",mo:"Nov'25",st:"__ALL__",g:809},{mod:"FZ25 200-250cc",mo:"Nov'25",st:"__ALL__",g:2},{mod:"XSR 150-200cc",mo:"Nov'25",st:"__ALL__",g:16253},{mod:"MT 15 150-200cc",mo:"Nov'25",st:"__ALL__",g:8837},{mod:"Crux 75-110cc",mo:"Nov'25",st:"__ALL__",g:2},{mod:"Ray 90-125cc",mo:"Nov'25",st:"__ALL__",g:12539},{mod:"EC06 EV",mo:"Nov'25",st:"__ALL__",g:295},{mod:"Fascino 90-125cc",mo:"Nov'25",st:"__ALL__",g:2421},{mod:"FZ 125-150cc",mo:"Nov'25",st:"__ALL__",g:14528},{mod:"Aerox 150-200cc",mo:"Nov'25",st:"__ALL__",g:3269},{mod:"SZ 125-150cc",mo:"Jun'25",st:"__ALL__",g:5},{mod:"R15 150-200cc",mo:"Jun'25",st:"__ALL__",g:11167},{mod:"R3 250-350cc",mo:"Jun'25",st:"__ALL__",g:283},{mod:"FZ25 200-250cc",mo:"Jun'25",st:"__ALL__",g:9},{mod:"XSR 150-200cc",mo:"Jun'25",st:"__ALL__",g:914},{mod:"MT 15 150-200cc",mo:"Jun'25",st:"__ALL__",g:9423},{mod:"Crux 75-110cc",mo:"Jun'25",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"Jun'25",st:"__ALL__",g:5273},{mod:"EC06 EV",mo:"Jun'25",st:"__ALL__",g:18},{mod:"Fascino 90-125cc",mo:"Jun'25",st:"__ALL__",g:2384},{mod:"FZ 125-150cc",mo:"Jun'25",st:"__ALL__",g:8455},{mod:"Aerox 150-200cc",mo:"Jun'25",st:"__ALL__",g:3092},{mod:"SZ 125-150cc",mo:"Apr'26",st:"__ALL__",g:5},{mod:"R15 150-200cc",mo:"Apr'26",st:"__ALL__",g:12937},{mod:"R3 250-350cc",mo:"Apr'26",st:"__ALL__",g:1163},{mod:"FZ25 200-250cc",mo:"Apr'26",st:"__ALL__",g:1},{mod:"XSR 150-200cc",mo:"Apr'26",st:"__ALL__",g:6053},{mod:"MT 15 150-200cc",mo:"Apr'26",st:"__ALL__",g:6715},{mod:"Ray 90-125cc",mo:"Apr'26",st:"__ALL__",g:13804},{mod:"EC06 EV",mo:"Apr'26",st:"__ALL__",g:923},{mod:"Fascino 90-125cc",mo:"Apr'26",st:"__ALL__",g:3591},{mod:"Saluto 110-125cc",mo:"Apr'26",st:"__ALL__",g:1},{mod:"FZ 125-150cc",mo:"Apr'26",st:"__ALL__",g:13673},{mod:"Aerox 150-200cc",mo:"Apr'26",st:"__ALL__",g:2796},{mod:"SZ 125-150cc",mo:"Mar'25",st:"__ALL__",g:4},{mod:"R15 150-200cc",mo:"Mar'25",st:"__ALL__",g:12139},{mod:"R3 250-350cc",mo:"Mar'25",st:"__ALL__",g:443},{mod:"FZ25 200-250cc",mo:"Mar'25",st:"__ALL__",g:6},{mod:"XSR 150-200cc",mo:"Mar'25",st:"__ALL__",g:750},{mod:"MT 15 150-200cc",mo:"Mar'25",st:"__ALL__",g:11389},{mod:"Crux 75-110cc",mo:"Mar'25",st:"__ALL__",g:2},{mod:"Ray 90-125cc",mo:"Mar'25",st:"__ALL__",g:3886},{mod:"EC06 EV",mo:"Mar'25",st:"__ALL__",g:7},{mod:"Fascino 90-125cc",mo:"Mar'25",st:"__ALL__",g:1921},{mod:"Saluto 110-125cc",mo:"Mar'25",st:"__ALL__",g:2},{mod:"FZ 125-150cc",mo:"Mar'25",st:"__ALL__",g:9352},{mod:"Aerox 150-200cc",mo:"Mar'25",st:"__ALL__",g:3199},{mod:"Alpha 90-125cc",mo:"Mar'25",st:"__ALL__",g:1},{mod:"SZ 125-150cc",mo:"Sep'25",st:"__ALL__",g:1},{mod:"R15 150-200cc",mo:"Sep'25",st:"__ALL__",g:19108},{mod:"R3 250-350cc",mo:"Sep'25",st:"__ALL__",g:864},{mod:"FZ25 200-250cc",mo:"Sep'25",st:"__ALL__",g:8},{mod:"XSR 150-200cc",mo:"Sep'25",st:"__ALL__",g:1761},{mod:"MT 15 150-200cc",mo:"Sep'25",st:"__ALL__",g:12249},{mod:"Crux 75-110cc",mo:"Sep'25",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"Sep'25",st:"__ALL__",g:18637},{mod:"EC06 EV",mo:"Sep'25",st:"__ALL__",g:21},{mod:"Fascino 90-125cc",mo:"Sep'25",st:"__ALL__",g:4034},{mod:"FZ 125-150cc",mo:"Sep'25",st:"__ALL__",g:20584},{mod:"Aerox 150-200cc",mo:"Sep'25",st:"__ALL__",g:4587},{mod:"SZ 125-150cc",mo:"May'25",st:"__ALL__",g:4},{mod:"R15 150-200cc",mo:"May'25",st:"__ALL__",g:10633},{mod:"R3 250-350cc",mo:"May'25",st:"__ALL__",g:237},{mod:"FZ25 200-250cc",mo:"May'25",st:"__ALL__",g:2},{mod:"XSR 150-200cc",mo:"May'25",st:"__ALL__",g:797},{mod:"MT 15 150-200cc",mo:"May'25",st:"__ALL__",g:7736},{mod:"Ray 90-125cc",mo:"May'25",st:"__ALL__",g:4136},{mod:"EC06 EV",mo:"May'25",st:"__ALL__",g:9},{mod:"Fascino 90-125cc",mo:"May'25",st:"__ALL__",g:1760},{mod:"Saluto 110-125cc",mo:"May'25",st:"__ALL__",g:4},{mod:"FZ 125-150cc",mo:"May'25",st:"__ALL__",g:7762},{mod:"Aerox 150-200cc",mo:"May'25",st:"__ALL__",g:2872},{mod:"SZ 125-150cc",mo:"Dec'24",st:"__ALL__",g:9},{mod:"R15 150-200cc",mo:"Dec'24",st:"__ALL__",g:14782},{mod:"R3 250-350cc",mo:"Dec'24",st:"__ALL__",g:230},{mod:"FZ25 200-250cc",mo:"Dec'24",st:"__ALL__",g:5},{mod:"XSR 150-200cc",mo:"Dec'24",st:"__ALL__",g:2489},{mod:"MT 15 150-200cc",mo:"Dec'24",st:"__ALL__",g:21233},{mod:"Crux 75-110cc",mo:"Dec'24",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"Dec'24",st:"__ALL__",g:5844},{mod:"EC06 EV",mo:"Dec'24",st:"__ALL__",g:9},{mod:"Fascino 90-125cc",mo:"Dec'24",st:"__ALL__",g:2805},{mod:"Saluto 110-125cc",mo:"Dec'24",st:"__ALL__",g:1},{mod:"FZ 125-150cc",mo:"Dec'24",st:"__ALL__",g:9020},{mod:"Aerox 150-200cc",mo:"Dec'24",st:"__ALL__",g:3508},{mod:"SZ 125-150cc",mo:"Dec'25",st:"__ALL__",g:2},{mod:"R15 150-200cc",mo:"Dec'25",st:"__ALL__",g:13168},{mod:"R3 250-350cc",mo:"Dec'25",st:"__ALL__",g:740},{mod:"FZ25 200-250cc",mo:"Dec'25",st:"__ALL__",g:3},{mod:"XSR 150-200cc",mo:"Dec'25",st:"__ALL__",g:9463},{mod:"MT 15 150-200cc",mo:"Dec'25",st:"__ALL__",g:9587},{mod:"Crux 75-110cc",mo:"Dec'25",st:"__ALL__",g:2},{mod:"Ray 90-125cc",mo:"Dec'25",st:"__ALL__",g:13647},{mod:"EC06 EV",mo:"Dec'25",st:"__ALL__",g:238},{mod:"Fascino 90-125cc",mo:"Dec'25",st:"__ALL__",g:2697},{mod:"FZ 125-150cc",mo:"Dec'25",st:"__ALL__",g:15305},{mod:"Aerox 150-200cc",mo:"Dec'25",st:"__ALL__",g:3061},{mod:"SZ 125-150cc",mo:"Apr'25",st:"__ALL__",g:4},{mod:"R15 150-200cc",mo:"Apr'25",st:"__ALL__",g:11011},{mod:"R3 250-350cc",mo:"Apr'25",st:"__ALL__",g:302},{mod:"FZ25 200-250cc",mo:"Apr'25",st:"__ALL__",g:6},{mod:"XSR 150-200cc",mo:"Apr'25",st:"__ALL__",g:752},{mod:"MT 15 150-200cc",mo:"Apr'25",st:"__ALL__",g:8329},{mod:"Crux 75-110cc",mo:"Apr'25",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"Apr'25",st:"__ALL__",g:4487},{mod:"EC06 EV",mo:"Apr'25",st:"__ALL__",g:5},{mod:"Fascino 90-125cc",mo:"Apr'25",st:"__ALL__",g:2072},{mod:"Saluto 110-125cc",mo:"Apr'25",st:"__ALL__",g:1},{mod:"FZ 125-150cc",mo:"Apr'25",st:"__ALL__",g:7680},{mod:"Aerox 150-200cc",mo:"Apr'25",st:"__ALL__",g:3062},{mod:"SZ 125-150cc",mo:"Aug'25",st:"__ALL__",g:3},{mod:"R15 150-200cc",mo:"Aug'25",st:"__ALL__",g:12506},{mod:"R3 250-350cc",mo:"Aug'25",st:"__ALL__",g:568},{mod:"FZ25 200-250cc",mo:"Aug'25",st:"__ALL__",g:4},{mod:"XSR 150-200cc",mo:"Aug'25",st:"__ALL__",g:1143},{mod:"MT 15 150-200cc",mo:"Aug'25",st:"__ALL__",g:6979},{mod:"Crux 75-110cc",mo:"Aug'25",st:"__ALL__",g:1},{mod:"Ray 90-125cc",mo:"Aug'25",st:"__ALL__",g:12829},{mod:"EC06 EV",mo:"Aug'25",st:"__ALL__",g:16},{mod:"Fascino 90-125cc",mo:"Aug'25",st:"__ALL__",g:2975},{mod:"FZ 125-150cc",mo:"Aug'25",st:"__ALL__",g:12909},{mod:"Aerox 150-200cc",mo:"Aug'25",st:"__ALL__",g:2973},{mod:"SZ 125-150cc",mo:"Nov'24",st:"__ALL__",g:5},{mod:"R15 150-200cc",mo:"Nov'24",st:"__ALL__",g:14902},{mod:"R3 250-350cc",mo:"Nov'24",st:"__ALL__",g:299},{mod:"FZ25 200-250cc",mo:"Nov'24",st:"__ALL__",g:7},{mod:"XSR 150-200cc",mo:"Nov'24",st:"__ALL__",g:2056},{mod:"MT 15 150-200cc",mo:"Nov'24",st:"__ALL__",g:26540},{mod:"Ray 90-125cc",mo:"Nov'24",st:"__ALL__",g:7105},{mod:"EC06 EV",mo:"Nov'24",st:"__ALL__",g:24},{mod:"Fascino 90-125cc",mo:"Nov'24",st:"__ALL__",g:3847},{mod:"Saluto 110-125cc",mo:"Nov'24",st:"__ALL__",g:1},{mod:"FZ 125-150cc",mo:"Nov'24",st:"__ALL__",g:10907},{mod:"Aerox 150-200cc",mo:"Nov'24",st:"__ALL__",g:4056},{mod:"Alpha 90-125cc",mo:"Nov'24",st:"__ALL__",g:1},{mod:"R15 150-200cc",mo:"Jul'25",st:"__ALL__",g:12957},{mod:"Aerox 150-200cc",mo:"Jul'25",st:"__ALL__",g:3470},{mod:"FZ25 200-250cc",mo:"Jul'25",st:"__ALL__",g:4},{mod:"MT 15 150-200cc",mo:"Jul'25",st:"__ALL__",g:10382},{mod:"FZ 125-150cc",mo:"Jul'25",st:"__ALL__",g:10839},{mod:"XSR 150-200cc",mo:"Jul'25",st:"__ALL__",g:967},{mod:"Ray 90-125cc",mo:"Jul'25",st:"__ALL__",g:9328},{mod:"Fascino 90-125cc",mo:"Jul'25",st:"__ALL__",g:2510},{mod:"SZ 125-150cc",mo:"Jul'25",st:"__ALL__",g:4},{mod:"R3 250-350cc",mo:"Jul'25",st:"__ALL__",g:494},{mod:"EC06 EV",mo:"Jul'25",st:"__ALL__",g:8},{mod:"R15 150-200cc",mo:"Jan'26",st:"__ALL__",g:13675},{mod:"Aerox 150-200cc",mo:"Jan'26",st:"__ALL__",g:3040},{mod:"MT 15 150-200cc",mo:"Jan'26",st:"__ALL__",g:8259},{mod:"FZ 125-150cc",mo:"Jan'26",st:"__ALL__",g:13616},{mod:"XSR 150-200cc",mo:"Jan'26",st:"__ALL__",g:8418},{mod:"Ray 90-125cc",mo:"Jan'26",st:"__ALL__",g:12524},{mod:"Fascino 90-125cc",mo:"Jan'26",st:"__ALL__",g:2618},{mod:"SZ 125-150cc",mo:"Jan'26",st:"__ALL__",g:2},{mod:"R3 250-350cc",mo:"Jan'26",st:"__ALL__",g:745},{mod:"EC06 EV",mo:"Jan'26",st:"__ALL__",g:341},{mod:"SZ 125-150cc",mo:"Feb'25",st:"__ALL__",g:6},{mod:"R15 150-200cc",mo:"Feb'25",st:"__ALL__",g:10282},{mod:"R3 250-350cc",mo:"Feb'25",st:"__ALL__",g:510},{mod:"FZ25 200-250cc",mo:"Feb'25",st:"__ALL__",g:7},{mod:"XSR 150-200cc",mo:"Feb'25",st:"__ALL__",g:842},{mod:"MT 15 150-200cc",mo:"Feb'25",st:"__ALL__",g:10970},{mod:"Ray 90-125cc",mo:"Feb'25",st:"__ALL__",g:3367},{mod:"EC06 EV",mo:"Feb'25",st:"__ALL__",g:3},{mod:"Fascino 90-125cc",mo:"Feb'25",st:"__ALL__",g:1605},{mod:"Saluto 110-125cc",mo:"Feb'25",st:"__ALL__",g:1},{mod:"FZ 125-150cc",mo:"Feb'25",st:"__ALL__",g:5848},{mod:"Aerox 150-200cc",mo:"Feb'25",st:"__ALL__",g:2361}];
+
+/* Normalised row arrays (compatible with prediction engine) */
+const VHN_ROWS=MRE_VHN.map(function(d){return{state:d.st,month:d.mo,retails:d.r};});
+const WS_ROWS =MRE_WS.map(function(d){return{model:d.mod,month:d.mo,wholesale:d.ws};});
+const ORG_ROWS=MRE_ORG.map(function(d){return{model:d.mod,month:d.mo,state:d.st,generation:d.g,lead_type:'Organic'};});
+
+
+/* ── UTILS ─────────────────────────────────────────────────────── */
+function moKey(s){
+  var p=String(s||'').split("'");
+  if(p.length===2){var i=MN.indexOf(p[0]);if(i>=0)return parseInt('20'+p[1])*12+i;}
+  return -1;
+}
+function Nf(n){return n?(Number(n)||0).toLocaleString('en-IN'):'-';}
+function Nfw(n){return (Number(n)||0).toLocaleString('en-IN');}
+function clamp01(v){return Math.max(0,Math.min(1,isFinite(v)?v:0));}
+function mkChart(ref,id,cfg){
+  var c=document.getElementById(id);if(!c)return;
+  if(ref.current){try{ref.current.destroy();}catch(e){}ref.current=null;}
+  try{ref.current=new Chart(c,cfg);}catch(e){console.error('[Chart]',e.message);}
+}
+
+/* ── SHARED COMPONENTS ─────────────────────────────────────────── */
+function FilterSel({label,value,onChange,options}){
+  return ce('div',{className:'filter-row',style:{gap:6}},
+    ce('span',{className:'filter-label'},label),
+    ce('select',{className:'sel',value,onChange:function(e){onChange(e.target.value);}},
+      options.map(function(o){
+        var v=typeof o==='string'?o:o.value;
+        var lbl=typeof o==='string'?o:o.label;
+        return ce('option',{key:v,value:v},lbl);
+      })
+    )
+  );
+}
+
+function GridTable({rows,cols,data,footerLabel,footerData}){
+  return ce('div',{className:'grid-wrap'},
+    ce('table',{className:'dg'},
+      ce('thead',null,ce('tr',null,
+        ce('th',{className:'lc'},rows.label||''),
+        cols.map(function(c){return ce('th',{key:c.id},c.label);}),
+        ce('th',null,'Total')
+      )),
+      ce('tbody',null,
+        rows.map(function(r,ri){
+          var bg=ri%2===0?'#fff':'#f8fafc';
+          var rowTot=cols.reduce(function(s,c){return s+((data[r.id]||{})[c.id]||0);},0);
+          return ce('tr',{key:r.id,style:{background:bg}},
+            ce('td',{className:'lc',style:{background:bg}},r.label),
+            cols.map(function(c){var v=(data[r.id]||{})[c.id]||0;return ce('td',{key:c.id,style:{color:v?'inherit':'#d1d5db'}},v?Nf(v):'-');}),
+            ce('td',{style:{fontWeight:600,color:'#2563eb'}},Nf(rowTot))
+          );
+        })
+      ),
+      ce('tfoot',null,ce('tr',null,
+        ce('td',{className:'lc'},footerLabel||'Total'),
+        cols.map(function(c){return ce('td',{key:c.id},Nf((footerData||{})[c.id]||0));}),
+        ce('td',null,Nfw(cols.reduce(function(s,c){return s+((footerData||{})[c.id]||0);},0)))
+      ))
+    )
+  );
+}
+
+/* ── Searchable dropdown ──────────────────────────────────────────── */
+function SearchableSelect({value,onChange,options,placeholder}){
+  var[open,setOpen]=useState(false);
+  var[query,setQuery]=useState('');
+  var inputRef=useRef(null);
+  var filtered=useMemo(function(){
+    var q=query.trim().toLowerCase();
+    return q?options.filter(function(o){return o.label.toLowerCase().indexOf(q)!==-1;}):options;
+  },[query,options]);
+  var selected=options.find(function(o){return o.value===value;});
+  return ce('div',{style:{position:'relative',display:'inline-block'}},
+    ce('input',{ref:inputRef,type:'text',
+      value:open?query:(selected?selected.label:(placeholder||'')),
+      placeholder:placeholder||'Search...',
+      onFocus:function(){setOpen(true);setQuery('');},
+      onBlur:function(){setTimeout(function(){setOpen(false);setQuery('');},160);},
+      onChange:function(e){setQuery(e.target.value);},
+      style:{padding:'5px 10px',border:'1px solid #e4e6ef',borderRadius:6,fontSize:11.5,
+        width:200,fontFamily:'inherit',outline:'none',background:'#fff',cursor:'text',color:'#374151'}
+    }),
+    open&&ce('div',{style:{position:'absolute',top:'calc(100% + 2px)',left:0,background:'#fff',
+      border:'1px solid #e4e6ef',borderRadius:7,zIndex:300,maxHeight:220,overflowY:'auto',
+      minWidth:200,boxShadow:'0 6px 20px rgba(0,0,0,.12)',fontSize:11.5}},
+      filtered.length===0
+        ?ce('div',{style:{padding:'8px 12px',color:'#9ca3af'}}, 'No results')
+        :filtered.map(function(o){
+          return ce('div',{key:o.value,
+            onMouseDown:function(e){e.preventDefault();onChange(o.value);setOpen(false);setQuery('');},
+            style:{padding:'7px 12px',cursor:'pointer',
+              background:o.value===value?'#eff6ff':'transparent',
+              color:o.value===value?'#2563eb':'#374151',
+              fontWeight:o.value===value?600:400}
+          },o.label);
+        })
+    )
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  TAB 1 — ORGANIC GENERATION
+ * ═══════════════════════════════════════════════════════════════════ */
+function OrganicGenTab(){
+  var rows=ORG_ROWS;
+  var[selYear,setSelYear]=useState('All');
+  var[selState,setSelState]=useState('All');
+  var[expanded,setExpanded]=useState({});
+
+  var allMonths=useMemo(function(){var s=new Set();rows.forEach(function(r){if(r.month)s.add(r.month);});return Array.from(s).filter(function(m){return moKey(m)>0;}).sort(function(a,b){return moKey(b)-moKey(a);});},[]);
+  var allStates=useMemo(function(){var s=new Set();rows.forEach(function(r){s.add(r.state);});return Array.from(s).sort();},[]);
+  var years=useMemo(function(){var s=new Set();allMonths.forEach(function(m){var p=m.match(/(\w+)'(\d+)/);if(p)s.add('20'+p[2]);});return Array.from(s).sort().reverse();},[allMonths]);
+
+  var filtMos=useMemo(function(){
+    if(selYear==='All')return allMonths;
+    return allMonths.filter(function(m){var p=m.match(/(\w+)'(\d+)/);return p&&'20'+p[2]===selYear;});
+  },[selYear,allMonths]);
+
+  /* state → model → month → generation */
+  var stateModelAgg=useMemo(function(){
+    var o={};
+    rows.forEach(function(r){
+      if(!o[r.state])o[r.state]={};
+      if(!o[r.state][r.model])o[r.state][r.model]={};
+      o[r.state][r.model][r.month]=(o[r.state][r.model][r.month]||0)+r.generation;
+    });
+    return o;
+  },[]);
+
+  /* state → month → total across models */
+  var stateTotals=useMemo(function(){
+    var o={};
+    allStates.forEach(function(st){
+      o[st]={};
+      var stData=stateModelAgg[st]||{};
+      filtMos.forEach(function(mo){
+        o[st][mo]=Object.values(stData).reduce(function(s,mData){return s+(mData[mo]||0);},0);
+      });
+    });
+    return o;
+  },[allStates,filtMos,stateModelAgg]);
+
+  /* which states to render in the grid */
+  var displayStates=useMemo(function(){
+    return selState==='All'?allStates:[selState];
+  },[selState,allStates]);
+
+  /* grand total per month (respects state filter) */
+  var grandTotals=useMemo(function(){
+    var o={};
+    filtMos.forEach(function(mo){
+      o[mo]=displayStates.reduce(function(s,st){return s+((stateTotals[st]&&stateTotals[st][mo])||0);},0);
+    });
+    return o;
+  },[filtMos,displayStates,stateTotals]);
+
+  var totalGen=useMemo(function(){return rows.reduce(function(s,r){return s+r.generation;},0);},[]);
+
+  var stateOptions=useMemo(function(){
+    return [{value:'All',label:'All States'},...allStates.map(function(s){return{value:s,label:s};})];
+  },[allStates]);
+
+  function toggleState(st){setExpanded(function(prev){var n=Object.assign({},prev);n[st]=!n[st];return n;});}
+
+  return ce('div',{className:'fade-up'},
+    ce('div',{className:'stat-bar'},
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'Total Organic Leads'),ce('div',{className:'stat-val'},Nfw(totalGen))),
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'States'),ce('div',{className:'stat-val'},allStates.length)),
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'Months'),ce('div',{className:'stat-val'},allMonths.length)),
+      ce('div',{className:'data-label'},'✓ Yamaha Organic Unique Generation')
+    ),
+    ce('div',{className:'card'},
+      ce('div',{className:'card-hdr'},
+        ce('div',{className:'card-title'},'Organic Generation Matrix — State × Model × Month'),
+        ce(FilterSel,{label:'Year',value:selYear,onChange:setSelYear,options:[{value:'All',label:'All Years'},...years.map(function(y){return{value:y,label:y};})]}),
+        ce('div',{className:'filter-row',style:{gap:6}},
+          ce('span',{className:'filter-label'},'State'),
+          ce(SearchableSelect,{value:selState,onChange:setSelState,options:stateOptions,placeholder:'All States'})
+        )
+      ),
+      ce('div',{className:'grid-wrap'},
+        ce('table',{className:'dg'},
+          ce('thead',null,ce('tr',null,
+            ce('th',{className:'lc'},'State / Model'),
+            filtMos.map(function(mo){return ce('th',{key:mo},mo);}),
+            ce('th',null,'Total')
+          )),
+          ce('tbody',null,
+            (function(){
+              var out=[];
+              displayStates.forEach(function(st){
+                var stData=stateModelAgg[st]||{};
+                var stModels=Object.keys(stData).sort();
+                var stTot=filtMos.reduce(function(s,mo){return s+((stateTotals[st]&&stateTotals[st][mo])||0);},0);
+                if(!stTot)return;
+                var isExp=!!(expanded[st]||(selState!=='All'&&displayStates.length===1));
+                out.push(ce('tr',{key:st,style:{background:'#f1f5f9',cursor:'pointer'},onClick:function(){toggleState(st);}},
+                  ce('td',{className:'lc',style:{background:'#f1f5f9',fontWeight:700,color:'#1e293b'}},
+                    ce('span',{style:{marginRight:6,fontSize:10,userSelect:'none'}},(isExp?'▼':'▶')),st),
+                  filtMos.map(function(mo){var v=(stateTotals[st]&&stateTotals[st][mo])||0;
+                    return ce('td',{key:mo,style:{fontWeight:600,color:v?'#1e293b':'#d1d5db'}},v?Nf(v):'-');}),
+                  ce('td',{style:{fontWeight:700,color:'#2563eb'}},Nf(stTot))
+                ));
+                if(isExp){
+                  stModels.forEach(function(model,mi){
+                    var mTot=filtMos.reduce(function(s,mo){return s+((stData[model]&&stData[model][mo])||0);},0);
+                    out.push(ce('tr',{key:st+'_'+model,style:{background:mi%2===0?'#fff':'#fafafa'}},
+                      ce('td',{className:'lc',style:{background:mi%2===0?'#fff':'#fafafa',paddingLeft:28,color:'#475569',fontStyle:'italic'}},model),
+                      filtMos.map(function(mo){var v=(stData[model]&&stData[model][mo])||0;
+                        return ce('td',{key:mo,style:{color:v?'inherit':'#d1d5db'}},v?Nf(v):'-');}),
+                      ce('td',{style:{color:'#475569'}},mTot?Nf(mTot):'-')
+                    ));
+                  });
+                }
+              });
+              return out;
+            })()
+          ),
+          ce('tfoot',null,ce('tr',null,
+            ce('td',{className:'lc'},'Grand Total'),
+            filtMos.map(function(mo){return ce('td',{key:mo},Nfw(grandTotals[mo]||0));}),
+            ce('td',null,Nfw(filtMos.reduce(function(s,mo){return s+(grandTotals[mo]||0);},0)))
+          ))
+        )
+      )
+    )
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  TAB 2 — STATE WISE OEM RETAILS (Vaahan)
+ * ═══════════════════════════════════════════════════════════════════ */
+function VaahanRetailTab(){
+  var rows=VHN_ROWS;
+  var[selYear,setSelYear]=useState('All');
+
+  var agg=useMemo(function(){
+    var o={};
+    rows.forEach(function(r){if(!o[r.state])o[r.state]={};o[r.state][r.month]=(o[r.state][r.month]||0)+r.retails;});
+    return o;
+  },[]);
+
+  var allStates=useMemo(function(){return Object.keys(agg).sort();},[agg]);
+  var allMonths=useMemo(function(){var s=new Set();rows.forEach(function(r){if(r.month)s.add(r.month);});return Array.from(s).filter(function(m){return moKey(m)>0;}).sort(function(a,b){return moKey(b)-moKey(a);});},[]);
+  var years=useMemo(function(){var s=new Set();allMonths.forEach(function(m){var p=m.match(/(\w+)'(\d+)/);if(p)s.add('20'+p[2]);});return Array.from(s).sort().reverse();},[allMonths]);
+  var filtMos=useMemo(function(){if(selYear==='All')return allMonths;return allMonths.filter(function(m){var p=m.match(/(\w+)'(\d+)/);return p&&'20'+p[2]===selYear;});},[selYear,allMonths]);
+  var colTotals=useMemo(function(){var t={};filtMos.forEach(function(mo){t[mo]=allStates.reduce(function(s,st){return s+(agg[st]&&agg[st][mo]||0);},0);});return t;},[filtMos,allStates,agg]);
+  var totalRt=useMemo(function(){return rows.reduce(function(s,r){return s+r.retails;},0);},[]);
+
+  return ce('div',{className:'fade-up'},
+    ce('div',{className:'stat-bar'},
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'Total Vaahan Retails'),ce('div',{className:'stat-val'},Nfw(totalRt))),
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'States'),ce('div',{className:'stat-val'},allStates.length)),
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'Months'),ce('div',{className:'stat-val'},allMonths.length)),
+      ce('div',{className:'data-label'},"✓ Yamaha Statewise Vahan Registrations (All Fuel)'24 – Apr'26")
+    ),
+    ce('div',{className:'card'},
+      ce('div',{className:'card-hdr'},
+        ce('div',{className:'card-title'},'State × Month Retail Grid — Vaahan Registrations'),
+        ce(FilterSel,{label:'Year',value:selYear,onChange:setSelYear,options:[{value:'All',label:'All Years'},...years.map(function(y){return{value:y,label:y};})]})
+      ),
+      ce(GridTable,{
+        rows:allStates.map(function(s){return{id:s,label:s};}),
+        cols:filtMos.map(function(mo){return{id:mo,label:mo};}),
+        data:agg,footerLabel:'Pan India',footerData:colTotals
+      })
+    )
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  TAB 3 — MODEL WISE WHOLESALE
+ * ═══════════════════════════════════════════════════════════════════ */
+function WholesaleTab(){
+  var rows=WS_ROWS;
+  var[selYear,setSelYear]=useState('All');
+
+  var agg=useMemo(function(){
+    var o={};
+    rows.forEach(function(r){if(!o[r.model])o[r.model]={};o[r.model][r.month]=(o[r.model][r.month]||0)+r.wholesale;});
+    return o;
+  },[]);
+
+  var allModels=useMemo(function(){return Object.keys(agg).sort();},[agg]);
+  var allMonths=useMemo(function(){var s=new Set();rows.forEach(function(r){if(r.month)s.add(r.month);});return Array.from(s).filter(function(m){return moKey(m)>0;}).sort(function(a,b){return moKey(b)-moKey(a);});},[]);
+  var years=useMemo(function(){var s=new Set();allMonths.forEach(function(m){var p=m.match(/(\w+)'(\d+)/);if(p)s.add('20'+p[2]);});return Array.from(s).sort().reverse();},[allMonths]);
+  var filtMos=useMemo(function(){if(selYear==='All')return allMonths;return allMonths.filter(function(m){var p=m.match(/(\w+)'(\d+)/);return p&&'20'+p[2]===selYear;});},[selYear,allMonths]);
+  var colTotals=useMemo(function(){var t={};filtMos.forEach(function(mo){t[mo]=allModels.reduce(function(s,m){return s+(agg[m]&&agg[m][mo]||0);},0);});return t;},[filtMos,allModels,agg]);
+  var totalWS=useMemo(function(){return rows.reduce(function(s,r){return s+r.wholesale;},0);},[]);
+
+  return ce('div',{className:'fade-up'},
+    ce('div',{className:'stat-bar'},
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'Total Wholesale'),ce('div',{className:'stat-val'},Nfw(totalWS))),
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'Models'),ce('div',{className:'stat-val'},allModels.length)),
+      ce('div',{className:'stat-item'},ce('div',{className:'stat-label'},'Months'),ce('div',{className:'stat-val'},allMonths.length)),
+      ce('div',{className:'data-label'},"✓ Yamaha Modelwise Wholesale (by Segment)'23 – Apr'26")
+    ),
+    ce('div',{className:'card'},
+      ce('div',{className:'card-hdr'},
+        ce('div',{className:'card-title'},'Model × Month Wholesale Grid — Dispatches'),
+        ce(FilterSel,{label:'Year',value:selYear,onChange:setSelYear,options:[{value:'All',label:'All Years'},...years.map(function(y){return{value:y,label:y};})]})
+      ),
+      ce(GridTable,{
+        rows:allModels.map(function(m){return{id:m,label:m};}),
+        cols:filtMos.map(function(mo){return{id:mo,label:mo};}),
+        data:agg,footerLabel:'Total',footerData:colTotals
+      })
+    )
+  );
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  TAB 4 — MODEL RETAIL ENGINE (Prediction)
+ * ═══════════════════════════════════════════════════════════════════ */
+function RetailEngineTab(){
+  var[selYear, setSelYear] =useState('All');
+  var[selState,setSelState]=useState('All');
+  var[selModel,setSelModel]=useState('All');
+  var[expandedPredStates,setExpandedPredStates]=useState({});
+  var chartRef1=useRef(null);
+  var chartRef2=useRef(null);
+
+  var orgRows=ORG_ROWS;
+  var vhnRows=VHN_ROWS;
+  var wsRows =WS_ROWS;
+
+  /* ── Aggregate raw rows ── */
+  var vhnAgg=useMemo(function(){
+    var o={};
+    vhnRows.forEach(function(r){if(!o[r.state])o[r.state]={};o[r.state][r.month]=(o[r.state][r.month]||0)+r.retails;});
+    var sts=Object.keys(o);var mos=new Set();sts.forEach(function(s){Object.keys(o[s]).forEach(function(m){mos.add(m);});});
+    o['__ALL__']={};
+    mos.forEach(function(m){o['__ALL__'][m]=sts.reduce(function(s,st){return s+(o[st][m]||0);},0);});
+    return o;
+  },[]);
+
+  var wsAgg=useMemo(function(){
+    var o={};
+    wsRows.forEach(function(r){if(!o[r.model])o[r.model]={};o[r.model][r.month]=(o[r.model][r.month]||0)+r.wholesale;});
+    return o;
+  },[]);
+
+  var orgAgg=useMemo(function(){
+    var o={};
+    orgRows.forEach(function(r){if(!o[r.month])o[r.month]={};o[r.month][r.model]=(o[r.month][r.model]||0)+r.generation;});
+    return o;
+  },[]);
+
+  /* state → month → model → generation (for blended base per-state organic share) */
+  var stOrgAgg=useMemo(function(){
+    var o={};
+    orgRows.forEach(function(r){
+      if(!o[r.state])o[r.state]={};
+      if(!o[r.state][r.month])o[r.state][r.month]={};
+      o[r.state][r.month][r.model]=(o[r.state][r.month][r.model]||0)+r.generation;
+    });
+    return o;
+  },[]);
+
+  var allStates=useMemo(function(){return Object.keys(vhnAgg).filter(function(s){return s!=='__ALL__';}).sort();},[vhnAgg]);
+  var allModels=useMemo(function(){return Object.keys(wsAgg).sort();},[wsAgg]);
+
+  var commonMonths=useMemo(function(){var vMos=new Set();vhnRows.forEach(function(r){if(r.month)vMos.add(r.month);});return Array.from(vMos).filter(function(m){return moKey(m)>0;}).sort(function(a,b){return moKey(b)-moKey(a);});},[]);;
+
+  var years=useMemo(function(){
+    var s=new Set();commonMonths.forEach(function(m){var p=m.match(/(\w+)'(\d+)/);if(p)s.add('20'+p[2]);});
+    return Array.from(s).sort().reverse();
+  },[commonMonths]);
+
+  var filtMos=useMemo(function(){
+    var mos=selYear==='All'?commonMonths:commonMonths.filter(function(m){var p=m.match(/(\w+)'(\d+)/);return p&&'20'+p[2]===selYear;});
+    return mos.slice(0,36);
+  },[selYear,commonMonths]);
+
+  var moTotalWS=useMemo(function(){
+    var t={};
+    commonMonths.forEach(function(mo){t[mo]=Object.values(wsAgg).reduce(function(s,m){return s+(m[mo]||0);},0);});
+    return t;
+  },[wsAgg,commonMonths]);
+
+  var mosSorted=useMemo(function(){return commonMonths.slice().sort(function(a,b){return moKey(a)-moKey(b);});},[commonMonths]);
+
+  function predictCell(st,model,mo){
+    var stateRetail=(vhnAgg[st]||{})[mo]||0;
+    var modelWS=(wsAgg[model]||{})[mo]||0;
+    var totalWS=moTotalWS[mo]||1;
+    var wsShare=modelWS/totalWS;
+
+    /* Blended share: 60% pan-India WS + 40% state-specific organic mix */
+    var stMoOrg=(stOrgAgg[st]&&stOrgAgg[st][mo])?stOrgAgg[st][mo]:{};
+    var stMoOrgTotal=Object.values(stMoOrg).reduce(function(s,v){return s+v;},0);
+    var panOrgTotal=Object.values(orgAgg[mo]||{}).reduce(function(s,v){return s+v;},0);var panOrgShare=panOrgTotal>0?((orgAgg[mo]||{})[model]||0)/panOrgTotal:0;var stOrgShare=stMoOrgTotal>0?((stMoOrg[model]||0)/stMoOrgTotal):(wsShare>0?0.70*wsShare+0.30*panOrgShare:panOrgShare);
+    var blendedShare=wsShare>0?(0.70*wsShare+0.30*panOrgShare):panOrgShare;
+
+    var base=stateRetail*blendedShare;
+    if(!base)return 0;
+
+    /* 6-month lookback (more stable than 3-month) */
+    var moIdx=mosSorted.indexOf(mo);
+    var prev6=mosSorted.slice(Math.max(0,moIdx-6),moIdx);
+
+    /* Signal formula: clamp01(0.5 + 0.5*(ratio-1))
+       — perfectly centred at 0.5 when ratio=1 (no change)
+       — rises to 1.0 at ratio=2, falls to 0.0 at ratio=0              */
+    function sig(now,avg){return clamp01(0.5+0.5*(avg>0?now/avg-1:0));}
+
+    /* State retail momentum */
+    var avgSR=prev6.length?prev6.reduce(function(s,m){return s+((vhnAgg[st]||{})[m]||0);},0)/prev6.length:stateRetail;
+    var stateSig=sig(stateRetail,avgSR);
+
+    /* Organic demand */
+    var genNow=(orgAgg[mo]||{})[model]||0;
+    var avgGen=prev6.length?prev6.reduce(function(s,m){return s+((orgAgg[m]||{})[model]||0);},0)/prev6.length:genNow;
+    var orgSig=sig(genNow,avgGen);
+
+    /* Wholesale trend */
+    var avgWS=prev6.length?prev6.reduce(function(s,m){return s+((wsAgg[model]||{})[m]||0);},0)/prev6.length:modelWS;
+    var wsSig=sig(modelWS,avgWS);
+
+    /* Seasonality: same-calendar-month avg vs overall avg */
+    var moNum=MN.indexOf(mo.split("'")[0]);
+    var sameHist=mosSorted.filter(function(m){return MN.indexOf(m.split("'")[0])===moNum&&m!==mo;});
+    var avgSame=sameHist.length?sameHist.reduce(function(s,m){return s+((vhnAgg[st]||{})[m]||0);},0)/sameHist.length:stateRetail;
+    var ovAvg=mosSorted.reduce(function(s,m){return s+((vhnAgg[st]||{})[m]||0);},0)/Math.max(mosSorted.length,1);
+    var seasSig=sig(avgSame,ovAvg);
+
+    /* Weights: 40% State · 25% Organic · 25% WS · 10% Seasonality
+       Discount centred at 1.0, range [0.95, 1.05] → max ±5% from base */
+    var combined=0.40*stateSig+0.25*orgSig+0.25*wsSig+0.10*seasSig;
+    var discount=0.95+combined*0.10;
+    return Math.max(0,Math.round(base*discount));
+  }
+
+  var predictions=useMemo(function(){
+    if(!filtMos.length)return{};
+    var st=selState==='All'?'__ALL__':selState;
+    var mods=selModel==='All'?allModels:[selModel];
+    var out={};
+    mods.forEach(function(model){
+      out[model]={};
+      filtMos.forEach(function(mo){out[model][mo]=predictCell(st,model,mo);});
+    });
+    return out;
+  },[selState,selModel,filtMos,vhnAgg,wsAgg,moTotalWS,allModels,mosSorted,orgAgg,stOrgAgg]);
+
+  var statePreds=useMemo(function(){
+    if(selModel==='All'||!filtMos.length)return{};
+    var out={};
+    allStates.forEach(function(st){
+      out[st]={};
+      filtMos.forEach(function(mo){out[st][mo]=predictCell(st,selModel,mo);});
+    });
+    return out;
+  },[selModel,filtMos,allStates,vhnAgg,wsAgg,moTotalWS,mosSorted,orgAgg,stOrgAgg]);
+
+  /* all states × all models predictions for the Prediction Grid */
+  var allStatePreds=useMemo(function(){
+    if(!filtMos.length)return{};
+    var out={};
+    allStates.forEach(function(st){
+      out[st]={};
+      allModels.forEach(function(model){
+        out[st][model]={};
+        filtMos.forEach(function(mo){out[st][model][mo]=predictCell(st,model,mo);});
+      });
+    });
+    return out;
+  },[allStates,allModels,filtMos,vhnAgg,wsAgg,moTotalWS,mosSorted,orgAgg,stOrgAgg]);
+
+  var accRows=useMemo(function(){
+    var st=selState==='All'?'__ALL__':selState;
+    return filtMos.map(function(mo){
+      var actual=(vhnAgg[st]||{})[mo]||0;
+      var pred=Object.values(predictions).reduce(function(s,ms){return s+(ms[mo]||0);},0);
+      var v=actual>0?(pred-actual)/actual*100:null;
+      return{mo,actual,pred,v};
+    });
+  },[filtMos,selState,vhnAgg,predictions]);
+
+  var kpiPred=filtMos.reduce(function(s,mo){return s+Object.values(predictions).reduce(function(ps,ms){return ps+(ms[mo]||0);},0);},0);
+  var kpiActual=(function(){var st=selState==='All'?'__ALL__':selState;return filtMos.reduce(function(s,mo){return s+((vhnAgg[st]||{})[mo]||0);},0);})();
+  var kpiVar=kpiActual>0?(kpiPred-kpiActual)/kpiActual*100:null;
+  var kpiMods=Object.keys(predictions).filter(function(m){return filtMos.some(function(mo){return (predictions[m]||{})[mo]>0;});}).length;
+
+  useEffect(function(){
+    var rows1=accRows.slice().reverse();
+    mkChart(chartRef1,'mre_c1',{type:'line',
+      data:{labels:rows1.map(function(r){return r.mo;}),datasets:[
+        {label:'Vaahan Actual',data:rows1.map(function(r){return r.actual;}),borderColor:'#2563eb',backgroundColor:'#2563eb18',borderWidth:2.5,tension:.3,pointRadius:3.5,fill:false,spanGaps:true},
+        {label:'Predicted',data:rows1.map(function(r){return r.pred;}),borderColor:'#d97706',backgroundColor:'#d9770618',borderWidth:2.5,borderDash:[5,3],tension:.3,pointRadius:3.5,fill:false,spanGaps:true}
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,
+        interaction:{mode:'index',intersect:false},
+        plugins:{legend:{position:'top',labels:{boxWidth:10,font:{size:10}}},
+          tooltip:{backgroundColor:'rgba(15,23,42,.9)',titleColor:'#f1f5f9',bodyColor:'#cbd5e1',padding:10,cornerRadius:8,
+            callbacks:{label:function(ctx){return ctx.dataset.label+': '+Nfw(ctx.raw||0);}}}},
+        scales:{
+          x:{grid:{color:'rgba(100,116,139,.1)'},ticks:{color:'#64748b',font:{size:9},maxRotation:45,minRotation:45}},
+          y:{grid:{color:'rgba(100,116,139,.1)'},ticks:{color:'#64748b',font:{size:10},callback:function(v){return v>=100000?(v/100000).toFixed(1)+'L':v>=1000?(v/1000).toFixed(0)+'K':v;}},
+            title:{display:true,text:'Units',color:'#94a3b8',font:{size:9}}}
+        }
+      }
+    });
+
+    var top8=allModels.slice().sort(function(a,b){
+      return Object.values(wsAgg[b]||{}).reduce(function(s,v){return s+v;},0)-
+             Object.values(wsAgg[a]||{}).reduce(function(s,v){return s+v;},0);
+    }).slice(0,8);
+    var labels2=filtMos.slice().reverse();
+    var C=['#2563eb','#d97706','#16a34a','#dc2626','#7c3aed','#0891b2','#db2777','#ea580c'];
+    mkChart(chartRef2,'mre_c2',{type:'bar',
+      data:{labels:labels2,datasets:top8.map(function(mod,i){return{
+        label:mod,
+        data:labels2.map(function(mo){return(predictions[mod]||{})[mo]||0;}),
+        backgroundColor:C[i%C.length]+'aa',borderColor:C[i%C.length],borderWidth:1
+      };})},
+      options:{responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{position:'top',labels:{boxWidth:10,font:{size:10}}},
+          tooltip:{callbacks:{label:function(ctx){return ctx.dataset.label+': '+Nfw(ctx.raw||0);}}}},
+        scales:{
+          x:{stacked:true,grid:{color:'rgba(100,116,139,.1)'},ticks:{color:'#64748b',font:{size:9},maxRotation:45,minRotation:45}},
+          y:{stacked:true,grid:{color:'rgba(100,116,139,.1)'},ticks:{color:'#64748b',font:{size:10},callback:function(v){return v>=100000?(v/100000).toFixed(1)+'L':v>=1000?(v/1000).toFixed(0)+'K':v;}}}
+        }
+      }
+    });
+    return function(){
+      if(chartRef1.current){try{chartRef1.current.destroy();}catch(e){}chartRef1.current=null;}
+      if(chartRef2.current){try{chartRef2.current.destroy();}catch(e){}chartRef2.current=null;}
+    };
+  },[accRows,predictions,allModels,filtMos,wsAgg]);
+
+  function exportPredCSV(){
+    var mods=selModel==='All'?allModels:[selModel];
+    var predStates=selState==='All'?allStates:[selState];
+    var header=['State','Model'].concat(filtMos.slice()).concat(['Total']);
+    var csvRows=[header];
+    predStates.forEach(function(st){
+      var stPredTot=filtMos.reduce(function(s,mo){
+        return s+mods.reduce(function(ms,model){return ms+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);
+      },0);
+      if(!stPredTot)return;
+      var stRow=[st,'State Total'];
+      filtMos.forEach(function(mo){
+        stRow.push(mods.reduce(function(s,model){return s+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0));
+      });
+      stRow.push(stPredTot);
+      csvRows.push(stRow);
+      mods.forEach(function(model){
+        var mTot=filtMos.reduce(function(s,mo){return s+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);
+        if(!mTot)return;
+        var mRow=[st,model];
+        filtMos.forEach(function(mo){mRow.push((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);});
+        mRow.push(mTot);
+        csvRows.push(mRow);
+      });
+    });
+    var grandRow=['Grand Total',''];
+    var grandTot=0;
+    filtMos.forEach(function(mo){
+      var v=predStates.reduce(function(s,st){return s+mods.reduce(function(ms,model){return ms+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);},0);
+      grandRow.push(v); grandTot+=v;
+    });
+    grandRow.push(grandTot);
+    csvRows.push(grandRow);
+    var csv=csvRows.map(function(row){
+      return row.map(function(cell){
+        var s=String(cell);
+        if(s.indexOf(',')!==-1||s.indexOf('"')!==-1)s='"'+s.replace(/"/g,'""')+'"';
+        return s;
+      }).join(',');
+    }).join('\r\n');
+    var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url; a.download='Yamaha_Prediction_Grid_'+(selState==='All'?'PanIndia':selState.replace(/\s+/g,'_'))+'_'+new Date().toISOString().slice(0,10)+'.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  return ce('div',{className:'fade-up'},
+
+    ce('div',{className:'card',style:{padding:'12px 16px'}},
+      ce('div',{className:'filter-row',style:{gap:12}},
+        ce('span',{className:'filter-label'},'Filters'),
+        ce(FilterSel,{label:'Year',value:selYear,onChange:setSelYear,
+          options:[{value:'All',label:'All Years'},...years.map(function(y){return{value:y,label:y};})]}),
+        ce(FilterSel,{label:'State',value:selState,onChange:setSelState,
+          options:[{value:'All',label:'All States (Pan India)'},...allStates.map(function(s){return{value:s,label:s};})]}),
+        ce(FilterSel,{label:'Model',value:selModel,onChange:setSelModel,
+          options:[{value:'All',label:'All Models'},...allModels.map(function(m){return{value:m,label:m};})]}),
+        ce('div',{style:{fontSize:11,color:'#94a3b8',marginLeft:'auto',flexShrink:0}},
+          commonMonths.length+' months · '+allModels.length+' models · '+allStates.length+' states · ✓ All signals active')
+      )
+    ),
+
+    ce('div',{className:'signal-row'},
+      ce('span',{style:{fontWeight:600,color:'#374151'}},'Prediction Signals:'),
+      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#2563eb'}}),ce('b',null,'40%'),' State Momentum'),
+      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#16a34a'}}),ce('b',null,'25%'),' Organic Demand'),
+      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#d97706'}}),ce('b',null,'25%'),' Wholesale Trend'),
+      ce('span',{className:'sig-item'},ce('span',{className:'sig-dot',style:{background:'#7c3aed'}}),ce('b',null,'10%'),' Seasonality'),
+      ce('span',{style:{color:'#94a3b8',fontSize:10.5}},'| Base: 70% WS share + 30% Pan Organic â€” Discount: 0.95-1.05')
+    ),
+
+    ce('div',{className:'kpi-grid'},
+      ce('div',{className:'kpi-card',style:{borderTopColor:'#d97706'}},
+        ce('div',{className:'kpi-label'},'Total Predicted'),
+        ce('div',{className:'kpi-value',style:{fontSize:20}},Nfw(kpiPred)),
+        ce('div',{className:'kpi-sub'},(selModel==='All'?'All models':selModel)+' · '+filtMos.length+' months')
+      ),
+      ce('div',{className:'kpi-card',style:{borderTopColor:'#2563eb'}},
+        ce('div',{className:'kpi-label'},'Vaahan Actual'),
+        ce('div',{className:'kpi-value',style:{fontSize:20}},Nfw(kpiActual)),
+        ce('div',{className:'kpi-sub'},selState==='All'?'Pan India':selState)
+      ),
+      ce('div',{className:'kpi-card',style:{borderTopColor:kpiVar!==null&&kpiVar<-10?'#dc2626':'#16a34a'}},
+        ce('div',{className:'kpi-label'},'Variance (Pred vs Actual)'),
+        ce('div',{className:'kpi-value',style:{fontSize:20,color:kpiVar===null?'#9ca3af':kpiVar<-10?'#dc2626':kpiVar<-5?'#d97706':'#16a34a'}},
+          kpiVar!==null?(kpiVar>0?'+':'')+kpiVar.toFixed(1)+'%':'—'),
+        ce('div',{className:'kpi-sub'},'negative = under-prediction (conservative)')
+      ),
+      ce('div',{className:'kpi-card',style:{borderTopColor:'#7c3aed'}},
+        ce('div',{className:'kpi-label'},'Models Active'),
+        ce('div',{className:'kpi-value',style:{fontSize:20}},kpiMods),
+        ce('div',{className:'kpi-sub'},'with non-zero predictions')
+      )
+    ),
+
+    filtMos.length>0&&ce('div',{className:'chart-pair'},
+      ce('div',{className:'card',style:{marginBottom:0}},
+        ce('div',{className:'card-title'},'Actual vs Predicted · '+(selState==='All'?'Pan India':selState)),
+        ce('div',{className:'chart-box'},ce('canvas',{id:'mre_c1'}))
+      ),
+      ce('div',{className:'card',style:{marginBottom:0}},
+        ce('div',{className:'card-title'},'Predicted by Model · Top 8 by WS Volume'),
+        ce('div',{className:'chart-box'},ce('canvas',{id:'mre_c2'}))
+      )
+    ),
+
+    filtMos.length>0&&Object.keys(allStatePreds).length>0&&ce('div',{className:'card'},
+      ce('div',{className:'card-hdr'},
+        ce('div',{className:'card-title',style:{marginBottom:0}},'Prediction Grid - State x Month - Yamaha Models'),
+        ce('button',{onClick:exportPredCSV,style:{marginLeft:'auto',padding:'6px 16px',border:'1.5px solid #2563eb',borderRadius:6,fontSize:11,fontWeight:600,background:'#eff6ff',color:'#2563eb',cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap',flexShrink:0}},'⬇ Export CSV')
+      ),
+      ce('div',{style:{fontSize:11,color:'#94a3b8',margin:'8px 0 10px'}},
+        'Click any state row to expand/collapse model-level predictions. State total = sum of all model predictions for that state.'),
+      ce('div',{className:'grid-wrap'},
+        ce('table',{className:'dg'},
+          ce('thead',null,ce('tr',null,
+            ce('th',{className:'lc'},'State / Model'),
+            filtMos.map(function(mo){return ce('th',{key:mo},mo);}),
+            ce('th',null,'Total')
+          )),
+          ce('tbody',null,
+            (function(){
+              var out=[];
+              var mods=selModel==='All'?allModels:[selModel];
+              var predStates=selState==='All'?allStates:[selState];
+              predStates.forEach(function(st){
+                var stPredTot=filtMos.reduce(function(s,mo){
+                  return s+mods.reduce(function(ms,model){return ms+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);
+                },0);
+                if(!stPredTot)return;
+                var isExp=!!(expandedPredStates[st]||(selState!=='All'));
+                out.push(ce('tr',{key:st,style:{background:'#f1f5f9',cursor:'pointer'},onClick:function(){setExpandedPredStates(function(prev){var n=Object.assign({},prev);n[st]=!n[st];return n;});}},
+                  ce('td',{className:'lc',style:{background:'#f1f5f9',fontWeight:700,color:'#1e293b'}},
+                    ce('span',{style:{marginRight:6,fontSize:10,userSelect:'none'}},(isExp?'▼':'▶')),st),
+                  filtMos.map(function(mo){
+                    var v=mods.reduce(function(s,model){return s+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);
+                    return ce('td',{key:mo,style:{fontWeight:600,color:v?'#1e293b':'#d1d5db'}},v?Nf(v):'-');
+                  }),
+                  ce('td',{style:{fontWeight:700,color:'#d97706'}},Nf(stPredTot))
+                ));
+                if(isExp){
+                  mods.forEach(function(model,mi){
+                    var mTot=filtMos.reduce(function(s,mo){return s+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);
+                    if(!mTot)return;
+                    out.push(ce('tr',{key:st+'_'+model,style:{background:mi%2===0?'#fff':'#fafafa'}},
+                      ce('td',{className:'lc',style:{background:mi%2===0?'#fff':'#fafafa',paddingLeft:28,color:'#475569',fontStyle:'italic'}},model),
+                      filtMos.map(function(mo){var v=(allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0;
+                        return ce('td',{key:mo,style:{color:v?'inherit':'#d1d5db'}},v?Nf(v):'-');}),
+                      ce('td',{style:{color:'#475569'}},mTot?Nf(mTot):'-')
+                    ));
+                  });
+                }
+              });
+              return out;
+            })()
+          ),
+          ce('tfoot',null,ce('tr',null,
+            ce('td',{className:'lc'},'Grand Total'),
+            filtMos.map(function(mo){
+              var mods=selModel==='All'?allModels:[selModel];
+              var pSts=selState==='All'?allStates:[selState];
+              var tot=pSts.reduce(function(s,st){return s+mods.reduce(function(ms,model){return ms+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);},0);
+              return ce('td',{key:mo},Nfw(tot));
+            }),
+            ce('td',null,Nfw((function(){
+              var mods=selModel==='All'?allModels:[selModel];
+              var pSts=selState==='All'?allStates:[selState];
+              return filtMos.reduce(function(s,mo){return s+pSts.reduce(function(ss,st){return ss+mods.reduce(function(ms,model){return ms+((allStatePreds[st]&&allStatePreds[st][model]&&allStatePreds[st][model][mo])||0);},0);},0);},0);
+            })()))
+          ))
+        )
+      )
+    ),
+
+    filtMos.length>1&&ce('div',{className:'card'},
+      ce('div',{className:'card-title'},'State Momentum Overview — Vaahan Retails MoM % · Pan India'),
+      ce('div',{style:{fontSize:11,color:'#94a3b8',marginBottom:10}},
+        'Month-on-month growth in state retails (positive = improving momentum). Used as Signal 1 in prediction.'),
+      ce('div',{className:'grid-wrap'},
+        ce('table',{className:'dg'},
+          ce('thead',null,ce('tr',null,
+            ce('th',{className:'lc'},'State'),
+            filtMos.slice(0,12).map(function(mo){return ce('th',{key:mo},mo);}),
+            ce('th',null,'Trend')
+          )),
+          ce('tbody',null,
+            (selState==='All'?allStates:[selState]).map(function(st,ri){
+              var bg=ri%2===0?'#fff':'#f8fafc';
+              var vals=filtMos.slice(0,12).map(function(mo){return(vhnAgg[st]||{})[mo]||0;});
+              var hasAny=vals.some(function(v){return v>0;});if(!hasAny)return null;
+              var moms=vals.map(function(v,i){
+                if(i===vals.length-1)return null;
+                var prev=vals[i+1];
+                return prev>0?(v-prev)/prev*100:null;
+              });
+              var avgMom=moms.filter(function(m){return m!==null;});
+              var trend=avgMom.length?avgMom.reduce(function(s,v){return s+v;},0)/avgMom.length:0;
+              return ce('tr',{key:st,style:{background:bg}},
+                ce('td',{className:'lc',style:{background:bg}},st),
+                vals.map(function(v,i){
+                  var mom=moms[i];
+                  var cellBg=mom===null?undefined:mom>5?'rgba(22,163,74,.08)':mom<-5?'rgba(220,38,38,.08)':undefined;
+                  return ce('td',{key:i,style:{background:cellBg}},
+                    v?Nf(v):'-',
+                    mom!==null&&ce('div',{style:{fontSize:9,color:mom>5?'#16a34a':mom<-5?'#dc2626':'#9ca3af',fontFamily:'inherit',lineHeight:1}},
+                      (mom>0?'+':'')+mom.toFixed(1)+'%')
+                  );
+                }),
+                ce('td',{style:{fontWeight:600,color:trend>0?'#16a34a':trend<0?'#dc2626':'#9ca3af'}},
+                  (trend>0?'↑ +':'↓ ')+trend.toFixed(1)+'%')
+              );
+            }).filter(Boolean)
+          )
+        )
+      )
+    ),
+
+    filtMos.length>0&&ce('div',{className:'card'},
+      ce('div',{className:'card-title'},'Month-Wise Accuracy — Actual vs Predicted'),
+      ce('div',{className:'grid-wrap'},
+        ce('table',{className:'dg'},
+          ce('thead',null,ce('tr',null,
+            ce('th',{className:'lc',style:{minWidth:90}},'Month'),
+            ce('th',null,'Vaahan Actual'),
+            ce('th',null,'Predicted'),
+            ce('th',null,'Difference'),
+            ce('th',null,'Variance %'),
+            ce('th',null,'Status')
+          )),
+          ce('tbody',null,accRows.map(function(r,ri){
+            var bg=ri%2===0?'#fff':'#f8fafc';
+            var vc=r.v===null?'#9ca3af':r.v<-10?'#dc2626':r.v<-5?'#d97706':'#166534';
+            var status=r.v===null?'—':r.v<-10?'⚠ Review':r.v<-5?'◑ Acceptable':'✓ On Track';
+            var diff=r.pred-r.actual;
+            return ce('tr',{key:r.mo,style:{background:bg}},
+              ce('td',{className:'lc',style:{background:bg,fontWeight:600}},r.mo),
+              ce('td',null,Nfw(r.actual)),
+              ce('td',null,Nfw(r.pred)),
+              ce('td',{style:{color:diff<0?'#dc2626':'#16a34a'}},diff?((diff>0?'+':'')+Nfw(diff)):'-'),
+              ce('td',{style:{color:vc,fontWeight:600}},r.v!==null?(r.v>0?'+':'')+r.v.toFixed(1)+'%':'—'),
+              ce('td',{style:{color:vc,fontWeight:500}},status)
+            );
+          })),
+          ce('tfoot',null,ce('tr',null,
+            ce('td',{className:'lc'},'Total'),
+            ce('td',null,Nfw(kpiActual)),
+            ce('td',null,Nfw(kpiPred)),
+            ce('td',{style:{color:kpiPred<kpiActual?'#dc2626':'#16a34a',fontWeight:700}},
+              kpiPred-kpiActual?(((kpiPred-kpiActual)>0?'+':'')+Nfw(kpiPred-kpiActual)):'-'),
+            ce('td',{style:{fontWeight:700,color:kpiVar!==null?(kpiVar<-10?'#dc2626':kpiVar<-5?'#d97706':'#166534'):'#6b7280'}},
+              kpiVar!==null?(kpiVar>0?'+':'')+kpiVar.toFixed(1)+'%':'—'),
+            ce('td',null,'')
+          ))
+        )
+      )
+    )
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  MAIN APP
+ * ═══════════════════════════════════════════════════════════════════ */
+const TABS=[
+  {id:'engine',    label:'Model Retail Engine', icon:'🔮'},
+  {id:'organic',   label:'Organic Generation',  icon:'📊'},
+  {id:'vaahan',    label:'State Wise Retails',  icon:'🗺️'},
+  {id:'wholesale', label:'Model Wise Wholesale',icon:'📦'},
+];
+
+function App(){
+  var[tab,setTab]=useState('engine');
+
+  function renderTab(){
+    if(tab==='organic')   return ce(OrganicGenTab,null);
+    if(tab==='vaahan')    return ce(VaahanRetailTab,null);
+    if(tab==='wholesale') return ce(WholesaleTab,null);
+    if(tab==='engine')    return ce(RetailEngineTab,null);
+    return null;
+  }
+
+  return ce('div',null,
+    ce('header',{className:'app-header'},
+      ce('div',{className:'header-left'},
+        ce('div',{className:'app-logo',style:{fontSize:10,fontWeight:900,letterSpacing:'-0.05em'}},'YAM'),
+        ce('div',null,
+          ce('div',{className:'app-title'},'Yamaha Retail Engine'),
+          ce('div',{className:'app-sub'},'Retail Prediction Engine · v'+VERSION+' · India Yamaha Motor Pvt Ltd')
+        )
+      ),
+      ce('div',{style:{display:'flex',alignItems:'center',gap:10}},
+        ce('div',{className:'badge tag-green'},'✓ Organic Data Active'),
+        ce('div',{className:'badge tag-amber'},"Data: Apr'24 – Apr'26"),
+        ce('div',{style:{fontSize:11,color:'#6b7280'}},'CDN: React 18 · Chart.js 4')
+      )
+    ),
+    ce('div',{className:'main-content'},
+      ce('div',{className:'subtab-nav'},
+        TABS.map(function(t){
+          return ce('button',{key:t.id,className:'subtab-btn'+(tab===t.id?' active':''),onClick:function(){setTab(t.id);}},
+            t.icon+' '+t.label);
+        })
+      ),
+      renderTab()
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(ce(App,null));
+</script>
+</body>
+</html>

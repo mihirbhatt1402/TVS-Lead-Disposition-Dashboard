@@ -5,3 +5,17 @@
 *.pptx
 __pycache__/
 *.pyc
+
+# Local pipeline artefacts — never commit
+TVS/tvs_last_payload.json
+tvs_last_payload.json
+TVS/push_tvs_data.log
+push_tvs_data.log
+
+# Claude Code local-machine config
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Scratch files
+extract_head.txt
+extract_utils.txt
