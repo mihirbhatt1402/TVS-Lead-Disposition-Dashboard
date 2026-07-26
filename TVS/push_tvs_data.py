@@ -1319,6 +1319,7 @@ def build_payload(all_leads, retail_map):
     ltdl, u_ltdl = {}, {}  # lead-type × dealer × month
     disp, u_disp = {}, {}   # enquired_model × purchased_model × month (retails only)
     cdm, csm, cdsm = {},{},{}
+    u_cm, u_csm = {}, {}          # city × month (retail-month attribution)
 
     def bump(d, k, is_ret, rtype=''):
         if k not in d: d[k] = [0,0,0,0]
@@ -1405,6 +1406,8 @@ def build_payload(all_leads, retail_map):
         bump(cm,      f"{cti}|{li}",           is_ret, rtype)
         bump(csm,     f"{cti}|{si}|{li}",   is_ret, rtype)
         bump(stcm,    f"{sti}|{cti}|{li}",  is_ret, rtype)
+        ubump(u_cm,  f"{cti}|{li}",         f"{cti}|{uli}",         is_ret, rtype)
+        ubump(u_csm, f"{cti}|{si}|{li}",   f"{cti}|{si}|{uli}",   is_ret, rtype)
         bump(univ,    f"{mi}|{si}|{sti}|{tti}|{li}", is_ret, rtype)
 
         if _dls is not None:
@@ -1476,6 +1479,8 @@ def build_payload(all_leads, retail_map):
         'bdm':     to_rows(bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),
         'cm':      to_rows(cm,  lambda k: list(map(int, k.split('|')))),
         'csm':     to_rows(csm, lambda k: list(map(int, k.split('|')))),
+        'u_cm':    to_rows(u_cm,  lambda k: list(map(int, k.split('|')))),
+        'u_csm':   to_rows(u_csm, lambda k: list(map(int, k.split('|')))),
         **({"cdm":  to_rows(cdm,  lambda k: list(map(int, k.split('|')))),
             "cdsm": to_rows(cdsm, lambda k: list(map(int, k.split('|')))),
             "stdm": to_rows(stdm, lambda k: list(map(int, k.split('|')))),
