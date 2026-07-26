@@ -1547,6 +1547,10 @@ elif _cache_exists:
     print(f"  Generated: {_cache_data.get('generated','?')}", flush=True)
     print(f"  Historical retail map: {len(retail_map):,}  leads: {len(hist_leads):,}", flush=True)
     del _cache_data
+    # Normalize ModelName: cache may store raw values (e.g. lowercase variants, iQube ST).
+    # normalize_lead_model maps them to canonical names consistent with live leads.
+    if 'ModelName' in hist_leads.columns:
+        hist_leads['ModelName'] = hist_leads['ModelName'].apply(normalize_lead_model)
 
 else:
     # This branch should never fire in production — hist_cache.json.gz is always committed.

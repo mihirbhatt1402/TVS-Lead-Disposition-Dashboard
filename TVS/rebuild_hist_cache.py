@@ -85,6 +85,47 @@ def _excel_serial_to_month(val):
         pass
     return parse_ym(val)
 
+# Inline model-name normalization (mirrors push_tvs_data.py normalize_lead_model logic).
+# Keeps the cache consistent with live-lead normalization so the dashboard sees one
+# canonical name per model regardless of source.
+_MODEL_KEYWORD_MAP = [
+    ('RR 310',  'TVS Apache RR 310'),
+    ('RR310',   'TVS Apache RR 310'),
+    ('RTR 310', 'TVS Apache RTR 310'), ('RTR310', 'TVS Apache RTR 310'),
+    ('APACHE RTR 200', 'TVS Apache RTR 200 4V'), ('RTR 200', 'TVS Apache RTR 200 4V'),
+    ('APACHE RTR 180', 'TVS Apache RTR 180'), ('RTR 180', 'TVS Apache RTR 180'),
+    ('160 4V',  'TVS Apache RTR 160 4V'),
+    ('160',     'TVS Apache RTR 160'),
+    ('RAIDER',  'TVS Raider'),
+    ('JUPITER 125', 'TVS Jupiter 125'),
+    ('JUPITER', 'TVS Jupiter'),
+    ('NTORQ',   'TVS NTORQ 125'),
+    ('IQUBE',   'TVS iQube'),
+    ('RONIN',   'TVS Ronin'),
+    ('RADEON',  'TVS Radeon'),
+    ('SPORT',   'TVS Sport'),
+    ('XL 100',  'TVS XL100'), ('XL100', 'TVS XL100'),
+    ('ZEST',    'TVS Scooty Zest'),
+    ('STAR CITY', 'TVS Star City Plus'), ('STARCITY', 'TVS Star City Plus'),
+]
+# Exact-match overrides for known variants (subset of PURCHASED_MODEL_MAP)
+_MODEL_EXACT_MAP = {
+    'TVS iQube ST': 'TVS iQube',
+    'TVS iQube S':  'TVS iQube',
+}
+
+def _normalize_model(raw):
+    s = str(raw or '').strip()
+    if not s or s.lower() in ('unknown', 'nan', 'none'):
+        return 'Unknown'
+    if s in _MODEL_EXACT_MAP:
+        return _MODEL_EXACT_MAP[s]
+    su = s.upper()
+    for kw, canon in _MODEL_KEYWORD_MAP:
+        if kw in su:
+            return canon
+    return s   # preserve as-is if no match (better than Unknown)
+
 # â”€â”€â”€ Read and process each file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 all_leads_dfs = []
@@ -137,7 +178,7 @@ for spec in NEW_LEAD_FILES:
     leads_df = pd.DataFrame({
         'SorceLeadId': df['_lid'],
         'LeadMonth':   df['_lm'],
-        'ModelName':   df['ModelName'].astype(str).str.strip().fillna('Unknown'),
+        'ModelName':   df['ModelName'].astype(str).str.strip().fillna('Unknown').apply(_normalize_model),
         'Source':      df['Source'].astype(str).str.strip().fillna('Unknown')        if 'Source'      in df.columns else 'Unknown',
         'LeadType':    df['Lead Type'].astype(str).str.strip().fillna('Unknown')     if 'Lead Type'   in df.columns else 'Unknown',
         'State':       df['State'].astype(str).str.strip().str.title().fillna('')    if 'State'       in df.columns else '',
