@@ -1133,22 +1133,19 @@ def make_synthetic_leads(retail_df, matched_lids):
 # Historical Lead Master — bootstrap/DR only.
 # These files are NEVER read during normal production runs. hist_cache.json.gz is the
 # permanent production source. Only needed if the cache must be rebuilt from scratch.
-# Coverage: Apr'25 – Jun'26  (2,634,996 rows across 4 workbooks; permanently frozen).
+# Each file contains BOTH lead data AND retail reconciliation (DMS/Call Out + Retail Month
+# columns); retail_map is built from these same files — no separate retail master needed.
+# Use rebuild_hist_cache.py (not this bootstrap path) to regenerate the cache from scratch.
 HIST_LEAD_FILES = [
-    {'path': 'Leads Data Master_Leads_FY_25_26 Part 1.xlsb', 'engine': 'pyxlsb',  'sheet': 'Raw Data'},
-    {'path': 'Leads Data Master_Leads_FY_25_26 Part 2.xlsx', 'engine': 'openpyxl', 'sheet': 0},
-    {'path': 'Leads Data Master_Leads_FY_25_26 Part 3.xlsx', 'engine': 'openpyxl', 'sheet': 'Sheet1'},
-    {'path': 'Leads Data Master_Leads_FY_26_27.xlsb',        'engine': 'pyxlsb',   'sheet': 'Raw Data'},
+    {'path': 'Leads Data Master_Leads_FY_25_26 Part 1.xlsb',             'engine': 'pyxlsb',  'sheet': 'Raw Data'},
+    {'path': 'Leads Data Master_Leads_FY_25_26 Part 2.xlsx',              'engine': 'openpyxl','sheet': 'Sheet1'},
+    {'path': 'Leads Data Master_Leads_FY_25_26 & FY_26_27 Part 3.xlsx',  'engine': 'openpyxl','sheet': 'Sheet1'},
 ]
 
-# Historical Retail Master — bootstrap/DR only.
-# These files are NEVER read during normal production runs. hist_cache.json.gz is the
-# permanent production source. Only needed if the cache must be rebuilt from scratch.
-# NOTE: Although the filename references FY26-27, the 'Retails' sheet covers Jan'25–Jun'26
-# (384,217 entries after null-enquiryId exclusion; permanently frozen).
-HIST_RETAIL_FILES = [
-    {'path': 'Retail Data Master_Retails_FY_26_27 (1).xlsb', 'engine': 'pyxlsb', 'sheet': 'Retails'},
-]
+# Historical Retail Master — no longer a separate source.
+# Retail data (DMS/Call Out + Retail Month) is now embedded in HIST_LEAD_FILES above.
+# Kept empty to avoid loading the old retail master during any accidental bootstrap run.
+HIST_RETAIL_FILES = []
 
 # Column rename map for historical lead Excel files
 _FILE_LEAD_RENAME = {
