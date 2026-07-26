@@ -1320,6 +1320,7 @@ def build_payload(all_leads, retail_map):
     disp, u_disp = {}, {}   # enquired_model × purchased_model × month (retails only)
     cdm, csm, cdsm = {},{},{}
     u_cm, u_csm = {}, {}          # city × month (retail-month attribution)
+    u_cdm, u_cdsm = {}, {}        # city × dealer × month (retail-month attribution)
 
     def bump(d, k, is_ret, rtype=''):
         if k not in d: d[k] = [0,0,0,0]
@@ -1440,6 +1441,8 @@ def build_payload(all_leads, retail_map):
             ubump(u_stdm, f"{sti}|{dli}|{li}", f"{sti}|{dli}|{uli}", is_ret, rtype)
             ubump(u_mxdl, f"{mi}|{dli}|{li}",  f"{mi}|{dli}|{uli}",  is_ret, rtype)
             ubump(u_ltdl, f"{tti}|{dli}|{li}", f"{tti}|{dli}|{uli}", is_ret, rtype)
+            ubump(u_cdm,  f"{cti}|{dli}|{li}",      f"{cti}|{dli}|{uli}",      is_ret, rtype)
+            ubump(u_cdsm, f"{cti}|{dli}|{si}|{li}", f"{cti}|{dli}|{si}|{uli}", is_ret, rtype)
 
         if is_ret:
             pm  = normalize_purchased_model(retail_map[lid].get('pm', '')) or 'Unknown'
@@ -1488,7 +1491,9 @@ def build_payload(all_leads, retail_map):
             "ltdl": to_rows(ltdl, lambda k: list(map(int, k.split('|')))),
             "u_stdm": to_rows(u_stdm, lambda k: list(map(int, k.split('|')))),
             "u_mxdl": to_rows(u_mxdl, lambda k: list(map(int, k.split('|')))),
-            "u_ltdl": to_rows(u_ltdl, lambda k: list(map(int, k.split('|'))))} if dl_col and dl_arr else {}),
+            "u_ltdl": to_rows(u_ltdl, lambda k: list(map(int, k.split('|')))),
+            "u_cdm":  to_rows(u_cdm,  lambda k: list(map(int, k.split('|')))),
+            "u_cdsm": to_rows(u_cdsm, lambda k: list(map(int, k.split('|'))))} if dl_col and dl_arr else {}),
         'u_monthly': to_rows(u_monthly, lambda k: [int(k)]),
         'u_sm':      to_rows(u_sm,  lambda k: list(map(int, k.split('|')))),
         'u_ltm':     to_rows(u_ltm, lambda k: list(map(int, k.split('|')))),
