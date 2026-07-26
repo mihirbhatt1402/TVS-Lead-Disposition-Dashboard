@@ -1886,7 +1886,7 @@ function App() {
   const [loading, setLoading]     = useState(false);
   const [err, setErr]             = useState(null);
   const [isPending, startT]       = useTransition();
-  const [leadsMode, setLeadsMode] = useState('create');
+  const [leadsMode, setLeadsMode] = useState('update');
   const [RT, setRT]               = useState('all');
   const [filters, setFilters]     = useState({ months:new Set(), leadTypes:new Set(), sources:new Set(), models:new Set(), states:new Set(), cities:new Set() });
 
