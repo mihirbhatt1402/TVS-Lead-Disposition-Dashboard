@@ -1089,31 +1089,37 @@ def fetch_retails():
     return df
 
 def build_retail_map(retail_df):
-    """Build {sourceLeadId → {rm, rtype, pm}} using Retail_Attribution_Date.
-    rtype: 'DMS' when 'Purchased From' is blank, 'Call Out' when it has a value.
+    """Build {sourceLeadId -> {rm, rtype, pm}} for LIVE GSheet records.
+    rm    : from 'performanceMonth' column (not Retail_Attribution_Date).
+    rtype : from 'Call Type' column — 'DMS' or 'Call Out' (case-insensitive, trimmed).
+            Unexpected values are logged and collected in the returned warnings list.
+    Returns (rmap, unexpected_call_types) where unexpected_call_types is a list of
+    {'lid': ..., 'call_type': ...} dicts for the validation report.
     """
     rmap = {}
-    has_pf = 'Purchased From' in retail_df.columns
+    unexpected_ct = []
+    has_ct = 'Call Type' in retail_df.columns
+    has_pm = 'performanceMonth' in retail_df.columns
     for _, row in retail_df.iterrows():
         lid = to_id(row.get('sourceLeadId', ''))
         if not lid: continue
-        rm = parse_ym(row.get('Retail_Attribution_Date', ''))
+        rm = parse_ym(row.get('performanceMonth', '') if has_pm else row.get('Retail_Attribution_Date', ''))
         pm = normalize_purchased_model(row.get('purchasedModel', ''))
-        if has_pf:
-            _pf = row.get('Purchased From', '')
-            try:
-                # float('nan') is truthy in Python; str(nan)='nan' which is also truthy.
-                # Must explicitly detect all blank representations from GSheet/pandas.
-                _pf_blank = (_pf is None or
-                             (isinstance(_pf, float) and pd.isna(_pf)) or
-                             str(_pf).strip().lower() in ('', 'nan', 'none', 'null', 'na', 'n/a'))
-            except Exception:
-                _pf_blank = True
-            rtype = 'DMS' if _pf_blank else 'Call Out'
+        if has_ct:
+            _ct = str(row.get('Call Type', '') or '').strip()
+            _ct_lower = _ct.lower()
+            if _ct_lower == 'dms':
+                rtype = 'DMS'
+            elif _ct_lower in ('call out', 'callout'):
+                rtype = 'Call Out'
+            else:
+                print(f"  WARNING: Unexpected Call Type {_ct!r} for lid={lid} — defaulting to DMS", flush=True)
+                unexpected_ct.append({'lid': lid, 'call_type': _ct})
+                rtype = 'DMS'
         else:
             rtype = 'DMS'
         rmap[lid] = {'rm': rm, 'rtype': rtype, 'pm': pm}
-    return rmap
+    return rmap, unexpected_ct
 
 def make_synthetic_leads(retail_df, matched_lids):
     """Create lead rows for retailed IDs absent from all lead sheets.
@@ -1577,7 +1583,7 @@ else:
 # Only Jul'26+ entries are the true "online" period; those freely overwrite hist.
 print("\n[2/5] Loading live retail master from Google Sheet…", flush=True)
 retail_df    = fetch_retails()
-online_rmap  = build_retail_map(retail_df)
+online_rmap, unexpected_call_types = build_retail_map(retail_df)
 _online_added = _online_skipped = 0
 for lid, info in online_rmap.items():
     if month_order(info.get('rm', '')) >= ONLINE_START_ORDER:
@@ -1585,6 +1591,14 @@ for lid, info in online_rmap.items():
         _online_added += 1
     else:
         _online_skipped += 1     # pre-Jul'26 entries: hist_cache is authoritative, keep it
+
+if unexpected_call_types:
+    print(f"  WARNING: {len(unexpected_call_types)} unexpected 'Call Type' values "
+          f"(defaulted to DMS):", flush=True)
+    for item in unexpected_call_types[:20]:
+        print(f"    lid={item['lid']}  call_type={item['call_type']!r}", flush=True)
+    if len(unexpected_call_types) > 20:
+        print(f"    ... and {len(unexpected_call_types)-20} more", flush=True)
 
 print(f"  Live retail: {len(online_rmap):,} total  "
       f"| {_online_added:,} added/updated (Jul'26+)  "
