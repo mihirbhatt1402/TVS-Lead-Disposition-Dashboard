@@ -700,7 +700,8 @@ function MonthlyGrids({ title, months, renderAgg, srcGroups, dimLabel, expandedG
    OVERVIEW TAB
    ════════════════════════════════════════════════════════════════════ */
 const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
-  const { maps, monthly, sm, cm, mxst, univ: univRaw } = data;
+  const { maps, monthly, sm, cm, mxst, univ: univRaw, csm: csmRaw } = data;
+  const csm = csmRaw || [];
   const univ = univRaw || [];
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
   const chartRef = useRef(); const chartInst = useRef();
@@ -787,22 +788,36 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
     const allS = !filters.sources || filters.sources.size === 0;
     const univF = makeUnivFilter(filters);
     const bySrc = new Map();
-    const table  = univF ? univ : sm;
-    const getSrc = univF ? (row => maps.src[row[1]]) : (row => maps.src[row[0]]);
-    const getM   = univF ? (row => maps.lm[row[4]])  : (row => maps.lm[row[1]]);
-    for (const row of table) {
-      const m = getM(row);
-      if (!allM && !filters.months.has(m)) continue;
-      const src = getSrc(row);
-      if (!allS && !filters.sources.has(src)) continue;
-      if (univF && !univF(row, maps)) continue;
-      const [l,r] = getLR(row);
-      const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
+    if (hasCityFilter && !univF && csm.length > 0) {
+      // city-only filter: use city×src×month matrix [city,src,lm,l,r,d,c]
+      for (const row of csm) {
+        const city = maps.city[row[0]];
+        if (!filters.cities.has(city)) continue;
+        const m = maps.lm[row[2]];
+        if (!allM && !filters.months.has(m)) continue;
+        const src = maps.src[row[1]];
+        if (!allS && !filters.sources.has(src)) continue;
+        const [l,r] = getLR(row);
+        const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
+      }
+    } else {
+      const table  = univF ? univ : sm;
+      const getSrc = univF ? (row => maps.src[row[1]]) : (row => maps.src[row[0]]);
+      const getM   = univF ? (row => maps.lm[row[4]])  : (row => maps.lm[row[1]]);
+      for (const row of table) {
+        const m = getM(row);
+        if (!allM && !filters.months.has(m)) continue;
+        const src = getSrc(row);
+        if (!allS && !filters.sources.has(src)) continue;
+        if (univF && !univF(row, maps)) continue;
+        const [l,r] = getLR(row);
+        const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
+      }
     }
     return [...bySrc.entries()]
       .map(([s,v]) => ({ src:s, l:v[0], r:v[1], l2r:v[0]>0?v[1]/v[0]*100:0 }))
       .sort((a,b) => b.l-a.l);
-  }, [sm, univ, maps, filters, getLR]);
+  }, [sm, csm, univ, maps, filters, getLR, hasCityFilter]);
 
   const heatData = useMemo(() => {
     const allM   = !filters.months || filters.months.size === 0;
@@ -898,7 +913,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
     ),
     ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14} },
       ce('div', { style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8} },
-        ce('div', { className:'section-title', style:{marginBottom:0} }, hasCityFilter ? 'Source Summary (all cities — city filter applies to KPIs & trend only)' : 'Source Summary'),
+        ce('div', { className:'section-title', style:{marginBottom:0} }, 'Source Summary'),
         ce(ExportBtn, { onClick:() => {
           const aoa=[['Source','Leads','Retails','Contrib%','L2R%']];
           for (const s of srcBreak) aoa.push([s.src,s.l,s.r,+(s.l/totals.l*100).toFixed(2),+s.l2r.toFixed(2)]);
@@ -984,9 +999,11 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
    SOURCE ANALYSIS TAB
    ════════════════════════════════════════════════════════════════════ */
 const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
-  const { maps, sm, univ: univRaw } = data;
+  const { maps, sm, univ: univRaw, csm: csmRaw } = data;
   const univ = univRaw || [];
+  const csm  = csmRaw  || [];
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
+  const hasCityF = !!(filters.cities && filters.cities.size > 0 && maps.city);
 
   const renderMonth = useCallback((M) => {
     const allS = !filters.sources || filters.sources.size === 0;
@@ -999,6 +1016,18 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         const src = maps.src[row[1]];
         if (!allS && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
+        const [l,r] = getLR(row);
+        gL+=l; gR+=r;
+        const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
+      }
+    } else if (hasCityF && csm.length > 0) {
+      // city-only filter: use city×src×month matrix [city,src,lm,l,r,d,c]
+      for (const row of csm) {
+        if (maps.lm[row[2]] !== M) continue;
+        const city = maps.city[row[0]];
+        if (!filters.cities.has(city)) continue;
+        const src = maps.src[row[1]];
+        if (!allS && !filters.sources.has(src)) continue;
         const [l,r] = getLR(row);
         gL+=l; gR+=r;
         const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
@@ -1051,7 +1080,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         )
       )
     );
-  }, [sm, univ, maps, filters, getLR]);
+  }, [sm, csm, univ, maps, filters, getLR, hasCityF]);
 
   return ce('div', {className:'fade-up'}, months.map(renderMonth));
 });
@@ -1185,6 +1214,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
     const grandSrcMap = new Map();
     const univF = makeUnivFilter(filters);
 
+    const hasCityF = !!(filters.cities && filters.cities.size > 0 && maps.city && maps.city_state);
     if (univF) {
       // model or leadType filter active — derive state totals from univ
       for (const row of univ) {
@@ -1194,6 +1224,26 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
         const src = maps.src[row[1]];
         if (!allSrcF && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
+        const [l,r]=getLR(row);
+        gL+=l; gR+=r;
+        if (!stateData.has(state)) stateData.set(state, { total:[0,0], byS:new Map() });
+        const sd = stateData.get(state);
+        sd.total[0]+=l; sd.total[1]+=r;
+        const c = sd.byS.get(src)||[0,0]; c[0]+=l; c[1]+=r; sd.byS.set(src,c);
+        const gc = grandSrcMap.get(src)||[0,0]; gc[0]+=l; gc[1]+=r; grandSrcMap.set(src,gc);
+      }
+    } else if (hasCityF && csm_data.length > 0) {
+      // city-only filter: use city×src×month [city,src,lm,l,r,d,c], group by state
+      for (const row of csm_data) {
+        if (maps.lm[row[2]] !== M) continue;
+        const city = maps.city[row[0]];
+        if (!filters.cities.has(city)) continue;
+        const sti = maps.city_state[row[0]];
+        if (sti == null) continue;
+        const state = normSt(maps.st[sti]);
+        if (!allStateF && !filters.states.has(state)) continue;
+        const src = maps.src[row[1]];
+        if (!allSrcF && !filters.sources.has(src)) continue;
         const [l,r]=getLR(row);
         gL+=l; gR+=r;
         if (!stateData.has(state)) stateData.set(state, { total:[0,0], byS:new Map() });
@@ -1221,6 +1271,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
 
     // ── City totals for the open state (from cm + city_state map) ──
     const cityData = new Map(); // city → [l,r]
+    const hasCityFlt = !!(filters.cities && filters.cities.size > 0 && maps.city);
     if (openState && hasCities) {
       for (const row of cm) {
         if (maps.lm[row[1]] !== M) continue;
@@ -1228,6 +1279,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
         const sti = maps.city_state[cti];
         if (sti == null || maps.st[sti] !== openState) continue;
         const city = maps.city[cti];
+        if (hasCityFlt && !filters.cities.has(city)) continue;
         const cur = cityData.get(city)||[0,0];
         const [cl,cr]=getLR(row); cur[0]+=cl; cur[1]+=cr; cityData.set(city, cur);
       }
@@ -1242,6 +1294,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
         const sti = maps.city_state[cti];
         if (sti == null || maps.st[sti] !== openState) continue;
         const city = maps.city[cti];
+        if (hasCityFlt && !filters.cities.has(city)) continue;
         const src  = maps.src[row[1]];
         if (!citySourceByS.has(city)) citySourceByS.set(city, new Map());
         const bySrc = citySourceByS.get(city);
@@ -2189,9 +2242,9 @@ function App() {
       ),
       effectiveData && ce('div', null,
         ce(FilterBar, { data:effectiveData, filters, onFiltersChange:f=>startT(()=>setFilters(f)), RT, setRT, viewerMode }),
-        filters.cities && filters.cities.size > 0 && tab !== 'overview' && ce('div', {
+        filters.cities && filters.cities.size > 0 && (tab === 'lt' || tab === 'model') && ce('div', {
           style:{fontSize:10,color:'#92400E',background:'#FFF3CD',border:'1px solid #F5A623',borderRadius:8,padding:'5px 12px',marginBottom:8}
-        }, '⚠ City filter is active — KPIs and trend chart reflect selected cities only.'),
+        }, '⚠ City filter is active — this tab does not support city filtering (no city-level matrix for this breakdown).'),
         isPending && ce('div', { style:{textAlign:'center',padding:8,color:'#94A3B8',fontSize:11} }, 'Filtering…'),
         tabContent
       )
@@ -3023,6 +3076,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               style:{ padding: small?'6px 16px':'10px 16px', textAlign:'left', fontWeight:700,
                       whiteSpace:'nowrap', color: txt,
                       position: i===0 ? 'sticky' : undefined, left: i===0 ? 0 : undefined,
+                      zIndex: i===0 ? 3 : undefined,
                       background: bg,
                       minWidth: i===0 ? 140 : 110,
                       borderRight: i===rowDims.length-1 ? `1px solid ${txt==='#fff'?'rgba(255,255,255,0.15)':'rgba(0,0,0,0.1)'}` : 'none',
@@ -3037,7 +3091,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
             rows.push(ce('tr', { key:'hdr0', style:{ background:topBg } },
               ce('th', { colSpan: rowDims.length,
                 style:{ padding:'7px 16px', textAlign:'left', fontWeight:700, color:topTxt,
-                        position:'sticky', left:0, background:topBg,
+                        position:'sticky', left:0, zIndex:3, background:topBg,
                         borderRight:'1px solid rgba(0,0,0,0.1)' }
               }, rowDims.map(k=>DIMS.find(d=>d.key===k)?.label||k).join(' → ')),
 
@@ -3072,7 +3126,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
           if (showMidRow) {
             rows.push(ce('tr', { key:'hdr1', style:{ background:midBg } },
               ce('th', { colSpan: rowDims.length,
-                style:{ padding:'6px 16px', position:'sticky', left:0, background:midBg,
+                style:{ padding:'6px 16px', position:'sticky', left:0, zIndex:3, background:midBg,
                         borderRight:'1px solid rgba(0,0,0,0.1)' }
               }, ''),
               ...orderedCols.map((ck, ci) => {
@@ -3178,7 +3232,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               ce('td', {
                 style:{ padding:'8px 16px', fontWeight: hasR2 ? 700 : 500,
                         color: grpTxt, fontSize: hasR2 ? 13 : 12,
-                        position:'sticky', left:0, background: grpBg,
+                        position:'sticky', left:0, zIndex:2, background: grpBg,
                         borderRight: `1px solid ${grpSep}`, whiteSpace:'nowrap' }
               }, hasR2 ? (isCollapsed?'▶ ':'▼ ')+label : label),
               // Secondary label col: "Subtotal" label or collapsed item count
@@ -3221,7 +3275,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
                 rows.push(ce('tr', { key:`c_${label}_${r2Label}`, style:{ background:cBg } },
                   // Empty first col (sticky)
                   ce('td', {
-                    style:{ padding:'7px 16px', position:'sticky', left:0,
+                    style:{ padding:'7px 16px', position:'sticky', left:0, zIndex:2,
                             background:cBg, borderRight:`1px solid ${pal.sep}` }
                   }, ''),
                   // Secondary label
@@ -3260,7 +3314,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
           ce('tr', { style:{ background:'#1E3A8A', borderTop:'2px solid #1E40AF', fontWeight:700 } },
             ce('td', {
               colSpan: rowDims.length,
-              style:{ padding:'10px 16px', color:'#fff', position:'sticky', left:0,
+              style:{ padding:'10px 16px', color:'#fff', position:'sticky', left:0, zIndex:2,
                       background:'#1E3A8A', borderRight:'1px solid rgba(255,255,255,0.2)' }
             }, 'GRAND TOTAL'),
             ...orderedCols.flatMap((ck, ci) => {
