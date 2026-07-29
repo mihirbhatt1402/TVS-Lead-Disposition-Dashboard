@@ -16,6 +16,13 @@ push_tvs_data.log
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
+# Other-project files co-located in this working directory — keep out of TVS repo
+HMSI*.html
+HMSI*.md
+Jawa_Yezdi*.html
+Model_Retail_Engine*.html
+.claude/
+
 # Scratch files
 extract_head.txt
 extract_utils.txt

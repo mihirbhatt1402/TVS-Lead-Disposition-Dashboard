@@ -1,4 +1,4 @@
-name: Deploy RE LDR Dashboard
+name: Deploy TVS LDR Dashboard
 
 on:
   push:
