@@ -27,6 +27,11 @@ MONTH_NAMES     = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','
 LEAD_MASTER_START       = "Apr'25"
 LEAD_MASTER_START_ORDER = 2504   # Apr'25 â†’ 25*100+4
 
+# Historical cache must NOT contain Jul'26 or later - those months are the
+# exclusive authority of the LIVE Google Sheet (ONLINE_START in push_tvs_data.py).
+ONLINE_START       = "Jul'26"
+ONLINE_START_ORDER = 2607        # Jul'26, live data starts here
+
 # â”€â”€â”€ Source file specs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 NEW_LEAD_FILES = [
     {'path': 'Leads Data Master_Leads_FY_25_26 Part 1.xlsb',            'engine': 'pyxlsb',  'sheet': 'Raw Data'},
@@ -169,10 +174,11 @@ for spec in NEW_LEAD_FILES:
 
     # â”€â”€ Filter: Lead Month < Apr'25 excluded â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     before = len(df)
-    df = df[df['_lm'].apply(month_order) >= LEAD_MASTER_START_ORDER].copy()
+    df = df[(df['_lm'].apply(month_order) >= LEAD_MASTER_START_ORDER) &
+             (df['_lm'].apply(month_order) < ONLINE_START_ORDER)].copy()
     removed = before - len(df)
     if removed:
-        print(f"  Removed {removed:,} rows with Lead Month < {LEAD_MASTER_START}", flush=True)
+        print(f"  Removed {removed:,} rows outside Apr'25-Jun'26 window", flush=True)
 
     # â”€â”€ Build leads DataFrame â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     leads_df = pd.DataFrame({
@@ -230,6 +236,8 @@ for spec in NEW_LEAD_FILES:
             continue
         if month_order(rm) < LEAD_MASTER_START_ORDER:
             continue   # Jan-Mar'25 retails excluded
+        if month_order(rm) >= ONLINE_START_ORDER:
+            continue   # Jul'26+ retails belong to LIVE GSheet, not hist_cache
         if lid not in retail_map:
             retail_map[lid] = {'rm': rm, 'rtype': rtype, 'pm': pm}
             added += 1
