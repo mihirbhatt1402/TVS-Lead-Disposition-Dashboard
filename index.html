@@ -3280,8 +3280,9 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
               if (m === 'retpct') {
                 display = grandTotals.gl>0 ? (grandTotals.gr/grandTotals.gl*100).toFixed(1)+'%' : '—';
               } else {
-                let t = 0;
-                for (const { sub } of pivotResult.tbl.values()) for (const v of sub.values()) t += getMetricVal(v, m);
+                const t = m === 'leads' ? grandTotals.gl
+                        : m === 'ret'   ? grandTotals.gr
+                        : Object.values(grandTotals.colVals).reduce((s, v) => s + getMetricVal(v, m), 0);
                 display = t > 0 ? t.toLocaleString() : '—';
               }
               return ce('td', { key:`gt_tot_${m}`,
