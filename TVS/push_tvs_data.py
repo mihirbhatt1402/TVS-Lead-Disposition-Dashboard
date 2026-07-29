@@ -27,7 +27,7 @@ MERGE: hist leads + live leads deduped by SorceLeadId (keep='last'; live wins on
        hist retail map + live retail map merged by sourceLeadId (live overwrites hist per key)
 """
 
-import json, sys, re, time, os, gzip, base64
+import json, sys, re, time, os, gzip, base64, traceback
 import pandas as pd
 import requests
 from pathlib import Path
@@ -1000,13 +1000,14 @@ def fetch_sheet_via_proxy(file_id, label, tab_name=None):
         extra['page'] = page
         for attempt in range(3):
             try:
-                data = proxy_get('getSheetData', extra, timeout=300)
+                data = proxy_get('getSheetData', extra, timeout=120)
                 break
             except Exception as e:
                 if attempt < 2:
                     print(f"  {label} page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
                     time.sleep(30)
                 else:
+                    traceback.print_exc()
                     raise RuntimeError(f"getSheetData {label} page {page} failed: {e}")
         if 'error' in data:
             raise RuntimeError(f"getSheetData error [{label}]: {data['error']}")
@@ -1065,13 +1066,14 @@ def fetch_retails():
     while True:
         for attempt in range(3):
             try:
-                data = proxy_get('getCurrentRetails', {'page': page, 'pageSize': 25000}, timeout=300)
+                data = proxy_get('getCurrentRetails', {'page': page, 'pageSize': 25000}, timeout=120)
                 break
             except Exception as e:
                 if attempt < 2:
                     print(f"  Page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
                     time.sleep(30)
                 else:
+                    traceback.print_exc()
                     raise RuntimeError(f"getCurrentRetails page {page} failed: {e}")
         if 'error' in data:
             raise RuntimeError(f"getCurrentRetails error: {data['error']}")
@@ -1582,7 +1584,12 @@ else:
 # logic), which incorrectly reclassifies many historical DMS entries as Call Out.
 # Only Jul'26+ entries are the true "online" period; those freely overwrite hist.
 print("\n[2/5] Loading live retail master from Google Sheet…", flush=True)
-retail_df    = fetch_retails()
+try:
+    retail_df = fetch_retails()
+except Exception as _retail_err:
+    traceback.print_exc()
+    print(f"\nFATAL: live retail fetch failed — {_retail_err}", file=sys.stderr, flush=True)
+    sys.exit(1)
 online_rmap, unexpected_call_types = build_retail_map(retail_df)
 _online_added = _online_skipped = 0
 for lid, info in online_rmap.items():
@@ -1707,6 +1714,7 @@ for _attempt in range(3):
             print("  Retrying in 30s…", flush=True)
             time.sleep(30)
         else:
+            traceback.print_exc()
             raise
 print(f"Response: {body}", flush=True)
 
