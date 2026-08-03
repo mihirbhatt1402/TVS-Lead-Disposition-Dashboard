@@ -1653,10 +1653,10 @@ const FilterBar = React.memo(function FilterBar({ data, filters, onFiltersChange
   const cities    = useMemo(() => maps.city ? [...new Set(maps.city)].sort() : [], [maps]);
 
   function set(key, val) { onFiltersChange({ ...filters, [key]: val }); }
-  function reset() { onFiltersChange({ months: new Set(), leadTypes: new Set(), sources: new Set(), models: new Set(), states: new Set(), cities: new Set() }); }
+  function reset() { onFiltersChange({ months: new Set(), leadTypes: new Set(), sources: new Set(), models: new Set(), states: new Set(), cities: new Set() }); setRT('all'); }
 
   const hasAnyFilter = [filters.months, filters.leadTypes, filters.sources, filters.models, filters.states, filters.cities]
-    .some(s => s && s.size > 0);
+    .some(s => s && s.size > 0) || RT !== 'all';
 
   const rtBtn = (val, label) => ce('button', {
     key: val,
