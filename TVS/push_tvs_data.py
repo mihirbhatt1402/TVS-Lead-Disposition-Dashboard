@@ -41,15 +41,25 @@ SECRET = "tvs2026push"
 RETAILS_FILE_ID = '1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE'
 RETAILS_TAB     = 'Raw'
 
-# Monthly lead master sheets — last one is current month (tab='TVS')
+# Live lead masters - each sheet is authoritative for its month range only.
+# Jul'26 Lead Master : dedicated July GSheet (Jul'26 rows only)
+# Aug'26+ Lead Master: rolling current-month GSheet (Aug'26 onwards)
+# min_mo / max_mo are month_order integers (YY*100+MM); None = no upper bound.
 LEAD_SHEETS = [
-    {'id': '1mJEi34xbeYW8q3WITTjyUQDLyREBS2dYpWP3svBoprw', 'tab': 'TVS', 'label': 'LeadSheet-1'},
-    {'id': '18LM6v6_BLzmKV2fbdXRI19Xr9vCZjJrLgbr4klP5Zis',  'tab': 'TVS', 'label': 'LeadSheet-2'},
-    {'id': '1fBvEbUzi6Tnhjq1SYljKDA4tFjuB8gLakmrTrJ2Mk_E',  'tab': 'TVS', 'label': 'LeadSheet-3'},
-    {'id': '1ZvoK_8_0BnavmKNqNKIONMC1hM35BwDwTXwGWwK0QzQ',  'tab': 'TVS', 'label': 'LeadSheet-4'},
-    {'id': '1jQbHZLrTCsrItGvV26TyDUQ_BiL3vd-sNpWim4tRKJE',  'tab': 'TVS', 'label': 'LeadSheet-5'},
-    {'id': '1tWV-wQ97KCZwrb7yz99s52XF5OIVfzj65gxdDSyAeaQ',  'tab': 'TVS', 'label': 'LeadSheet-6'},
-    {'id': '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',  'tab': 'TVS', 'label': 'LeadSheet-7 (current)'},
+    {
+        'id':     '1gaRoPLebv7jaBgWEET-XSQuhqE_XgQlGru39TA-FoSo',
+        'tab':    'TVS',
+        'label':  "Jul'26-LeadMaster",
+        'min_mo': 2607,   # Jul'26 only
+        'max_mo': 2607,
+    },
+    {
+        'id':     '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',
+        'tab':    'TVS',
+        'label':  'Aug26+-LeadMaster',
+        'min_mo': 2608,   # Aug'26 onwards
+        'max_mo': None,   # no upper bound
+    },
 ]
 
 # Bootstrap/DR only: local path to historical Excel files, used only when rebuilding
@@ -1628,13 +1638,18 @@ lead_dfs  = []
 rtype_map = {}
 for sheet in LEAD_SHEETS:
     try:
-        raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet['tab'])
+        raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet.get('tab'))
         raw.columns = [c.strip() for c in raw.columns]
         rtype_map.update(extract_rtype_map(raw))
         std = standardize_leads(raw)
-        std = std[std['LeadMonth'].apply(month_order) >= ONLINE_START_ORDER]
+        _min = sheet.get('min_mo', ONLINE_START_ORDER)
+        _max = sheet.get('max_mo')
+        std = std[std['LeadMonth'].apply(month_order) >= _min]
+        if _max is not None:
+            std = std[std['LeadMonth'].apply(month_order) <= _max]
         lead_dfs.append(std)
-        print(f"  {sheet['label']}: {len(std):,} rows ({ONLINE_START}+)", flush=True)
+        _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
+        print(f"  {sheet['label']}: {len(std):,} rows [{_range}]", flush=True)
     except Exception as e:
         print(f"  WARNING: Could not load {sheet['label']}: {e}", flush=True)
 
