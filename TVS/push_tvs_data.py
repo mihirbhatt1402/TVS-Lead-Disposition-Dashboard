@@ -1003,7 +1003,7 @@ LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medi
 def fetch_sheet_via_proxy(file_id, label, tab_name=None):
     """Read any Google Sheet via Apps Script proxy. Returns raw DataFrame."""
     page, all_rows, headers = 0, [], None
-    extra = {'fileId': file_id, 'pageSize': 50000, 'cols': LEAD_COLS}
+    extra = {'fileId': file_id, 'pageSize': 25000, 'cols': LEAD_COLS}
     if tab_name:
         extra['tabName'] = tab_name
     while True:
