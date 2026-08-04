@@ -687,7 +687,7 @@ function MonthlyGrids({ title, months, renderAgg, srcGroups, dimLabel, expandedG
   return ce('div', { className:'fade-up' },
     months.map(M => {
       const agg = renderAgg(M);
-      if (!agg || agg.grand.l === 0) return null;
+      if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) return null;
       return ce('div', { key: M, className:'card', style:{ padding:'16px 18px', marginBottom:14 } },
         ce('div', { className:'section-title', style:{marginBottom:10} }, noPrefix ? M : (title || dimLabel) + ' — ' + M),
         ce(DimGrid, { agg, srcGroups, dimLabel, expandedGrps, onToggleGrp, expandedRows, onToggleRow, subRowsFn, viewerMode, noGroupHeaders })
@@ -1042,7 +1042,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
     }
-    if (gL === 0) return null;
+    if (gL === 0 && gR === 0) return null;
     const sorted = [...bySrc.entries()].sort((a,b) => b[1][0]-a[1][0]);
     const grand = fin(gL, gR);
     return ce('div', { key:M, className:'card', style:{padding:'16px 18px',marginBottom:14} },
@@ -1546,7 +1546,7 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
   return ce('div', { className:'fade-up' },
     months.map(M => {
       const grid = renderMonthGrid(M);
-      if (!grid || grid.grand.l === 0) return null;
+      if (!grid || (grid.grand.l === 0 && grid.grand.r === 0)) return null;
       return ce('div', { key:M, className:'card', style:{padding:'16px 18px',marginBottom:14} },
         ce('div', { className:'section-title', style:{marginBottom:10} }, 'State × Source — ' + M),
         ce('div', { className:'scroll-x' },
@@ -1627,7 +1627,7 @@ const BuyingIntentTab = React.memo(function BuyingIntentTab({ data, filters, mon
   return ce('div', { className:'fade-up' },
     months.map(M => {
       const agg = renderAgg(M);
-      if (!agg || agg.grand.l === 0) return null;
+      if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) return null;
       // Rebuild dimAggs in canonical bucket order so noSort preserves it
       const orderedAgg = { ...agg, dimAggs: {} };
       BD_BUCKETS.forEach(bk => { if (agg.dimAggs[bk]) orderedAgg.dimAggs[bk + ' days'] = agg.dimAggs[bk]; });
