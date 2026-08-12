@@ -715,21 +715,40 @@ const DimGrid = React.memo(function DimGrid({
    ════════════════════════════════════════════════════════════════════ */
 function MonthlyGrids({ title, months, renderAgg, srcGroups, dimLabel, expandedGrps, onToggleGrp, expandedRows, onToggleRow, subRowsFn, noPrefix, viewerMode, noGroupHeaders }) {
   const aggs = useMemo(() => months.map(M => ({ M, agg: renderAgg(M) })), [months, renderAgg]);
-  const summary = useMemo(() => {
-    let gL=0, gR=0, mCount=0;
+  const summaryAgg = useMemo(() => {
+    let gL=0, gR=0;
+    const gsAcc={}, daAcc={};
     for (const { agg } of aggs) {
-      if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) continue;
-      gL += agg.grand.l; gR += agg.grand.r; mCount++;
+      if (!agg || (agg.grand.l===0 && agg.grand.r===0)) continue;
+      gL+=agg.grand.l; gR+=agg.grand.r;
+      for (const [s,sv] of Object.entries(agg.grandSrc)) {
+        if (!gsAcc[s]) gsAcc[s]=[0,0]; gsAcc[s][0]+=sv.l; gsAcc[s][1]+=sv.r;
+      }
+      for (const [d,da] of Object.entries(agg.dimAggs)) {
+        if (!daAcc[d]) daAcc[d]={total:[0,0],src:{}};
+        daAcc[d].total[0]+=da.total.l; daAcc[d].total[1]+=da.total.r;
+        for (const [s,sv] of Object.entries(da.src)) {
+          if (!daAcc[d].src[s]) daAcc[d].src[s]=[0,0];
+          daAcc[d].src[s][0]+=sv.l; daAcc[d].src[s][1]+=sv.r;
+        }
+      }
     }
-    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0, mCount };
+    if (gL===0) return null;
+    const grandSrc={};
+    for (const [s,v] of Object.entries(gsAcc)) grandSrc[s]=fin(v[0],v[1]);
+    const dimAggs={};
+    for (const [d,dv] of Object.entries(daAcc)) {
+      const srcAgg={};
+      for (const [s,sv] of Object.entries(dv.src)) srcAgg[s]=fin(sv[0],sv[1]);
+      dimAggs[d]={total:fin(dv.total[0],dv.total[1]),src:srcAgg};
+    }
+    return {grand:fin(gL,gR),grandSrc,dimAggs};
   }, [aggs]);
   return ce('div', { className:'fade-up' },
-    ce(SummaryBar, { kpis:[
-      { label:'Total Leads', value:Nf(summary.l),         accent:'#003087' },
-      { label:'Retails',     value:Nf(summary.r),         accent:'#E31837' },
-      { label:'L2R%',        value:Pf(summary.l2r),       accent:'#D97706' },
-      { label:'Months',      value:String(summary.mCount), accent:'#6366F1' },
-    ]}),
+    summaryAgg && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+      ce('div', { className:'section-title', style:{marginBottom:10} }, '∑ All Months — Summary'),
+      ce(DimGrid, { agg:summaryAgg, srcGroups, dimLabel, expandedGrps, onToggleGrp, expandedRows, onToggleRow, subRowsFn, viewerMode, noGroupHeaders })
+    ),
     aggs.map(({ M, agg }) => {
       if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) return null;
       return ce('div', { key: M, className:'card', style:{ padding:'16px 18px', marginBottom:14 } },
@@ -958,17 +977,27 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
       ce('div', { className:'section-title' }, 'Month-wise Trend — Leads, Retails & L2R%'),
       ce('div', { style:{height:260,position:'relative'} }, ce('canvas', { ref:chartRef }))
     ),
-    ce(SummaryBar, { kpis:[
-      ...(data.rt_cols ? [
-        { label:'DMS Retails', value:Nf(totals.dL),  accent:'#7C3AED' },
-        { label:'Call Out',    value:Nf(totals.coL), accent:'#0891B2' },
-      ] : []),
-      { label:'Paid %',    value:totals.l>0?Pf(totals.pL/totals.l*100):'—', accent:'#6366F1' },
-      { label:'Organic %', value:totals.l>0?Pf(totals.oL/totals.l*100):'—', accent:'#059669' },
-      { label:'Sources',   value:String(srcBreak.filter(s=>s.l>0).length),   accent:'#475569' },
-      { label:'Models',    value:String(heatData.top10.length),               accent:'#475569' },
-      { label:'States',    value:String(heatData.top15.length),               accent:'#475569' },
-    ]}),
+    totals.l > 0 && ce('div', { className:'card', style:{padding:'10px 18px',marginBottom:14,borderTop:'3px solid #6366F1'} },
+      ce('div', { style:{display:'flex',flexWrap:'wrap',alignItems:'stretch'} },
+        ...[
+          ...(data.rt_cols ? [
+            { label:'DMS Retails', value:Nf(totals.dL),  color:'#7C3AED' },
+            { label:'Call Out',    value:Nf(totals.coL), color:'#0891B2' },
+          ] : []),
+          { label:'Paid %',       value:totals.l>0?Pf(totals.pL/totals.l*100):'—', color:'#6366F1' },
+          { label:'Organic %',    value:totals.l>0?Pf(totals.oL/totals.l*100):'—', color:'#059669' },
+          { label:'Active Sources', value:String(srcBreak.filter(s=>s.l>0).length), color:'#475569' },
+          { label:'Models',        value:String(heatData.top10.length),              color:'#475569' },
+          { label:'States',        value:String(heatData.top15.length),              color:'#475569' },
+        ].map((s,i) => ce('div', { key:i, style:{
+          padding:'6px 16px', borderLeft:i>0?'1px solid #E2E8F0':'none',
+          display:'flex', flexDirection:'column', gap:2
+        }},
+          ce('div',{style:{fontSize:9,fontWeight:700,color:'#94A3B8',textTransform:'uppercase',letterSpacing:'.06em',whiteSpace:'nowrap'}},s.label),
+          ce('div',{style:{fontSize:15,fontWeight:700,color:s.color,fontFamily:'DM Mono,monospace'}},s.value)
+        ))
+      )
+    ),
     ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14} },
       ce('div', { style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8} },
         ce('div', { className:'section-title', style:{marginBottom:0} }, 'Source Summary'),
@@ -1145,6 +1174,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
     const univF = makeUnivFilter(filters);
     let gL=0, gR=0;
     const mSet = new Set(months);
+    const bySrc = new Map();
     if (univF) {
       for (const row of univ) {
         if (!mSet.has(maps.lm[row[4]])) continue;
@@ -1152,6 +1182,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         if (!allS && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
         const [l,r] = getLR(row); gL+=l; gR+=r;
+        const c=bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
     } else if (hasCityF && csm.length > 0) {
       for (const row of csm) {
@@ -1161,6 +1192,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         const src = maps.src[row[1]];
         if (!allS && !filters.sources.has(src)) continue;
         const [l,r] = getLR(row); gL+=l; gR+=r;
+        const c=bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
     } else {
       for (const row of sm) {
@@ -1168,18 +1200,45 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         const src = maps.src[row[0]];
         if (!allS && !filters.sources.has(src)) continue;
         const [l,r] = getLR(row); gL+=l; gR+=r;
+        const c=bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
     }
-    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0 };
+    const sorted = [...bySrc.entries()].sort((a,b)=>b[1][0]-a[1][0]);
+    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0, sorted };
   }, [sm, csm, univ, maps, filters, getLR, hasCityF, months]);
 
   return ce('div', {className:'fade-up'},
-    ce(SummaryBar, { kpis:[
-      { label:'Total Leads', value:Nf(crossMonthTotals.l),   accent:'#003087' },
-      { label:'Retails',     value:Nf(crossMonthTotals.r),   accent:'#E31837' },
-      { label:'L2R%',        value:Pf(crossMonthTotals.l2r), accent:'#D97706' },
-      { label:'Months',      value:String(months.length),    accent:'#6366F1' },
-    ]}),
+    crossMonthTotals.l > 0 && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+      ce('div', { className:'section-title', style:{marginBottom:10} }, '∑ All Months — Source Summary'),
+      ce('div', { className:'scroll-x' },
+        ce('table', null,
+          ce('thead', null, ce('tr', null,
+            ce('th',{className:'left',style:{minWidth:160}},'Source'),
+            ce('th',null,'Leads'), ce('th',null,'Retail'),
+            ce('th',null,'Contrib%'), ce('th',null,'L2R%'),
+          )),
+          ce('tbody', null,
+            ...crossMonthTotals.sorted.map(([src,[l,r]]) => {
+              const tot=fin(l,r);
+              return ce('tr',{key:src},
+                ce('td',{className:'label'},src),
+                ce('td',null,Nf(tot.l)),
+                ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(tot.r)),
+                ce('td',null,crossMonthTotals.l>0?Pf(tot.l/crossMonthTotals.l*100):'—'),
+                ce('td',{style:{color:'#D97706',fontWeight:700}},tot.l2r>0?Pf(tot.l2r):'—'),
+              );
+            }),
+            ce('tr',{key:'gtotal',className:'total-row'},
+              ce('td',{className:'label',style:{color:'#1A237E'}},'∑ Grand Total'),
+              ce('td',null,Nf(crossMonthTotals.l)),
+              ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(crossMonthTotals.r)),
+              ce('td',null,'100.0%'),
+              ce('td',{style:{color:'#D97706',fontWeight:700}},crossMonthTotals.l2r>0?Pf(crossMonthTotals.l2r):'—'),
+            )
+          )
+        )
+      )
+    ),
     months.map(renderMonth)
   );
 });
@@ -1642,43 +1701,31 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
     return { grand, hdr1, hdr2, bodyRows };
   }, [stm, univ, cm, cdm, csm_data, cdsm_data, maps, filters, expandedGrps, openZone, openState, openCity, srcGroups, hasCities, hasDealers, hasCitySrc, hasDealerSrc, cityIndexMap, getLR, viewerMode]);
 
-  const crossMonthTotals = useMemo(() => {
-    const allSrcF   = !filters.sources || filters.sources.size === 0;
-    const allStateF = !filters.states  || filters.states.size  === 0;
+  const stateSummaryAgg = useMemo(() => {
     const univF = makeUnivFilter(filters);
-    const normSt = s => (s||'').split(/\s+/).map(w=>w?w[0].toUpperCase()+w.slice(1).toLowerCase():w).join(' ')||'Unknown';
-    const mSet = new Set(months);
-    let gL=0, gR=0;
+    const allState = !filters.states || filters.states.size === 0;
     if (univF) {
-      for (const row of univ) {
-        if (!mSet.has(maps.lm[row[4]])) continue;
-        const state = normSt(maps.st[row[2]]);
-        if (!allStateF && !filters.states.has(state)) continue;
-        const src = maps.src[row[1]];
-        if (!allSrcF && !filters.sources.has(src)) continue;
-        if (!univF(row, maps)) continue;
-        const [l,r] = getLR(row); gL+=l; gR+=r;
-      }
-    } else {
-      for (const row of stm) {
-        if (!mSet.has(maps.lm[row[2]])) continue;
-        const state = normSt(maps.st[row[0]]);
-        if (!allStateF && !filters.states.has(state)) continue;
-        const src = maps.src[row[1]];
-        if (!allSrcF && !filters.sources.has(src)) continue;
-        const [l,r] = getLR(row); gL+=l; gR+=r;
-      }
+      return aggAll(
+        univ, maps, filters.months, filters.sources,
+        (row,m) => m.st[row[2]], (row,m) => m.src[row[1]], (row,m) => m.lm[row[4]],
+        allState ? univF : (row,m) => univF(row,m) && filters.states.has(m.st[row[2]]),
+        getLR
+      );
     }
-    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0 };
-  }, [stm, univ, maps, filters, getLR, months]);
+    return aggAll(
+      stm, maps, filters.months, filters.sources,
+      (row,m) => m.st[row[0]], (row,m) => m.src[row[1]], (row,m) => m.lm[row[2]],
+      allState ? null : (row,m) => filters.states.has(m.st[row[0]]),
+      getLR
+    );
+  }, [stm, univ, maps, filters, getLR]);
 
   return ce('div', { className:'fade-up' },
-    ce(SummaryBar, { kpis:[
-      { label:'Total Leads', value:Nf(crossMonthTotals.l),   accent:'#003087' },
-      { label:'Retails',     value:Nf(crossMonthTotals.r),   accent:'#E31837' },
-      { label:'L2R%',        value:Pf(crossMonthTotals.l2r), accent:'#D97706' },
-      { label:'Months',      value:String(months.length),    accent:'#6366F1' },
-    ]}),
+    stateSummaryAgg && stateSummaryAgg.grand.l > 0 &&
+      ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+        ce('div', { className:'section-title', style:{marginBottom:10} }, '∑ All Months — State Summary'),
+        ce(DimGrid, { agg:stateSummaryAgg, srcGroups, dimLabel:'State', expandedGrps, onToggleGrp, viewerMode })
+      ),
     months.map(M => {
       const grid = renderMonthGrid(M);
       if (!grid || (grid.grand.l === 0 && grid.grand.r === 0)) return null;
@@ -1758,23 +1805,45 @@ const BuyingIntentTab = React.memo(function BuyingIntentTab({ data, filters, mon
     return { ...agg, dimAggs: orderedDimAggs, _labels: (k => k.replace(/^\x00\d/, '')) };
   }, [renderAgg]);
 
-  // Custom render: preserve bucket order (0–7 first, 90+ last) via noSort
-  const crossMonthTotals = useMemo(() => {
-    let gL=0, gR=0, mCount=0;
+  // Summary agg across all months with bucket order preserved
+  const bdSummaryAgg = useMemo(() => {
+    let gL=0, gR=0;
+    const gsAcc={}, daAcc={};
     for (const M of months) {
       const agg = renderAgg(M);
-      if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) continue;
-      gL += agg.grand.l; gR += agg.grand.r; mCount++;
+      if (!agg || (agg.grand.l===0 && agg.grand.r===0)) continue;
+      gL+=agg.grand.l; gR+=agg.grand.r;
+      for (const [s,sv] of Object.entries(agg.grandSrc)) {
+        if (!gsAcc[s]) gsAcc[s]=[0,0]; gsAcc[s][0]+=sv.l; gsAcc[s][1]+=sv.r;
+      }
+      for (const [d,da] of Object.entries(agg.dimAggs)) {
+        if (!daAcc[d]) daAcc[d]={total:[0,0],src:{}};
+        daAcc[d].total[0]+=da.total.l; daAcc[d].total[1]+=da.total.r;
+        for (const [s,sv] of Object.entries(da.src)) {
+          if (!daAcc[d].src[s]) daAcc[d].src[s]=[0,0];
+          daAcc[d].src[s][0]+=sv.l; daAcc[d].src[s][1]+=sv.r;
+        }
+      }
     }
-    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0, mCount };
+    if (gL===0) return null;
+    const grandSrc={};
+    for (const [s,v] of Object.entries(gsAcc)) grandSrc[s]=fin(v[0],v[1]);
+    const dimAggsRaw={};
+    for (const [d,dv] of Object.entries(daAcc)) {
+      const srcAgg={};
+      for (const [s,sv] of Object.entries(dv.src)) srcAgg[s]=fin(sv[0],sv[1]);
+      dimAggsRaw[d]={total:fin(dv.total[0],dv.total[1]),src:srcAgg};
+    }
+    // Restore BD_BUCKETS order with " days" suffix
+    const dimAggs={};
+    BD_BUCKETS.forEach(bk => { if (dimAggsRaw[bk]) dimAggs[bk+' days']=dimAggsRaw[bk]; });
+    return {grand:fin(gL,gR),grandSrc,dimAggs};
   }, [months, renderAgg]);
   return ce('div', { className:'fade-up' },
-    ce(SummaryBar, { kpis:[
-      { label:'Total Leads', value:Nf(crossMonthTotals.l),         accent:'#003087' },
-      { label:'Retails',     value:Nf(crossMonthTotals.r),         accent:'#E31837' },
-      { label:'L2R%',        value:Pf(crossMonthTotals.l2r),       accent:'#D97706' },
-      { label:'Months',      value:String(crossMonthTotals.mCount), accent:'#6366F1' },
-    ]}),
+    bdSummaryAgg && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+      ce('div', { className:'section-title', style:{marginBottom:10} }, '∑ All Months — Buying Intent Summary'),
+      ce(DimGrid, { agg:bdSummaryAgg, srcGroups, dimLabel:'Intent (Days)', expandedGrps, onToggleGrp, noSort:true })
+    ),
     months.map(M => {
       const agg = renderAgg(M);
       if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) return null;
@@ -2184,16 +2253,345 @@ function AdminPanel({ auth, onLogout, onViewDashboard }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════
+   CROSS-TAB GRID  (rows × column-values, e.g. State × Model)
+   ════════════════════════════════════════════════════════════════════ */
+// Builds { grand, colKeys, rowKeys, rowAggs } from a 3-dim compact matrix.
+// rowPos/colPos/lmPos are the index positions within a row.
+function buildCrossAgg(table, maps, rowMapKey, colMapKey, lmMapKey, rowPos, colPos, lmPos, monthSet, rowFilter, colFilter, getLR, rtCols) {
+  const allM   = !monthSet  || monthSet.size  === 0;
+  const allRow = !rowFilter || rowFilter.size === 0;
+  const allCol = !colFilter || colFilter.size === 0;
+  let gL=0,gR=0,gDm=0,gCo=0;
+  const rowAcc = new Map();
+  const colTotals = {};
+  const allCols = new Set();
+  for (const row of table) {
+    const m = maps[lmMapKey][row[lmPos]];
+    if (!allM && !monthSet.has(m)) continue;
+    const rLabel = maps[rowMapKey][row[rowPos]];
+    if (!allRow && !rowFilter.has(rLabel)) continue;
+    const cLabel = maps[colMapKey][row[colPos]];
+    if (!allCol && !colFilter.has(cLabel)) continue;
+    const [l,r] = getLR(row);
+    const dm = rtCols ? (row[lmPos+2]||0) : 0;
+    const co = rtCols ? (row[lmPos+3]||0) : 0;
+    gL+=l; gR+=r; gDm+=dm; gCo+=co;
+    allCols.add(cLabel);
+    colTotals[cLabel]=(colTotals[cLabel]||0)+l;
+    if (!rowAcc.has(rLabel)) rowAcc.set(rLabel,{total:[0,0,0,0],colAggs:new Map()});
+    const e=rowAcc.get(rLabel);
+    e.total[0]+=l; e.total[1]+=r; e.total[2]+=dm; e.total[3]+=co;
+    if (!e.colAggs.has(cLabel)) e.colAggs.set(cLabel,[0,0,0,0]);
+    const ca=e.colAggs.get(cLabel);
+    ca[0]+=l; ca[1]+=r; ca[2]+=dm; ca[3]+=co;
+  }
+  const colKeys=[...allCols].sort((a,b)=>(colTotals[b]||0)-(colTotals[a]||0));
+  const rowEntries=[...rowAcc.entries()].sort((a,b)=>b[1].total[0]-a[1].total[0]);
+  const rowKeys=rowEntries.map(([k])=>k);
+  const rowAggs={};
+  for (const [rk,e] of rowEntries) {
+    const ca={};
+    for (const [ck,v] of e.colAggs) ca[ck]={l:v[0],r:v[1],dm:v[2],co:v[3],l2r:v[0]>0?v[1]/v[0]*100:0};
+    rowAggs[rk]={total:{l:e.total[0],r:e.total[1],dm:e.total[2],co:e.total[3],l2r:e.total[0]>0?e.total[1]/e.total[0]*100:0},colAggs:ca};
+  }
+  return {grand:{l:gL,r:gR,dm:gDm,co:gCo,l2r:gL>0?gR/gL*100:0},colKeys,rowKeys,rowAggs};
+}
+
+// CrossTabGrid: renders a state/city × model cross-tabulation
+const CrossTabGrid = React.memo(function CrossTabGrid({ agg, rowLabel, colLabel, rtCols, onExport, title }) {
+  if (!agg || agg.grand.l===0) return null;
+  const {grand,colKeys,rowKeys,rowAggs}=agg;
+  const showRT=!!rtCols;
+  const totalColSpan=showRT?6:4;
+  const colGrandL=ck=>{let t=0;for(const da of Object.values(rowAggs)){const ca=da.colAggs[ck];if(ca)t+=ca.l;}return t;};
+  const colGrandR=ck=>{let t=0;for(const da of Object.values(rowAggs)){const ca=da.colAggs[ck];if(ca)t+=ca.r;}return t;};
+  return ce('div',null,
+    title && ce('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}},
+      ce('div',{className:'section-title',style:{marginBottom:0}},title),
+      onExport && ce(ExportBtn,{onClick:onExport})
+    ),
+    ce('div',{className:'scroll-x'},
+      ce('table',null,
+        ce('thead',null,
+          ce('tr',null,
+            ce('th',{className:'left',rowSpan:2,style:{minWidth:160,position:'sticky',left:0,zIndex:3,background:'#E8EAF6',color:'#1A237E'}},rowLabel),
+            ce('th',{colSpan:totalColSpan,style:{background:'#E8EAF6',color:'#1A237E'}},'TOTAL'),
+            ...colKeys.map(ck=>ce('th',{key:ck,colSpan:3,style:{borderLeft:'2px solid #BFDBFE',background:'#F3F4F6',whiteSpace:'nowrap',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis'}},ck))
+          ),
+          ce('tr',null,
+            ce('th',{className:'sub'},'Leads'),
+            ce('th',{className:'sub'},'Retail'),
+            ce('th',{className:'sub'},'Contrib%'),
+            ce('th',{className:'sub',style:{color:'#D97706'}},'L2R%'),
+            ...(showRT?[ce('th',{className:'sub',style:{color:'#7C3AED'}},'DMS'),ce('th',{className:'sub',style:{color:'#0891B2'}},'Call Out')]:[]),
+            ...colKeys.flatMap(ck=>[
+              ce('th',{key:ck+'l',className:'sub',style:{borderLeft:'2px solid #BFDBFE'}},'Leads'),
+              ce('th',{key:ck+'r',className:'sub'},'Retail'),
+              ce('th',{key:ck+'l2r',className:'sub',style:{color:'#D97706'}},'L2R%'),
+            ])
+          )
+        ),
+        ce('tbody',null,
+          ...rowKeys.map(rk=>{
+            const da=rowAggs[rk];
+            return ce('tr',{key:rk},
+              ce('td',{className:'label',style:{position:'sticky',left:0,background:'#FAFAFA',zIndex:1}},rk),
+              ce('td',null,Nf(da.total.l)),
+              ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(da.total.r)),
+              ce('td',null,grand.l>0?Pf(da.total.l/grand.l*100):'—'),
+              ce('td',{style:{color:'#D97706',fontWeight:700}},da.total.l2r>0?Pf(da.total.l2r):'—'),
+              ...(showRT?[ce('td',null,Nf(da.total.dm)),ce('td',null,Nf(da.total.co))]:[]),
+              ...colKeys.flatMap(ck=>{
+                const ca=da.colAggs[ck]||{l:0,r:0,l2r:0};
+                return[
+                  ce('td',{key:ck+'l',style:{borderLeft:'2px solid #BFDBFE'}},ca.l>0?Nf(ca.l):'—'),
+                  ce('td',{key:ck+'r',style:{color:'#E31837',fontWeight:700}},ca.r>0?Nf(ca.r):'—'),
+                  ce('td',{key:ck+'l2r',style:{color:'#D97706'}},ca.l2r>0?Pf(ca.l2r):'—'),
+                ];
+              })
+            );
+          }),
+          ce('tr',{className:'total-row'},
+            ce('td',{className:'label',style:{color:'#1A237E',position:'sticky',left:0,zIndex:1}},'∑ Grand Total'),
+            ce('td',null,Nf(grand.l)),
+            ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(grand.r)),
+            ce('td',null,'100.0%'),
+            ce('td',{style:{color:'#D97706',fontWeight:700}},grand.l2r>0?Pf(grand.l2r):'—'),
+            ...(showRT?[ce('td',null,Nf(grand.dm)),ce('td',null,Nf(grand.co))]:[]),
+            ...colKeys.flatMap(ck=>{
+              const tL=colGrandL(ck),tR=colGrandR(ck);
+              const tL2r=tL>0?tR/tL*100:0;
+              return[
+                ce('td',{key:ck+'l',style:{borderLeft:'2px solid #BFDBFE'}},tL>0?Nf(tL):'—'),
+                ce('td',{key:ck+'r',style:{color:'#E31837',fontWeight:700}},tR>0?Nf(tR):'—'),
+                ce('td',{key:ck+'l2r',style:{color:'#D97706'}},tL2r>0?Pf(tL2r):'—'),
+              ];
+            })
+          )
+        )
+      )
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   CITY × SOURCE TAB
+   ════════════════════════════════════════════════════════════════════ */
+const CitySourceTab = React.memo(function CitySourceTab({ data, filters, months, RT, viewerMode }) {
+  const { maps } = data;
+  const csm = data.csm || [];
+  const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
+  const allSrcs = useMemo(() => [...new Set(maps.src)], [maps]);
+  const srcGroups = useMemo(() => buildSrcGroups(allSrcs), [allSrcs]);
+  const [expandedGrps, setExpandedGrps] = useState(new Set());
+  const [expandedRows, setExpandedRows] = useState(new Set());
+  const onToggleGrp = useCallback(id => setExpandedGrps(prev => {
+    const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n;
+  }), []);
+  const onToggleRow = useCallback(rk => setExpandedRows(prev => {
+    const n=new Set(prev); n.has(rk)?n.delete(rk):n.add(rk); return n;
+  }), []);
+
+  // csm format: [city_idx, src_idx, lm_idx, L, R_all, R_dms, R_co]
+  const renderAgg = useCallback((M) => {
+    const allS  = !filters.sources || filters.sources.size === 0;
+    const allC  = !filters.cities  || filters.cities.size  === 0;
+    const allSt = !filters.states  || filters.states.size  === 0;
+    const bySrc=new Map(), byCity=new Map(), byCitySrc=new Map();
+    let gL=0,gR=0;
+    for (const row of csm) {
+      if (maps.lm[row[2]] !== M) continue;
+      const city=maps.city[row[0]], src=maps.src[row[1]];
+      if (!allC && !filters.cities.has(city)) continue;
+      if (!allS && !filters.sources.has(src)) continue;
+      if (!allSt && maps.city_state) {
+        const stIdx=maps.city_state[row[0]];
+        if (!filters.states.has(maps.st[stIdx])) continue;
+      }
+      const [l,r]=getLR(row);
+      gL+=l; gR+=r;
+      const cs=bySrc.get(src)||[0,0]; cs[0]+=l; cs[1]+=r; bySrc.set(src,cs);
+      const cc=byCity.get(city)||[0,0]; cc[0]+=l; cc[1]+=r; byCity.set(city,cc);
+      const k=city+'\x00'+src;
+      const ccs=byCitySrc.get(k)||[0,0]; ccs[0]+=l; ccs[1]+=r; byCitySrc.set(k,ccs);
+    }
+    if (gL===0&&gR===0) return null;
+    const grandSrc={};
+    for (const [s,v] of bySrc) grandSrc[s]=fin(v[0],v[1]);
+    const dimAggs={};
+    for (const [c,cv] of byCity) {
+      const srcAgg={};
+      for (const s of bySrc.keys()) { const v=byCitySrc.get(c+'\x00'+s); srcAgg[s]=v?fin(v[0],v[1]):EMPTY; }
+      dimAggs[c]={total:fin(cv[0],cv[1]),src:srcAgg};
+    }
+    return {grand:fin(gL,gR),grandSrc,dimAggs};
+  }, [csm, maps, filters, getLR]);
+
+  const exportAll = useCallback(() => {
+    const mSet=new Set(months);
+    const agg=aggAll(csm,maps,mSet,filters.sources,
+      (r,m)=>m.city[r[0]],(r,m)=>m.src[r[1]],(r,m)=>m.lm[r[2]],
+      null,getLR);
+    if (!agg||agg.grand.l===0) return;
+    const hdr=['City','Total Leads','Total Retail','Contrib%','L2R%',...allSrcs.flatMap(s=>[s+' Leads',s+' Retail',s+' L2R%'])];
+    const rows=[hdr];
+    for (const [city,da] of Object.entries(agg.dimAggs)) {
+      const row=[city,da.total.l,da.total.r,agg.grand.l>0?+(da.total.l/agg.grand.l*100).toFixed(1):0,+da.total.l2r.toFixed(1)];
+      for (const s of allSrcs) { const v=da.src[s]||EMPTY; row.push(v.l,v.r,+v.l2r.toFixed(1)); }
+      rows.push(row);
+    }
+    rows.push(['∑ Grand Total',agg.grand.l,agg.grand.r,100,+agg.grand.l2r.toFixed(1),...allSrcs.flatMap(s=>{const v=agg.grandSrc[s]||EMPTY;return[v.l,v.r,+v.l2r.toFixed(1)];})]);
+    exportXlsx({'City × Source':rows},'TVS_CitySource_All');
+  }, [csm,maps,filters,months,getLR,allSrcs]);
+
+  return ce(MonthlyGrids, {
+    title:'City × Source', months, renderAgg, srcGroups,
+    dimLabel:'City', expandedGrps, onToggleGrp, expandedRows, onToggleRow,
+    noPrefix:false, viewerMode, noGroupHeaders:false
+  });
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   STATE × MODEL TAB
+   ════════════════════════════════════════════════════════════════════ */
+const StateModelTab = React.memo(function StateModelTab({ data, filters, months, RT, viewerMode }) {
+  const { maps } = data;
+  const mxst = data.mxst || [];
+  const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
+
+  // mxst format: [mdl_idx, st_idx, lm_idx, L, R_all, R_dms, R_co]
+  // rows = states, cols = models
+  const buildAgg = useCallback((monthSet) => {
+    return buildCrossAgg(
+      mxst, maps, 'st', 'mdl', 'lm', 1, 0, 2, monthSet,
+      filters.states, filters.models, getLR, data.rt_cols
+    );
+  }, [mxst, maps, filters, getLR, data.rt_cols]);
+
+  const summaryAgg = useMemo(() => {
+    const a=buildAgg(new Set(months)); return a.grand.l>0?a:null;
+  }, [buildAgg, months]);
+
+  const monthlyAggs = useMemo(() =>
+    months.map(M => ({ M, agg: (() => { const a=buildAgg(new Set([M])); return a.grand.l>0?a:null; })() })),
+  [buildAgg, months]);
+
+  const exportAgg = useCallback((agg, label) => {
+    if (!agg) return;
+    const {colKeys,rowKeys,rowAggs,grand}=agg;
+    const hdr=['State','Total Leads','Total Retail','Contrib%','L2R%',...colKeys.flatMap(ck=>[ck+' Leads',ck+' Retail',ck+' L2R%'])];
+    const rows=[hdr];
+    for (const rk of rowKeys) {
+      const da=rowAggs[rk];
+      const row=[rk,da.total.l,da.total.r,grand.l>0?+(da.total.l/grand.l*100).toFixed(1):0,+da.total.l2r.toFixed(1)];
+      for (const ck of colKeys) { const ca=da.colAggs[ck]||{l:0,r:0,l2r:0}; row.push(ca.l,ca.r,+ca.l2r.toFixed(1)); }
+      rows.push(row);
+    }
+    const gtRow=['∑ Grand Total',grand.l,grand.r,100,+grand.l2r.toFixed(1)];
+    for (const ck of colKeys) { let tL=0,tR=0; for(const da of Object.values(rowAggs)){const ca=da.colAggs[ck]||{l:0,r:0};tL+=ca.l;tR+=ca.r;} const tL2r=tL>0?tR/tL*100:0; gtRow.push(tL,tR,+tL2r.toFixed(1)); }
+    rows.push(gtRow);
+    exportXlsx({[label]:rows},'TVS_StateModel_'+(label==='Summary'?'All':label.replace("'","")));
+  }, []);
+
+  return ce('div', { className:'fade-up' },
+    summaryAgg && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+      ce(CrossTabGrid, { agg:summaryAgg, rowLabel:'State', colLabel:'Model', rtCols:data.rt_cols,
+        title:'∑ All Months — State × Model Summary',
+        onExport:()=>exportAgg(summaryAgg,'Summary') })
+    ),
+    monthlyAggs.map(({M,agg}) => agg ?
+      ce('div', { key:M, className:'card', style:{padding:'16px 18px',marginBottom:14} },
+        ce(CrossTabGrid, { agg, rowLabel:'State', colLabel:'Model', rtCols:data.rt_cols,
+          title:'State × Model — '+M, onExport:()=>exportAgg(agg,M) })
+      ) : null
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
+   CITY × MODEL TAB
+   ════════════════════════════════════════════════════════════════════ */
+const CityModelTab = React.memo(function CityModelTab({ data, filters, months, RT, viewerMode }) {
+  const { maps } = data;
+  const cxm = data.cxm || [];
+  const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
+
+  // cxm format: [city_idx, mdl_idx, lm_idx, L, R_all, R_dms, R_co]
+  // rows = cities, cols = models
+  const buildAgg = useCallback((monthSet) => {
+    const stFilter = (filters.states && filters.states.size > 0 && maps.city_state)
+      ? new Set(
+          (maps.city||[]).reduce((acc,city,i) => {
+            const stIdx = maps.city_state[i];
+            if (filters.states.has(maps.st[stIdx])) acc.push(city);
+            return acc;
+          }, [])
+        )
+      : null;
+    return buildCrossAgg(
+      cxm, maps, 'city', 'mdl', 'lm', 0, 1, 2, monthSet,
+      stFilter || filters.cities, filters.models, getLR, data.rt_cols
+    );
+  }, [cxm, maps, filters, getLR, data.rt_cols]);
+
+  const summaryAgg = useMemo(() => {
+    if (cxm.length===0) return null;
+    const a=buildAgg(new Set(months)); return a.grand.l>0?a:null;
+  }, [buildAgg, months, cxm]);
+
+  const monthlyAggs = useMemo(() =>
+    months.map(M => ({ M, agg: (() => { if(cxm.length===0) return null; const a=buildAgg(new Set([M])); return a.grand.l>0?a:null; })() })),
+  [buildAgg, months, cxm]);
+
+  const exportAgg = useCallback((agg, label) => {
+    if (!agg) return;
+    const {colKeys,rowKeys,rowAggs,grand}=agg;
+    const hdr=['City','Total Leads','Total Retail','Contrib%','L2R%',...colKeys.flatMap(ck=>[ck+' Leads',ck+' Retail',ck+' L2R%'])];
+    const rows=[hdr];
+    for (const rk of rowKeys) {
+      const da=rowAggs[rk];
+      const row=[rk,da.total.l,da.total.r,grand.l>0?+(da.total.l/grand.l*100).toFixed(1):0,+da.total.l2r.toFixed(1)];
+      for (const ck of colKeys) { const ca=da.colAggs[ck]||{l:0,r:0,l2r:0}; row.push(ca.l,ca.r,+ca.l2r.toFixed(1)); }
+      rows.push(row);
+    }
+    const gtRow=['∑ Grand Total',grand.l,grand.r,100,+grand.l2r.toFixed(1)];
+    for (const ck of colKeys) { let tL=0,tR=0; for(const da of Object.values(rowAggs)){const ca=da.colAggs[ck]||{l:0,r:0};tL+=ca.l;tR+=ca.r;} const tL2r=tL>0?tR/tL*100:0; gtRow.push(tL,tR,+tL2r.toFixed(1)); }
+    rows.push(gtRow);
+    exportXlsx({[label]:rows},'TVS_CityModel_'+(label==='Summary'?'All':label.replace("'","")));
+  }, []);
+
+  if (cxm.length===0) return ce('div',{style:{textAlign:'center',padding:50,color:'#94A3B8',fontSize:14}},
+    '📦 City × Model data will be available after the next pipeline run.');
+
+  return ce('div', { className:'fade-up' },
+    summaryAgg && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+      ce(CrossTabGrid, { agg:summaryAgg, rowLabel:'City', colLabel:'Model', rtCols:data.rt_cols,
+        title:'∑ All Months — City × Model Summary',
+        onExport:()=>exportAgg(summaryAgg,'Summary') })
+    ),
+    monthlyAggs.map(({M,agg}) => agg ?
+      ce('div', { key:M, className:'card', style:{padding:'16px 18px',marginBottom:14} },
+        ce(CrossTabGrid, { agg, rowLabel:'City', colLabel:'Model', rtCols:data.rt_cols,
+          title:'City × Model — '+M, onExport:()=>exportAgg(agg,M) })
+      ) : null
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
    APP ROOT
    ════════════════════════════════════════════════════════════════════ */
 const TABS = [
-  { id:'overview',  label:'Overview' },
-  { id:'source',    label:'Source Analysis' },
-  { id:'ltxsrc',   label:'LT × Source' },
-  { id:'modelxsrc',label:'Model × Source' },
-  { id:'statexsrc',  label:'State × Source' },
-  { id:'dispersion', label:'Retail Dispersion' },
-  { id:'pivot',      label:'Pivot Table'       },
+  { id:'overview',    label:'Overview' },
+  { id:'source',      label:'Source Analysis' },
+  { id:'ltxsrc',      label:'LT × Source' },
+  { id:'modelxsrc',   label:'Model × Source' },
+  { id:'statexsrc',   label:'State × Source' },
+  { id:'cityxsrc',    label:'City × Source' },
+  { id:'statexmodel', label:'State × Model' },
+  { id:'cityxmodel',  label:'City × Model' },
+  { id:'dispersion',  label:'Retail Dispersion' },
+  { id:'pivot',       label:'Pivot Table' },
 ];
 
 function App() {
@@ -2272,7 +2670,7 @@ function App() {
       mxst: data.u_mxst, mlt: data.u_mlt, stlt: data.u_stlt, disp: data.u_disp,
       stcm: data.u_stcm, univ: data.u_univ,
       stdm: data.u_stdm, mxdl: data.u_mxdl, ltdl: data.u_ltdl,
-      cm: data.u_cm || [], csm: data.u_csm || [],
+      cm: data.u_cm || [], csm: data.u_csm || [], cxm: data.u_cxm || [],
       cdm: data.u_cdm || [], cdsm: data.u_cdsm || [],
     };
   }, [data, leadsMode]);
@@ -2287,20 +2685,23 @@ function App() {
   const role       = auth ? auth.role : null;
   const viewerMode = role === 'viewer';
   const visibleTabs = viewerMode
-    ? TABS.filter(t => t.id === 'modelxsrc' || t.id === 'statexsrc')
+    ? TABS.filter(t => ['modelxsrc','statexsrc','cityxsrc','statexmodel','cityxmodel'].includes(t.id))
     : TABS;
 
   const tabContent = useMemo(() => {
     if (!effectiveData) return null;
     const props = { data: effectiveData, filters, months, RT, viewerMode };
     switch (tab) {
-      case 'overview':  return ce(OverviewTab,    props);
-      case 'source':    return ce(SourceTab,       props);
-      case 'ltxsrc':   return ce(LTSourceTab,      props);
-      case 'modelxsrc':return ce(ModelSourceTab,   props);
-      case 'statexsrc':  return ce(StateSourceTab,   props);
-      case 'dispersion': return ce(DispersionTab,    props);
-      case 'pivot':      return ce(PivotTab,         props);
+      case 'overview':    return ce(OverviewTab,    props);
+      case 'source':      return ce(SourceTab,       props);
+      case 'ltxsrc':      return ce(LTSourceTab,      props);
+      case 'modelxsrc':   return ce(ModelSourceTab,   props);
+      case 'statexsrc':   return ce(StateSourceTab,   props);
+      case 'cityxsrc':    return ce(CitySourceTab,    props);
+      case 'statexmodel': return ce(StateModelTab,    props);
+      case 'cityxmodel':  return ce(CityModelTab,     props);
+      case 'dispersion':  return ce(DispersionTab,    props);
+      case 'pivot':       return ce(PivotTab,         props);
       default: return null;
     }
   }, [effectiveData, tab, filters, months, RT, viewerMode]);
@@ -2636,16 +3037,58 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     );
   };
 
+  // Build aggregated per-model dispersion for the summary table
+  const dispSummaryRows = useMemo(() => {
+    const modelAcc = new Map(); // mdl name → { same, cross }
+    for (const [,mMap] of byMonth) {
+      for (const [ei, piMap] of mMap) {
+        const eMdl = maps.mdl[ei];
+        if (!modelAcc.has(eMdl)) modelAcc.set(eMdl, { same:0, cross:0 });
+        const e = modelAcc.get(eMdl);
+        for (const [pi, cnt] of piMap) {
+          if (maps.mdl[pi] === eMdl) e.same+=cnt; else e.cross+=cnt;
+        }
+      }
+    }
+    return [...modelAcc.entries()]
+      .map(([m, e]) => ({ m, same:e.same, cross:e.cross, total:e.same+e.cross, disp:e.same+e.cross>0?e.cross/(e.same+e.cross)*100:0 }))
+      .sort((a,b)=>b.total-a.total);
+  }, [byMonth, maps]);
+
   return ce('div', { className:'fade-up' },
     ce('div', { style:{fontSize:12,color:'#64748B',marginBottom:14,padding:'8px 12px',background:'#F8FAFC',borderRadius:8,border:'1px solid #E2E8F0'} },
       '📌 Retail Attribution leads only. Shows % of customers who purchased a different model than enquired. Month & Model filters apply.'
     ),
-    ce(SummaryBar, { kpis:[
-      { label:'Total Retails', value:Nf(crossMonthTotals.total), accent:'#E31837' },
-      { label:'Same Sell',     value:Nf(crossMonthTotals.same),  accent:'#059669' },
-      { label:'Cross Sell',    value:Nf(crossMonthTotals.cross), accent:'#DC2626' },
-      { label:'Cross Sell%',   value:Pf(crossMonthTotals.disp), accent:'#D97706' },
-    ]}),
+    crossMonthTotals.total > 0 && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #E31837'} },
+      ce('div', { className:'section-title', style:{marginBottom:10} }, '∑ All Months — Dispersion Summary'),
+      ce('div', { className:'scroll-x' },
+        ce('table', null,
+          ce('thead', null, ce('tr', null,
+            ce('th',{className:'left',style:{minWidth:170}},'Enquired Model'),
+            ce('th',{style:{color:'#059669'}},'Same ✓'),
+            ce('th',{style:{color:'#E31837'}},'Cross ✗'),
+            ce('th',null,'Total'),
+            ce('th',{style:{minWidth:150}},'Dispersion%'),
+          )),
+          ce('tbody', null,
+            ...dispSummaryRows.map((r,i) => ce('tr',{key:i},
+              ce('td',{className:'label'},r.m),
+              ce('td',{style:{color:'#059669',fontWeight:700}},Nf(r.same)),
+              ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(r.cross)),
+              ce('td',null,Nf(r.total)),
+              ce('td',null,DISP_BAR(r.disp)),
+            )),
+            ce('tr',{className:'total-row'},
+              ce('td',{className:'label'},'∑ Grand Total'),
+              ce('td',{style:{color:'#059669',fontWeight:700}},Nf(crossMonthTotals.same)),
+              ce('td',{style:{color:'#E31837',fontWeight:700}},Nf(crossMonthTotals.cross)),
+              ce('td',null,Nf(crossMonthTotals.total)),
+              ce('td',null,DISP_BAR(crossMonthTotals.disp)),
+            )
+          )
+        )
+      )
+    ),
     ...sortedMonths.map(M => renderMonthGrid(M))
   );
 });
@@ -2696,6 +3139,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
     { key:'stlt', dims:['st','lt','lm']          },
     { key:'cm',   dims:['city','lm']             },
     { key:'csm',  dims:['city','src','lm']       },
+    { key:'cxm',  dims:['city','mdl','lm']       },
     { key:'cdm',  dims:['city','dl','lm']        },
     { key:'cdsm', dims:['city','dl','src','lm']  },
     { key:'stcm', dims:['st','city','lm']        },
@@ -3219,19 +3663,29 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
       'No data matches the current filters.'
     ),
 
-    /* ── Summary Bar ── */
+    /* ── Summary Grid ── */
     !unsupported && !awaitingPipeline && !noData && grandTotals.gl > 0 &&
-    ce(SummaryBar, { kpis:[
-      { label:'Total Leads', value:Nf(grandTotals.gl), accent:'#003087' },
-      { label:'Retails',     value:Nf(grandTotals.gr), accent:'#E31837' },
-      { label:'L2R%',        value:Pf(grandTotals.gl>0?grandTotals.gr/grandTotals.gl*100:0), accent:'#D97706' },
-      ...(data.rt_cols ? [
-        { label:'DMS',      value:Nf(Object.values(grandTotals.colVals).reduce((s,v)=>s+(v[2]||0),0)), accent:'#7C3AED' },
-        { label:'Call Out', value:Nf(Object.values(grandTotals.colVals).reduce((s,v)=>s+(v[3]||0),0)), accent:'#0891B2' },
-      ] : []),
-      { label:'Rows (shown)', value:String(sortedRows.length),  accent:'#475569' },
-      { label:'Columns',      value:String(orderedCols.length), accent:'#475569' },
-    ]}),
+    ce('div', { className:'card', style:{padding:'10px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+      ce('div', { style:{display:'flex',flexWrap:'wrap',alignItems:'stretch'} },
+        ...[
+          { label:'Total Leads', value:Nf(grandTotals.gl), color:'#003087' },
+          { label:'Retails',     value:Nf(grandTotals.gr), color:'#E31837' },
+          { label:'L2R%', value:Pf(grandTotals.gl>0?grandTotals.gr/grandTotals.gl*100:0), color:'#D97706' },
+          ...(data.rt_cols ? [
+            { label:'DMS',      value:Nf(Object.values(grandTotals.colVals).reduce((s,v)=>s+(v[2]||0),0)), color:'#7C3AED' },
+            { label:'Call Out', value:Nf(Object.values(grandTotals.colVals).reduce((s,v)=>s+(v[3]||0),0)), color:'#0891B2' },
+          ] : []),
+          { label:'Rows (shown)', value:String(sortedRows.length),  color:'#475569' },
+          { label:'Columns',      value:String(orderedCols.length), color:'#475569' },
+        ].map((s,i) => ce('div', { key:i, style:{
+          padding:'6px 16px', borderLeft:i>0?'1px solid #E2E8F0':'none',
+          display:'flex', flexDirection:'column', gap:2
+        }},
+          ce('div',{style:{fontSize:9,fontWeight:700,color:'#94A3B8',textTransform:'uppercase',letterSpacing:'.06em',whiteSpace:'nowrap'}},s.label),
+          ce('div',{style:{fontSize:15,fontWeight:700,color:s.color,fontFamily:'DM Mono,monospace'}},s.value)
+        ))
+      )
+    ),
 
     /* ── Pivot table ── */
     !unsupported && !awaitingPipeline && !noData &&
