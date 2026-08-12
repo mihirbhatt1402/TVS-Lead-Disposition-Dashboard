@@ -427,6 +427,31 @@ function makeUnivFilter(filters) {
 function Nf(n) { return (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('en-IN'); }
 function Pf(n, d=1) { return (n == null || isNaN(n) || n===0) ? '—' : n.toFixed(d) + '%'; }
 
+function SummaryBar({ kpis }) {
+  if (!kpis || kpis.length === 0) return null;
+  return ce('div', {
+    style:{ display:'flex', flexWrap:'wrap', alignItems:'center', gap:0,
+            background:'#fff', border:'1px solid #BFDBFE', borderLeft:'4px solid #003087',
+            borderRadius:8, padding:'7px 14px', marginBottom:14,
+            boxShadow:'0 1px 3px rgba(0,48,135,0.07)' }
+  },
+    ce('span', { style:{ fontSize:9, fontWeight:800, color:'#003087', textTransform:'uppercase',
+                         letterSpacing:'.1em', paddingRight:12, marginRight:4, alignSelf:'center',
+                         borderRight:'1px solid #BFDBFE', whiteSpace:'nowrap', minWidth:52 } },
+      'Summary'),
+    kpis.map((k, i) => ce('div', {
+      key: i,
+      style:{ display:'flex', flexDirection:'column', padding:'2px 12px',
+              borderLeft: i > 0 ? '1px solid #F1F5F9' : 'none' }
+    },
+      ce('span', { style:{ fontSize:9, color:'#64748B', fontWeight:600, textTransform:'uppercase',
+                           letterSpacing:'.06em', marginBottom:2, whiteSpace:'nowrap' } }, k.label),
+      ce('span', { style:{ fontSize:14, fontWeight:700, color:k.accent||'#0f172a',
+                           fontFamily:'DM Mono, monospace', whiteSpace:'nowrap' } }, k.value)
+    ))
+  );
+}
+
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function monthOrder(m) {
   if (!m) return 0;
@@ -684,9 +709,23 @@ const DimGrid = React.memo(function DimGrid({
    Renders one DimGrid per selected month.
    ════════════════════════════════════════════════════════════════════ */
 function MonthlyGrids({ title, months, renderAgg, srcGroups, dimLabel, expandedGrps, onToggleGrp, expandedRows, onToggleRow, subRowsFn, noPrefix, viewerMode, noGroupHeaders }) {
+  const aggs = useMemo(() => months.map(M => ({ M, agg: renderAgg(M) })), [months, renderAgg]);
+  const summary = useMemo(() => {
+    let gL=0, gR=0, mCount=0;
+    for (const { agg } of aggs) {
+      if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) continue;
+      gL += agg.grand.l; gR += agg.grand.r; mCount++;
+    }
+    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0, mCount };
+  }, [aggs]);
   return ce('div', { className:'fade-up' },
-    months.map(M => {
-      const agg = renderAgg(M);
+    ce(SummaryBar, { kpis:[
+      { label:'Total Leads', value:Nf(summary.l),         accent:'#003087' },
+      { label:'Retails',     value:Nf(summary.r),         accent:'#E31837' },
+      { label:'L2R%',        value:Pf(summary.l2r),       accent:'#D97706' },
+      { label:'Months',      value:String(summary.mCount), accent:'#6366F1' },
+    ]}),
+    aggs.map(({ M, agg }) => {
       if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) return null;
       return ce('div', { key: M, className:'card', style:{ padding:'16px 18px', marginBottom:14 } },
         ce('div', { className:'section-title', style:{marginBottom:10} }, noPrefix ? M : (title || dimLabel) + ' — ' + M),
@@ -716,7 +755,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
     const allM = !filters.months || filters.months.size === 0;
     const allS = !filters.sources || filters.sources.size === 0;
     const univF = makeUnivFilter(filters);
-    let gL=0,gR=0,pL=0,pR=0,oL=0,oR=0;
+    let gL=0,gR=0,pL=0,pR=0,oL=0,oR=0,dL=0,coL=0;
     if (hasCityFilter) {
       for (const row of cm) {
         const city = maps.city[row[0]];
@@ -724,6 +763,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
         const m = maps.lm[row[1]];
         if (!allM && !filters.months.has(m)) continue;
         const [l,r] = getLR(row); gL+=l; gR+=r;
+        if (data.rt_cols) { dL+=row[row.length-2]; coL+=row[row.length-1]; }
       }
     } else if (univF) {
       for (const row of univ) {
@@ -733,6 +773,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
         if (!allS && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
         const [l,r] = getLR(row); gL+=l; gR+=r;
+        if (data.rt_cols) { dL+=row[row.length-2]; coL+=row[row.length-1]; }
         if (paidGrp && paidGrp.srcs.includes(src)) { pL+=l; pR+=r; }
         if (orgGrp  && orgGrp.srcs.includes(src))  { oL+=l; oR+=r; }
       }
@@ -743,11 +784,12 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
         const src = maps.src[row[0]];
         if (!allS && !filters.sources.has(src)) continue;
         const [l,r] = getLR(row); gL+=l; gR+=r;
+        if (data.rt_cols) { dL+=row[row.length-2]; coL+=row[row.length-1]; }
         if (paidGrp && paidGrp.srcs.includes(src)) { pL+=l; pR+=r; }
         if (orgGrp  && orgGrp.srcs.includes(src))  { oL+=l; oR+=r; }
       }
     }
-    return { l:gL,r:gR,l2r:gL>0?gR/gL*100:0, pL,pR,pL2r:pL>0?pR/pL*100:0, oL,oR,oL2r:oL>0?oR/oL*100:0 };
+    return { l:gL,r:gR,l2r:gL>0?gR/gL*100:0, pL,pR,pL2r:pL>0?pR/pL*100:0, oL,oR,oL2r:oL>0?oR/oL*100:0, dL, coL };
   }, [sm, univ, cm, maps, filters, paidGrp, orgGrp, hasCityFilter, getLR]);
 
   const trendData = useMemo(() => {
@@ -911,6 +953,17 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
       ce('div', { className:'section-title' }, 'Month-wise Trend — Leads, Retails & L2R%'),
       ce('div', { style:{height:260,position:'relative'} }, ce('canvas', { ref:chartRef }))
     ),
+    ce(SummaryBar, { kpis:[
+      ...(data.rt_cols ? [
+        { label:'DMS Retails', value:Nf(totals.dL),  accent:'#7C3AED' },
+        { label:'Call Out',    value:Nf(totals.coL), accent:'#0891B2' },
+      ] : []),
+      { label:'Paid %',    value:totals.l>0?Pf(totals.pL/totals.l*100):'—', accent:'#6366F1' },
+      { label:'Organic %', value:totals.l>0?Pf(totals.oL/totals.l*100):'—', accent:'#059669' },
+      { label:'Sources',   value:String(srcBreak.filter(s=>s.l>0).length),   accent:'#475569' },
+      { label:'Models',    value:String(heatData.top10.length),               accent:'#475569' },
+      { label:'States',    value:String(heatData.top15.length),               accent:'#475569' },
+    ]}),
     ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14} },
       ce('div', { style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8} },
         ce('div', { className:'section-title', style:{marginBottom:0} }, 'Source Summary'),
@@ -1082,7 +1135,48 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
     );
   }, [sm, csm, univ, maps, filters, getLR, hasCityF]);
 
-  return ce('div', {className:'fade-up'}, months.map(renderMonth));
+  const crossMonthTotals = useMemo(() => {
+    const allS = !filters.sources || filters.sources.size === 0;
+    const univF = makeUnivFilter(filters);
+    let gL=0, gR=0;
+    const mSet = new Set(months);
+    if (univF) {
+      for (const row of univ) {
+        if (!mSet.has(maps.lm[row[4]])) continue;
+        const src = maps.src[row[1]];
+        if (!allS && !filters.sources.has(src)) continue;
+        if (!univF(row, maps)) continue;
+        const [l,r] = getLR(row); gL+=l; gR+=r;
+      }
+    } else if (hasCityF && csm.length > 0) {
+      for (const row of csm) {
+        if (!mSet.has(maps.lm[row[2]])) continue;
+        const city = maps.city[row[0]];
+        if (!filters.cities.has(city)) continue;
+        const src = maps.src[row[1]];
+        if (!allS && !filters.sources.has(src)) continue;
+        const [l,r] = getLR(row); gL+=l; gR+=r;
+      }
+    } else {
+      for (const row of sm) {
+        if (!mSet.has(maps.lm[row[1]])) continue;
+        const src = maps.src[row[0]];
+        if (!allS && !filters.sources.has(src)) continue;
+        const [l,r] = getLR(row); gL+=l; gR+=r;
+      }
+    }
+    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0 };
+  }, [sm, csm, univ, maps, filters, getLR, hasCityF, months]);
+
+  return ce('div', {className:'fade-up'},
+    ce(SummaryBar, { kpis:[
+      { label:'Total Leads', value:Nf(crossMonthTotals.l),   accent:'#003087' },
+      { label:'Retails',     value:Nf(crossMonthTotals.r),   accent:'#E31837' },
+      { label:'L2R%',        value:Pf(crossMonthTotals.l2r), accent:'#D97706' },
+      { label:'Months',      value:String(months.length),    accent:'#6366F1' },
+    ]}),
+    months.map(renderMonth)
+  );
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -1543,7 +1637,43 @@ const StateSourceTab = React.memo(function StateSourceTab({ data, filters, month
     return { grand, hdr1, hdr2, bodyRows };
   }, [stm, univ, cm, cdm, csm_data, cdsm_data, maps, filters, expandedGrps, openZone, openState, openCity, srcGroups, hasCities, hasDealers, hasCitySrc, hasDealerSrc, cityIndexMap, getLR, viewerMode]);
 
+  const crossMonthTotals = useMemo(() => {
+    const allSrcF   = !filters.sources || filters.sources.size === 0;
+    const allStateF = !filters.states  || filters.states.size  === 0;
+    const univF = makeUnivFilter(filters);
+    const normSt = s => (s||'').split(/\s+/).map(w=>w?w[0].toUpperCase()+w.slice(1).toLowerCase():w).join(' ')||'Unknown';
+    const mSet = new Set(months);
+    let gL=0, gR=0;
+    if (univF) {
+      for (const row of univ) {
+        if (!mSet.has(maps.lm[row[4]])) continue;
+        const state = normSt(maps.st[row[2]]);
+        if (!allStateF && !filters.states.has(state)) continue;
+        const src = maps.src[row[1]];
+        if (!allSrcF && !filters.sources.has(src)) continue;
+        if (!univF(row, maps)) continue;
+        const [l,r] = getLR(row); gL+=l; gR+=r;
+      }
+    } else {
+      for (const row of stm) {
+        if (!mSet.has(maps.lm[row[2]])) continue;
+        const state = normSt(maps.st[row[0]]);
+        if (!allStateF && !filters.states.has(state)) continue;
+        const src = maps.src[row[1]];
+        if (!allSrcF && !filters.sources.has(src)) continue;
+        const [l,r] = getLR(row); gL+=l; gR+=r;
+      }
+    }
+    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0 };
+  }, [stm, univ, maps, filters, getLR, months]);
+
   return ce('div', { className:'fade-up' },
+    ce(SummaryBar, { kpis:[
+      { label:'Total Leads', value:Nf(crossMonthTotals.l),   accent:'#003087' },
+      { label:'Retails',     value:Nf(crossMonthTotals.r),   accent:'#E31837' },
+      { label:'L2R%',        value:Pf(crossMonthTotals.l2r), accent:'#D97706' },
+      { label:'Months',      value:String(months.length),    accent:'#6366F1' },
+    ]}),
     months.map(M => {
       const grid = renderMonthGrid(M);
       if (!grid || (grid.grand.l === 0 && grid.grand.r === 0)) return null;
@@ -1624,7 +1754,22 @@ const BuyingIntentTab = React.memo(function BuyingIntentTab({ data, filters, mon
   }, [renderAgg]);
 
   // Custom render: preserve bucket order (0–7 first, 90+ last) via noSort
+  const crossMonthTotals = useMemo(() => {
+    let gL=0, gR=0, mCount=0;
+    for (const M of months) {
+      const agg = renderAgg(M);
+      if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) continue;
+      gL += agg.grand.l; gR += agg.grand.r; mCount++;
+    }
+    return { l:gL, r:gR, l2r:gL>0?gR/gL*100:0, mCount };
+  }, [months, renderAgg]);
   return ce('div', { className:'fade-up' },
+    ce(SummaryBar, { kpis:[
+      { label:'Total Leads', value:Nf(crossMonthTotals.l),         accent:'#003087' },
+      { label:'Retails',     value:Nf(crossMonthTotals.r),         accent:'#E31837' },
+      { label:'L2R%',        value:Pf(crossMonthTotals.l2r),       accent:'#D97706' },
+      { label:'Months',      value:String(crossMonthTotals.mCount), accent:'#6366F1' },
+    ]}),
     months.map(M => {
       const agg = renderAgg(M);
       if (!agg || (agg.grand.l === 0 && agg.grand.r === 0)) return null;
@@ -2286,6 +2431,19 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     [...byMonth.keys()].sort((a,b) => monthOrder(b) - monthOrder(a)),
   [byMonth]);
 
+  const crossMonthTotals = useMemo(() => {
+    let same=0, cross=0;
+    for (const [,mMap] of byMonth) {
+      for (const [ei, piMap] of mMap) {
+        for (const [pi, cnt] of piMap) {
+          if (maps.mdl[pi] === maps.mdl[ei]) same += cnt; else cross += cnt;
+        }
+      }
+    }
+    const total = same + cross;
+    return { same, cross, total, disp: total > 0 ? cross/total*100 : 0 };
+  }, [byMonth, maps]);
+
   if (!disp || disp.length === 0) return ce('div', {
     style:{textAlign:'center',padding:60,color:'#94A3B8',fontSize:14}
   }, ce('div',{style:{fontSize:32,marginBottom:12}},'📊'), 'Dispersion data will appear after the next pipeline run.');
@@ -2477,6 +2635,12 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     ce('div', { style:{fontSize:12,color:'#64748B',marginBottom:14,padding:'8px 12px',background:'#F8FAFC',borderRadius:8,border:'1px solid #E2E8F0'} },
       '📌 Retail Attribution leads only. Shows % of customers who purchased a different model than enquired. Month & Model filters apply.'
     ),
+    ce(SummaryBar, { kpis:[
+      { label:'Total Retails', value:Nf(crossMonthTotals.total), accent:'#E31837' },
+      { label:'Same Sell',     value:Nf(crossMonthTotals.same),  accent:'#059669' },
+      { label:'Cross Sell',    value:Nf(crossMonthTotals.cross), accent:'#DC2626' },
+      { label:'Cross Sell%',   value:Pf(crossMonthTotals.disp), accent:'#D97706' },
+    ]}),
     ...sortedMonths.map(M => renderMonthGrid(M))
   );
 });
@@ -3049,6 +3213,20 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
     noData && ce('div', { style:{ textAlign:'center', padding:50, color:'#94A3B8', fontSize:14 } },
       'No data matches the current filters.'
     ),
+
+    /* ── Summary Bar ── */
+    !unsupported && !awaitingPipeline && !noData && grandTotals.gl > 0 &&
+    ce(SummaryBar, { kpis:[
+      { label:'Total Leads', value:Nf(grandTotals.gl), accent:'#003087' },
+      { label:'Retails',     value:Nf(grandTotals.gr), accent:'#E31837' },
+      { label:'L2R%',        value:Pf(grandTotals.gl>0?grandTotals.gr/grandTotals.gl*100:0), accent:'#D97706' },
+      ...(data.rt_cols ? [
+        { label:'DMS',      value:Nf(Object.values(grandTotals.colVals).reduce((s,v)=>s+(v[2]||0),0)), accent:'#7C3AED' },
+        { label:'Call Out', value:Nf(Object.values(grandTotals.colVals).reduce((s,v)=>s+(v[3]||0),0)), accent:'#0891B2' },
+      ] : []),
+      { label:'Rows (shown)', value:String(sortedRows.length),  accent:'#475569' },
+      { label:'Columns',      value:String(orderedCols.length), accent:'#475569' },
+    ]}),
 
     /* ── Pivot table ── */
     !unsupported && !awaitingPipeline && !noData &&
