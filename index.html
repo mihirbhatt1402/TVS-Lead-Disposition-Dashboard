@@ -164,7 +164,7 @@ tr.dealer-row:hover td{background:#FEF3C7}
    CONFIG
    ════════════════════════════════════════════════════════════════════ */
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwzgnXPbCbunBblnMUrqdWg3eY9qsIwCrFxuYuvYSpxtH22l4Cs32vdkOkDhUn-qwM64w/exec';
-const DATA_URL = './tvs_payload.json';
+const DATA_URL = './tvs_payload.json.gz';
 const CACHE_KEY = 'tvs_ldr_v2_cache';
 
 /* ════════════════════════════════════════════════════════════════════
@@ -290,7 +290,11 @@ async function fetchData() {
   try { resp = await fetch(DATA_URL, { cache: 'no-store' }); }
   catch (e) { throw new Error('Network error: ' + e.message); }
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const text = await resp.text();
+  const ds = new DecompressionStream('gzip');
+  const reader = resp.body.pipeThrough(ds).getReader();
+  const chunks = [];
+  while (true) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); }
+  const text = await new Blob(chunks).text();
   let parsed;
   try { parsed = JSON.parse(text); }
   catch (e) { throw new Error('JSON parse failed: ' + text.slice(0, 80)); }

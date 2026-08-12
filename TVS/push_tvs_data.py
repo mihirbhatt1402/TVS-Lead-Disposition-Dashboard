@@ -1700,13 +1700,14 @@ with open(_payload_path, 'w', encoding='utf-8') as _f:
     json.dump(payload, _f)
 print(f"Payload saved to {_payload_path}", flush=True)
 
-# Save payload as static file for GitHub Pages hosting (bypasses Apps Script GET redirect)
+# Save gzip-compressed payload for GitHub Pages hosting (bypasses Apps Script GET redirect)
+# Compressed keeps the file ~6 MB instead of ~50+ MB, well under GitHub's 100 MB limit.
 _data_dir = Path(__file__).parent.parent / 'data'
 _data_dir.mkdir(exist_ok=True)
-_static_path = _data_dir / 'tvs_payload.json'
-with open(_static_path, 'w', encoding='utf-8') as _f:
+_static_path = _data_dir / 'tvs_payload.json.gz'
+with gzip.open(_static_path, 'wt', encoding='utf-8', compresslevel=6) as _f:
     json.dump(payload, _f, separators=(',', ':'))
-print(f"Static payload saved to {_static_path}", flush=True)
+print(f"Static payload saved to {_static_path} ({_static_path.stat().st_size/1024:.0f} KB)", flush=True)
 
 # Compress the payload: gzip + base64 → ~5-8 MB instead of ~50 MB.
 # Apps Script doPost decompresses the "gz" envelope before processing.
