@@ -2393,14 +2393,15 @@ const CitySourceTab = React.memo(function CitySourceTab({ data, filters, months,
   }), []);
 
   // csm format: [city_idx, src_idx, lm_idx, L, R_all, R_dms, R_co]
-  const renderAgg = useCallback((M) => {
+  // Aggregate across all selected months — no per-month breakdown rendered
+  const computeAgg = useCallback((monthSet) => {
     const allS  = !filters.sources || filters.sources.size === 0;
     const allC  = !filters.cities  || filters.cities.size  === 0;
     const allSt = !filters.states  || filters.states.size  === 0;
     const bySrc=new Map(), byCity=new Map(), byCitySrc=new Map();
     let gL=0,gR=0;
     for (const row of csm) {
-      if (maps.lm[row[2]] !== M) continue;
+      if (!monthSet.has(maps.lm[row[2]])) continue;
       const city=maps.city[row[0]], src=maps.src[row[1]];
       if (!allC && !filters.cities.has(city)) continue;
       if (!allS && !filters.sources.has(src)) continue;
@@ -2427,28 +2428,33 @@ const CitySourceTab = React.memo(function CitySourceTab({ data, filters, months,
     return {grand:fin(gL,gR),grandSrc,dimAggs};
   }, [csm, maps, filters, getLR]);
 
+  const summaryAgg = useMemo(() => computeAgg(new Set(months)), [computeAgg, months]);
+
   const exportAll = useCallback(() => {
-    const mSet=new Set(months);
-    const agg=aggAll(csm,maps,mSet,filters.sources,
-      (r,m)=>m.city[r[0]],(r,m)=>m.src[r[1]],(r,m)=>m.lm[r[2]],
-      null,getLR);
-    if (!agg||agg.grand.l===0) return;
+    if (!summaryAgg || summaryAgg.grand.l===0) return;
     const hdr=['City','Total Leads','Total Retail','Contrib%','L2R%',...allSrcs.flatMap(s=>[s+' Leads',s+' Retail',s+' L2R%'])];
     const rows=[hdr];
-    for (const [city,da] of Object.entries(agg.dimAggs)) {
-      const row=[city,da.total.l,da.total.r,agg.grand.l>0?+(da.total.l/agg.grand.l*100).toFixed(1):0,+da.total.l2r.toFixed(1)];
+    for (const [city,da] of Object.entries(summaryAgg.dimAggs)) {
+      const row=[city,da.total.l,da.total.r,summaryAgg.grand.l>0?+(da.total.l/summaryAgg.grand.l*100).toFixed(1):0,+da.total.l2r.toFixed(1)];
       for (const s of allSrcs) { const v=da.src[s]||EMPTY; row.push(v.l,v.r,+v.l2r.toFixed(1)); }
       rows.push(row);
     }
-    rows.push(['∑ Grand Total',agg.grand.l,agg.grand.r,100,+agg.grand.l2r.toFixed(1),...allSrcs.flatMap(s=>{const v=agg.grandSrc[s]||EMPTY;return[v.l,v.r,+v.l2r.toFixed(1)];})]);
+    rows.push(['∑ Grand Total',summaryAgg.grand.l,summaryAgg.grand.r,100,+summaryAgg.grand.l2r.toFixed(1),...allSrcs.flatMap(s=>{const v=summaryAgg.grandSrc[s]||EMPTY;return[v.l,v.r,+v.l2r.toFixed(1)];})]);
     exportXlsx({'City × Source':rows},'TVS_CitySource_All');
-  }, [csm,maps,filters,months,getLR,allSrcs]);
+  }, [summaryAgg, allSrcs]);
 
-  return ce(MonthlyGrids, {
-    title:'City × Source', months, renderAgg, srcGroups,
-    dimLabel:'City', expandedGrps, onToggleGrp, expandedRows, onToggleRow,
-    noPrefix:false, viewerMode, noGroupHeaders:false
-  });
+  if (!summaryAgg) return ce('div',{style:{textAlign:'center',padding:50,color:'#94A3B8',fontSize:14}},
+    'No data matches the current filters.');
+
+  return ce('div', { className:'fade-up' },
+    ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+      ce('div', { style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10} },
+        ce('div', { className:'section-title', style:{marginBottom:0} }, 'City × Source'),
+        ce(ExportBtn, { onClick: exportAll })
+      ),
+      ce(DimGrid, { agg:summaryAgg, srcGroups, dimLabel:'City', expandedGrps, onToggleGrp, expandedRows, onToggleRow, viewerMode })
+    )
+  );
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -2539,13 +2545,9 @@ const CityModelTab = React.memo(function CityModelTab({ data, filters, months, R
     const a=buildAgg(new Set(months)); return a.grand.l>0?a:null;
   }, [buildAgg, months, cxm]);
 
-  const monthlyAggs = useMemo(() =>
-    months.map(M => ({ M, agg: (() => { if(cxm.length===0) return null; const a=buildAgg(new Set([M])); return a.grand.l>0?a:null; })() })),
-  [buildAgg, months, cxm]);
-
-  const exportAgg = useCallback((agg, label) => {
-    if (!agg) return;
-    const {colKeys,rowKeys,rowAggs,grand}=agg;
+  const exportSummary = useCallback(() => {
+    if (!summaryAgg) return;
+    const {colKeys,rowKeys,rowAggs,grand}=summaryAgg;
     const hdr=['City','Total Leads','Total Retail','Contrib%','L2R%',...colKeys.flatMap(ck=>[ck+' Leads',ck+' Retail',ck+' L2R%'])];
     const rows=[hdr];
     for (const rk of rowKeys) {
@@ -2557,23 +2559,19 @@ const CityModelTab = React.memo(function CityModelTab({ data, filters, months, R
     const gtRow=['∑ Grand Total',grand.l,grand.r,100,+grand.l2r.toFixed(1)];
     for (const ck of colKeys) { let tL=0,tR=0; for(const da of Object.values(rowAggs)){const ca=da.colAggs[ck]||{l:0,r:0};tL+=ca.l;tR+=ca.r;} const tL2r=tL>0?tR/tL*100:0; gtRow.push(tL,tR,+tL2r.toFixed(1)); }
     rows.push(gtRow);
-    exportXlsx({[label]:rows},'TVS_CityModel_'+(label==='Summary'?'All':label.replace("'","")));
-  }, []);
+    exportXlsx({'City × Model':rows},'TVS_CityModel_All');
+  }, [summaryAgg]);
 
   if (cxm.length===0) return ce('div',{style:{textAlign:'center',padding:50,color:'#94A3B8',fontSize:14}},
     '📦 City × Model data will be available after the next pipeline run.');
 
+  if (!summaryAgg) return ce('div',{style:{textAlign:'center',padding:50,color:'#94A3B8',fontSize:14}},
+    'No data matches the current filters.');
+
   return ce('div', { className:'fade-up' },
-    summaryAgg && ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
+    ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
       ce(CrossTabGrid, { agg:summaryAgg, rowLabel:'City', colLabel:'Model', rtCols:data.rt_cols,
-        title:'∑ All Months — City × Model Summary',
-        onExport:()=>exportAgg(summaryAgg,'Summary') })
-    ),
-    monthlyAggs.map(({M,agg}) => agg ?
-      ce('div', { key:M, className:'card', style:{padding:'16px 18px',marginBottom:14} },
-        ce(CrossTabGrid, { agg, rowLabel:'City', colLabel:'Model', rtCols:data.rt_cols,
-          title:'City × Model — '+M, onExport:()=>exportAgg(agg,M) })
-      ) : null
+        title:'City × Model', onExport: exportSummary })
     )
   );
 });
