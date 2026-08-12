@@ -30,6 +30,7 @@ jobs:
           mkdir -p _site
           cp "HMSI_RW_Dashboard_v4.02.html" _site/index.html
           cp _site/index.html _site/404.html
+          [ -f data/tvs_payload.json ] && cp data/tvs_payload.json _site/tvs_payload.json || echo "TVS data not yet available, skipping"
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

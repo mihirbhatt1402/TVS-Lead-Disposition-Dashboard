@@ -13,7 +13,8 @@ jobs:
   push-data:
     runs-on: ubuntu-latest
     permissions:
-      contents: write         # needed for the keep-alive commit
+      contents: write         # needed for the keep-alive commit and data file
+      actions: write          # needed to trigger deploy workflow
 
     steps:
       - name: Checkout repository
@@ -36,6 +37,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "Last run: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > last_run.txt
           git add last_run.txt
+          git add data/tvs_payload.json
           git commit -m "chore: pipeline run $(date -u '+%Y-%m-%d') [skip ci]"
           git pull --rebase
           git push
+
+      - name: Trigger Pages redeploy
+        run: gh workflow run deploy.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

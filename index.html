@@ -164,6 +164,7 @@ tr.dealer-row:hover td{background:#FEF3C7}
    CONFIG
    ════════════════════════════════════════════════════════════════════ */
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwzgnXPbCbunBblnMUrqdWg3eY9qsIwCrFxuYuvYSpxtH22l4Cs32vdkOkDhUn-qwM64w/exec';
+const DATA_URL = 'https://mihirbhatt1402.github.io/Honda-Motorcycles-and-Scooters-Analytics/tvs_payload.json';
 const CACHE_KEY = 'tvs_ldr_v2_cache';
 
 /* ════════════════════════════════════════════════════════════════════
@@ -286,7 +287,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, useTransition } = Rea
    ════════════════════════════════════════════════════════════════════ */
 async function fetchData() {
   let resp;
-  try { resp = await fetch(APPS_SCRIPT_URL, { cache: 'no-store' }); }
+  try { resp = await fetch(DATA_URL, { cache: 'no-store' }); }
   catch (e) { throw new Error('Network error: ' + e.message); }
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   const text = await resp.text();

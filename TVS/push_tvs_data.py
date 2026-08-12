@@ -1700,6 +1700,14 @@ with open(_payload_path, 'w', encoding='utf-8') as _f:
     json.dump(payload, _f)
 print(f"Payload saved to {_payload_path}", flush=True)
 
+# Save payload as static file for GitHub Pages hosting (bypasses Apps Script GET redirect)
+_data_dir = Path(__file__).parent.parent / 'data'
+_data_dir.mkdir(exist_ok=True)
+_static_path = _data_dir / 'tvs_payload.json'
+with open(_static_path, 'w', encoding='utf-8') as _f:
+    json.dump(payload, _f, separators=(',', ':'))
+print(f"Static payload saved to {_static_path}", flush=True)
+
 # Compress the payload: gzip + base64 → ~5-8 MB instead of ~50 MB.
 # Apps Script doPost decompresses the "gz" envelope before processing.
 _raw_bytes  = json_str.encode('utf-8')
