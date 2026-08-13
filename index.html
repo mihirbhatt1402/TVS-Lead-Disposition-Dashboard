@@ -2273,8 +2273,8 @@ function buildCrossAgg(table, maps, rowMapKey, colMapKey, lmMapKey, rowPos, colP
     const cLabel = maps[colMapKey][row[colPos]];
     if (!allCol && !colFilter.has(cLabel)) continue;
     const [l,r] = getLR(row);
-    const dm = rtCols ? (row[lmPos+2]||0) : 0;
-    const co = rtCols ? (row[lmPos+3]||0) : 0;
+    const dm = rtCols ? (row[row.length-2]||0) : 0;
+    const co = rtCols ? (row[row.length-1]||0) : 0;
     gL+=l; gR+=r; gDm+=dm; gCo+=co;
     allCols.add(cLabel);
     colTotals[cLabel]=(colTotals[cLabel]||0)+l;
