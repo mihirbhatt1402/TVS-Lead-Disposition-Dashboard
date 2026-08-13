@@ -1011,7 +1011,7 @@ def fetch_sheet_via_proxy(file_id, label, tab_name=None):
         data = None
         for attempt in range(3):
             try:
-                data = proxy_get('getSheetData', extra, timeout=120)
+                data = proxy_get('getSheetData', extra, timeout=45)
                 if 'error' in data:
                     raise RuntimeError(f"Apps Script error: {data['error']}")
                 break  # success
@@ -1079,7 +1079,7 @@ def fetch_retails():
     while True:
         for attempt in range(3):
             try:
-                data = proxy_get('getCurrentRetails', {'page': page, 'pageSize': 25000}, timeout=120)
+                data = proxy_get('getCurrentRetails', {'page': page, 'pageSize': 25000}, timeout=45)
                 break
             except Exception as e:
                 if attempt < 2:
@@ -1672,8 +1672,8 @@ for sheet in LEAD_SHEETS:
             break  # success
         except Exception as e:
             if _sheet_attempt < 2:
-                print(f"  WARNING: {sheet['label']} attempt {_sheet_attempt+1} failed: {e}; retrying in 60s…", flush=True)
-                time.sleep(60)
+                print(f"  WARNING: {sheet['label']} attempt {_sheet_attempt+1} failed: {e}; retrying in 30s…", flush=True)
+                time.sleep(30)
             else:
                 print(f"  ERROR: Could not load {sheet['label']} after 3 attempts: {e}", flush=True)
 
