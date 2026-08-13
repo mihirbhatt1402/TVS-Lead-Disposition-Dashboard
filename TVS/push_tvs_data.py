@@ -1008,19 +1008,22 @@ def fetch_sheet_via_proxy(file_id, label, tab_name=None):
         extra['tabName'] = tab_name
     while True:
         extra['page'] = page
+        data = None
         for attempt in range(3):
             try:
                 data = proxy_get('getSheetData', extra, timeout=120)
-                break
+                if 'error' in data:
+                    raise RuntimeError(f"Apps Script error: {data['error']}")
+                break  # success
             except Exception as e:
                 if attempt < 2:
                     print(f"  {label} page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
                     time.sleep(30)
                 else:
                     traceback.print_exc()
-                    raise RuntimeError(f"getSheetData {label} page {page} failed: {e}")
-        if 'error' in data:
-            raise RuntimeError(f"getSheetData error [{label}]: {data['error']}")
+                    raise RuntimeError(f"getSheetData {label} page {page} failed after 3 attempts: {e}")
+        if data is None:
+            raise RuntimeError(f"getSheetData {label} page {page}: no data returned")
         if headers is None:
             headers = data['headers']
         rows = data.get('rows', [])
@@ -1642,21 +1645,37 @@ print(f"\n[4/5] Loading live lead sheets ({ONLINE_START}+)…", flush=True)
 lead_dfs  = []
 rtype_map = {}
 for sheet in LEAD_SHEETS:
-    try:
-        raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet.get('tab'))
-        raw.columns = [c.strip() for c in raw.columns]
-        rtype_map.update(extract_rtype_map(raw))
-        std = standardize_leads(raw)
-        _min = sheet.get('min_mo', ONLINE_START_ORDER)
-        _max = sheet.get('max_mo')
-        std = std[std['LeadMonth'].apply(month_order) >= _min]
-        if _max is not None:
-            std = std[std['LeadMonth'].apply(month_order) <= _max]
-        lead_dfs.append(std)
-        _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
-        print(f"  {sheet['label']}: {len(std):,} rows [{_range}]", flush=True)
-    except Exception as e:
-        print(f"  WARNING: Could not load {sheet['label']}: {e}", flush=True)
+    for _sheet_attempt in range(3):
+        try:
+            raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet.get('tab'))
+            raw.columns = [c.strip() for c in raw.columns]
+            print(f"  {sheet['label']} columns: {list(raw.columns)}", flush=True)
+            rtype_map.update(extract_rtype_map(raw))
+            std_all = standardize_leads(raw)
+            _min = sheet.get('min_mo', ONLINE_START_ORDER)
+            _max = sheet.get('max_mo')
+            # Diagnostic: show LeadMonth distribution before filter
+            _lm_counts = std_all['LeadMonth'].value_counts().head(10).to_dict() if 'LeadMonth' in std_all.columns else {}
+            print(f"  {sheet['label']} pre-filter LeadMonth top-10: {_lm_counts}", flush=True)
+            std = std_all[std_all['LeadMonth'].apply(month_order) >= _min]
+            if _max is not None:
+                std = std[std['LeadMonth'].apply(month_order) <= _max]
+            # Diagnostic: log filtered-out rows
+            _n_filtered = len(std_all) - len(std)
+            if _n_filtered > 0:
+                _filtered = std_all[std_all['LeadMonth'].apply(month_order) < _min]
+                _filt_counts = _filtered['LeadMonth'].value_counts().head(10).to_dict() if 'LeadMonth' in _filtered.columns else {}
+                print(f"  {sheet['label']}: {_n_filtered:,} rows filtered (LeadMonth < {_min}): {_filt_counts}", flush=True)
+            lead_dfs.append(std)
+            _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
+            print(f"  {sheet['label']}: {len(std):,} rows [{_range}]", flush=True)
+            break  # success
+        except Exception as e:
+            if _sheet_attempt < 2:
+                print(f"  WARNING: {sheet['label']} attempt {_sheet_attempt+1} failed: {e}; retrying in 60s…", flush=True)
+                time.sleep(60)
+            else:
+                print(f"  ERROR: Could not load {sheet['label']} after 3 attempts: {e}", flush=True)
 
 # Override rtype from embedded sheet columns (DMS_Retail_Month / Retail By).
 # Only override when Retail By is non-empty AND retail month is Jul'26+ (ONLINE_START).
