@@ -1655,6 +1655,21 @@ for sheet in LEAD_SHEETS:
             raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet.get('tab'))
             raw.columns = [c.strip() for c in raw.columns]
             print(f"  {sheet['label']} columns: {list(raw.columns)}", flush=True)
+            if 'Lead_Month' in raw.columns:
+                _raw_blank = raw['Lead_Month'].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN'])
+                _n_raw_blank = int(_raw_blank.sum())
+                if _n_raw_blank > 0:
+                    _date_col = 'Date' if 'Date' in raw.columns else None
+                    _id_col   = 'opty_id' if 'opty_id' in raw.columns else None
+                    _samp = raw[_raw_blank].head(5)
+                    _date_samp = _samp[_date_col].tolist() if _date_col else 'N/A'
+                    _id_samp   = _samp[_id_col].tolist()  if _id_col   else 'N/A'
+                    _n_date_blank = int(raw.loc[_raw_blank, _date_col].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN']).sum()) if _date_col else _n_raw_blank
+                    _n_id_blank   = int(raw.loc[_raw_blank, _id_col  ].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN']).sum()) if _id_col   else _n_raw_blank
+                    print(f"  {sheet['label']} raw blank Lead_Month: {_n_raw_blank:,} rows; "
+                          f"of those Date-blank={_n_date_blank:,} opty_id-blank={_n_id_blank:,}", flush=True)
+                    print(f"  {sheet['label']} blank-LM sample Date={_date_samp}", flush=True)
+                    print(f"  {sheet['label']} blank-LM sample opty_id={_id_samp}", flush=True)
             rtype_map.update(extract_rtype_map(raw))
             std_all = standardize_leads(raw)
             _min = sheet.get('min_mo', ONLINE_START_ORDER)
