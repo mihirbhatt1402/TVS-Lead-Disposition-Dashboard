@@ -1066,6 +1066,11 @@ def standardize_leads(raw_df):
         empty_lm = df.get('LeadMonth', pd.Series(dtype=str)).str.strip() == ''
         if empty_lm.any():
             df.loc[empty_lm, 'LeadMonth'] = df.loc[empty_lm, 'CreateDate'].apply(parse_ym)
+    if 'SorceLeadId' in df.columns:
+        still_empty = df.get('LeadMonth', pd.Series(dtype=str)).str.strip() == ''
+        if still_empty.any():
+            df.loc[still_empty, 'LeadMonth'] = df.loc[still_empty, 'SorceLeadId'].apply(
+                lambda v: lid_to_month(to_id(v)))
     keep = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
             'State','Zone','BuyingDays','CityName','DealerName']
     return df[[c for c in keep if c in df.columns]].copy()
