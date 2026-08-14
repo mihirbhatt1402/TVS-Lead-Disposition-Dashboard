@@ -1654,41 +1654,79 @@ for sheet in LEAD_SHEETS:
         try:
             raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet.get('tab'))
             raw.columns = [c.strip() for c in raw.columns]
-            print(f"  {sheet['label']} columns: {list(raw.columns)}", flush=True)
+            _lbl = sheet['label']
+
+            # ── STAGE 1: rows fetched from Google Sheet ────────────────────────
+            print(f"\n  [{_lbl}] STAGE 1 — fetched from sheet: {len(raw):,} rows", flush=True)
+            print(f"  [{_lbl}] columns: {list(raw.columns)}", flush=True)
+
+            # ── STAGE 2: DataFrame created (same as fetched; confirm) ──────────
+            print(f"  [{_lbl}] STAGE 2 — DataFrame rows: {len(raw):,}", flush=True)
+
+            # ── STAGE 3: raw Lead_Month distribution BEFORE standardize_leads ──
             if 'Lead_Month' in raw.columns:
-                _raw_blank = raw['Lead_Month'].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN'])
-                _n_raw_blank = int(_raw_blank.sum())
-                if _n_raw_blank > 0:
-                    _date_col = 'Date' if 'Date' in raw.columns else None
-                    _id_col   = 'opty_id' if 'opty_id' in raw.columns else None
-                    _samp = raw[_raw_blank].head(5)
-                    _date_samp = _samp[_date_col].tolist() if _date_col else 'N/A'
-                    _id_samp   = _samp[_id_col].tolist()  if _id_col   else 'N/A'
-                    _n_date_blank = int(raw.loc[_raw_blank, _date_col].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN']).sum()) if _date_col else _n_raw_blank
-                    _n_id_blank   = int(raw.loc[_raw_blank, _id_col  ].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN']).sum()) if _id_col   else _n_raw_blank
-                    print(f"  {sheet['label']} raw blank Lead_Month: {_n_raw_blank:,} rows; "
-                          f"of those Date-blank={_n_date_blank:,} opty_id-blank={_n_id_blank:,}", flush=True)
-                    print(f"  {sheet['label']} blank-LM sample Date={_date_samp}", flush=True)
-                    print(f"  {sheet['label']} blank-LM sample opty_id={_id_samp}", flush=True)
+                _raw_lm_vals = raw['Lead_Month'].astype(str).str.strip()
+                _raw_lm_full = _raw_lm_vals.value_counts(dropna=False).to_dict()
+                print(f"  [{_lbl}] STAGE 3 — raw Lead_Month full distribution:", flush=True)
+                for _lm_v, _lm_c in sorted(_raw_lm_full.items(), key=lambda x: -x[1]):
+                    print(f"    {_lm_v!r:25s}: {_lm_c:,}", flush=True)
+            else:
+                print(f"  [{_lbl}] STAGE 3 — Lead_Month column NOT FOUND in raw sheet", flush=True)
+
             rtype_map.update(extract_rtype_map(raw))
             std_all = standardize_leads(raw)
+
+            # ── STAGE 4: after standardize_leads (no rows dropped here) ────────
+            print(f"  [{_lbl}] STAGE 4 — after standardize_leads: {len(std_all):,} rows", flush=True)
+            if len(std_all) != len(raw):
+                print(f"  [{_lbl}] WARNING: standardize_leads changed row count "
+                      f"({len(raw):,} → {len(std_all):,})", flush=True)
+
+            # ── STAGE 5: LeadMonth distribution after standardize_leads ────────
+            if 'LeadMonth' in std_all.columns:
+                _std_lm_full = std_all['LeadMonth'].value_counts(dropna=False).to_dict()
+                print(f"  [{_lbl}] STAGE 5 — post-standardize LeadMonth full distribution:", flush=True)
+                for _lm_v, _lm_c in sorted(_std_lm_full.items(), key=lambda x: -x[1]):
+                    _mo = month_order(_lm_v)
+                    print(f"    {_lm_v!r:25s}: {_lm_c:,}  (month_order={_mo})", flush=True)
+            else:
+                print(f"  [{_lbl}] STAGE 5 — LeadMonth column NOT present after standardize", flush=True)
+
             _min = sheet.get('min_mo', ONLINE_START_ORDER)
             _max = sheet.get('max_mo')
-            # Diagnostic: show LeadMonth distribution before filter
-            _lm_counts = std_all['LeadMonth'].value_counts().head(10).to_dict() if 'LeadMonth' in std_all.columns else {}
-            print(f"  {sheet['label']} pre-filter LeadMonth top-10: {_lm_counts}", flush=True)
+
+            # ── STAGE 6: month filter (min_mo / max_mo) ─────────────────────────
             std = std_all[std_all['LeadMonth'].apply(month_order) >= _min]
             if _max is not None:
                 std = std[std['LeadMonth'].apply(month_order) <= _max]
-            # Diagnostic: log filtered-out rows
-            _n_filtered = len(std_all) - len(std)
-            if _n_filtered > 0:
-                _filtered = std_all[std_all['LeadMonth'].apply(month_order) < _min]
-                _filt_counts = _filtered['LeadMonth'].value_counts().head(10).to_dict() if 'LeadMonth' in _filtered.columns else {}
-                print(f"  {sheet['label']}: {_n_filtered:,} rows filtered (LeadMonth < {_min}): {_filt_counts}", flush=True)
+
+            _n_dropped = len(std_all) - len(std)
+            print(f"  [{_lbl}] STAGE 6 — after month filter (min_mo={_min}, max_mo={_max}): "
+                  f"{len(std):,} rows  ({_n_dropped:,} dropped)", flush=True)
+
+            if _n_dropped > 0:
+                # Full breakdown of every dropped month
+                _dropped_df = std_all[std_all['LeadMonth'].apply(month_order) < _min]
+                if _max is not None:
+                    _over_max = std_all[std_all['LeadMonth'].apply(month_order) > _max]
+                    _dropped_df = pd.concat([_dropped_df, _over_max], ignore_index=True)
+                _drop_by_month = _dropped_df['LeadMonth'].value_counts(dropna=False).to_dict()
+                print(f"  [{_lbl}] STAGE 6 — dropped rows by LeadMonth:", flush=True)
+                for _lm_v, _lm_c in sorted(_drop_by_month.items(), key=lambda x: -x[1]):
+                    _mo = month_order(_lm_v)
+                    _reason = 'blank/unresolved' if _mo == 0 else f'month_order={_mo} < min_mo={_min}'
+                    print(f"    {_lm_v!r:25s}: {_lm_c:,}  ({_reason})", flush=True)
+
+                # Sample of up to 100 dropped rows with full key columns
+                _samp_cols = [c for c in ['LeadMonth','Date','CreateDate','SorceLeadId',
+                                           'Source','ModelName','State'] if c in _dropped_df.columns]
+                _sample100 = _dropped_df[_samp_cols].head(100)
+                print(f"  [{_lbl}] STAGE 6 — sample of dropped rows (up to 100):", flush=True)
+                print(_sample100.to_string(index=False), flush=True)
+
             lead_dfs.append(std)
             _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
-            print(f"  {sheet['label']}: {len(std):,} rows [{_range}]", flush=True)
+            print(f"  [{_lbl}] STAGE 6 FINAL: {len(std):,} rows kept [{_range}]\n", flush=True)
             break  # success
         except Exception as e:
             if _sheet_attempt < 2:
@@ -1713,19 +1751,36 @@ for lid, info in rtype_map.items():
 # ── Step 5: Merge, gap-fill, aggregate, push ──────────────────────────────────
 print("\n[5/5] Merging leads, gap-fill, aggregating…", flush=True)
 online_leads = pd.concat(lead_dfs, ignore_index=True) if lead_dfs else pd.DataFrame()
-parts        = [df for df in [hist_leads, online_leads] if len(df) > 0]
-all_leads    = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
-print(f"  Historical: {len(hist_leads):,}  Online: {len(online_leads):,}  Combined: {len(all_leads):,}", flush=True)
+
+# ── STAGE 7: online sheets after all month filters ────────────────────────────
+print(f"\n  STAGE 7 — online_leads (all live sheets, post-filter): {len(online_leads):,} rows", flush=True)
+if 'LeadMonth' in online_leads.columns:
+    _ol_lm = online_leads['LeadMonth'].value_counts(dropna=False).to_dict()
+    for _lm_v, _lm_c in sorted(_ol_lm.items(), key=lambda x: -x[1]):
+        print(f"    {_lm_v!r:25s}: {_lm_c:,}", flush=True)
+
+parts     = [df for df in [hist_leads, online_leads] if len(df) > 0]
+all_leads = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+# ── STAGE 8: after merge with historical ─────────────────────────────────────
+print(f"  STAGE 8 — after merge: hist={len(hist_leads):,}  online={len(online_leads):,}  combined={len(all_leads):,}", flush=True)
 
 # Deduplicate: same opty_id can appear in both hist Excel and online sheets.
 # keep='last' → online data wins for overlapping lids (more up-to-date).
 if len(all_leads) > 0 and 'SorceLeadId' in all_leads.columns:
-    before = len(all_leads)
+    _before_dedup = len(all_leads)
     all_leads = all_leads.drop_duplicates(subset=['SorceLeadId'], keep='last')
-    if before > len(all_leads):
-        print(f"  Deduplicated {before - len(all_leads):,} duplicate lead rows (hist/online overlap)", flush=True)
+    _dedup_dropped = _before_dedup - len(all_leads)
+    print(f"  STAGE 8 — deduplication by SorceLeadId: removed {_dedup_dropped:,} rows "
+          f"(hist/online overlap), kept {len(all_leads):,}", flush=True)
 
-print(f"  Unique leads: {len(all_leads):,}", flush=True)
+# ── STAGE 9: unique leads going into aggregation ─────────────────────────────
+print(f"  STAGE 9 — unique leads for aggregation: {len(all_leads):,}", flush=True)
+if 'LeadMonth' in all_leads.columns:
+    _final_lm = all_leads['LeadMonth'].value_counts(dropna=False).to_dict()
+    print(f"  STAGE 9 — LeadMonth distribution in all_leads:", flush=True)
+    for _lm_v, _lm_c in sorted(_final_lm.items(), key=lambda x: -x[1]):
+        print(f"    {_lm_v!r:25s}: {_lm_c:,}", flush=True)
 
 # Gap-fill is disabled: only real CRM leads appear in the dashboard.
 # Retails without a matching CRM lead are counted only when a real lead record exists.
