@@ -57,7 +57,7 @@ LEAD_SHEETS = [
         'id':     '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',
         'tab':    'TVS',
         'label':  'Aug26+-LeadMaster',
-        'min_mo': 2608,   # Aug'26 onwards
+        'min_mo': 2607,   # Jul'26 onwards (Jul'26 rows dedup against Jul'26-LeadMaster at STAGE 8)
         'max_mo': None,   # no upper bound
     },
 ]
@@ -1633,13 +1633,48 @@ except Exception as _retail_err:
     print(f"\nFATAL: live retail fetch failed — {_retail_err}", file=sys.stderr, flush=True)
     sys.exit(1)
 online_rmap, unexpected_call_types = build_retail_map(retail_df)
-_online_added = _online_skipped = 0
+
+# Three-way merge: prioritised by data quality.
+#
+# CASE A — Jul'26+ (rm >= ONLINE_START):
+#   Live retail sheet is fully authoritative (performanceMonth + Call Type).
+#   Overwrites any hist_cache entry for the same lid.
+#
+# CASE B — Pre-Jul'26, lid ALREADY in hist_cache:
+#   hist_cache DMS/Call Out is authoritative (from Excel "DMS/Call Out" column;
+#   the live sheet's "Call Type" / Purchased-From logic is known to mislabel
+#   many historical DMS entries as Call Out, so we do NOT adopt it).
+#   However the live performanceMonth is more accurate than the Excel
+#   DMS_Retail_Month — update ONLY the retail month, keep the rtype.
+#   Guard: only update if the new rm is a valid month >= LEAD_MASTER_START
+#   so we never blank-out or back-date a known retail.
+#
+# CASE C — Pre-Jul'26, lid NOT in hist_cache:
+#   New retail that appeared after the Excel export (common for May–Jun'26 leads
+#   that retailed after the Excel cut date).  Add it fully from the live sheet.
+#
+_added_jul26  = 0   # Case A
+_updated_rm   = 0   # Case B — rm updated
+_kept_rm      = 0   # Case B — rm kept (live rm invalid / pre-scope)
+_added_new    = 0   # Case C
 for lid, info in online_rmap.items():
-    if month_order(info.get('rm', '')) >= ONLINE_START_ORDER:
-        retail_map[lid] = info   # Jul'26+ entries: live is authoritative
-        _online_added += 1
+    live_rm       = info.get('rm', '')
+    live_rm_order = month_order(live_rm)
+    if live_rm_order >= ONLINE_START_ORDER:
+        # Case A
+        retail_map[lid] = info
+        _added_jul26 += 1
+    elif lid in retail_map:
+        # Case B — keep rtype, update rm if valid
+        if live_rm and live_rm_order >= LEAD_MASTER_START_ORDER:
+            retail_map[lid] = {**retail_map[lid], 'rm': live_rm}
+            _updated_rm += 1
+        else:
+            _kept_rm += 1
     else:
-        _online_skipped += 1     # pre-Jul'26 entries: hist_cache is authoritative, keep it
+        # Case C — new retail not in hist_cache
+        retail_map[lid] = info
+        _added_new += 1
 
 if unexpected_call_types:
     print(f"  WARNING: {len(unexpected_call_types)} unexpected 'Call Type' values "
@@ -1650,8 +1685,10 @@ if unexpected_call_types:
         print(f"    ... and {len(unexpected_call_types)-20} more", flush=True)
 
 print(f"  Live retail: {len(online_rmap):,} total  "
-      f"| {_online_added:,} added/updated (Jul'26+)  "
-      f"| {_online_skipped:,} skipped (hist authoritative for pre-{ONLINE_START})", flush=True)
+      f"| {_added_jul26:,} added/replaced (Jul'26+)  "
+      f"| {_updated_rm:,} rm updated (pre-Jul'26, existing)  "
+      f"| {_kept_rm:,} rm kept (pre-Jul'26, invalid new rm)  "
+      f"| {_added_new:,} added new (pre-Jul'26, not in hist)", flush=True)
 
 # Remove retail entries whose Retail_Attribution_Date is before LEAD_MASTER_START (Apr'25).
 # Dashboard scope begins Apr'25; Jan'25–Mar'25 retails must not appear anywhere.
