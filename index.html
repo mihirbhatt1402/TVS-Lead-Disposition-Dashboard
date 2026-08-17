@@ -516,6 +516,12 @@ function ExportBtn({ onClick }) {
 /* ════════════════════════════════════════════════════════════════════
    MULTI-SELECT FILTER COMPONENT
    ════════════════════════════════════════════════════════════════════ */
+
+// Sentinel: a frozen Set containing an unmatchable string.
+// When used as a filter, aggregation code sees size>0 (not "all") but
+// has() returns false for every real option → zero records for that dimension.
+const FILTER_CLEARED = Object.freeze(new Set(['\x00']));
+
 const MultiSelect = React.memo(function MultiSelect({ label, options, selected, onChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef();
@@ -526,10 +532,12 @@ const MultiSelect = React.memo(function MultiSelect({ label, options, selected, 
     return () => document.removeEventListener('mousedown', hdl);
   }, []);
 
-  const isAll = !selected || selected.size === 0;
-  const count = selected ? selected.size : 0;
+  const isClear = selected === FILTER_CLEARED;
+  const isAll   = !isClear && (!selected || selected.size === 0);
+  const count   = !isClear && selected ? selected.size : 0;
 
   function toggle(opt) {
+    if (isClear) { onChange(new Set([opt])); return; }
     const next = new Set(selected || []);
     if (isAll) {
       options.forEach(o => { if (o !== opt) next.add(o); });
@@ -538,7 +546,8 @@ const MultiSelect = React.memo(function MultiSelect({ label, options, selected, 
     }
     onChange(next.size === options.length ? new Set() : next);
   }
-  function selectAll() { onChange(new Set()); }
+  function selectAll()  { onChange(new Set()); }
+  function clearFilter() { onChange(FILTER_CLEARED); }
 
   return ce('div', { style: { position:'relative' }, ref },
     ce('button', {
@@ -548,18 +557,23 @@ const MultiSelect = React.memo(function MultiSelect({ label, options, selected, 
       label,
       isAll
         ? ce('span', { style:{color:'#94A3B8',fontSize:10} }, 'All ▾')
-        : ce('span', { className:'ms-count' }, count),
-      !isAll && ce('span', {style:{color:'#94A3B8',fontSize:10}}, '▾')
+        : isClear
+          ? ce('span', { style:{color:'#64748B',fontSize:10} }, 'None ▾')
+          : ce('span', { className:'ms-count' }, count),
+      !isAll && !isClear && ce('span', {style:{color:'#94A3B8',fontSize:10}}, '▾')
     ),
     open && ce('div', { className:'ms-dropdown' },
       ce('div', { className:'ms-dropdown-header' },
         ce('span', { style:{fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase',letterSpacing:'.06em'} }, label),
-        ce('button', { onClick: selectAll, style:{fontSize:10,background:'none',border:'none',color:'#E31837',cursor:'pointer',fontWeight:700} }, 'All')
+        ce('div', { style:{display:'flex',gap:8} },
+          ce('button', { onClick: selectAll,   style:{fontSize:10,background:'none',border:'none',color:'#E31837',cursor:'pointer',fontWeight:700} }, 'All'),
+          ce('button', { onClick: clearFilter, style:{fontSize:10,background:'none',border:'none',color:'#64748B',cursor:'pointer',fontWeight:700} }, 'Clear')
+        )
       ),
       ce('div', { className:'ms-dropdown-list' },
         options.map(opt => ce('label', { key:opt, className:'ms-option' },
           ce('input', {
-            type:'checkbox', checked: isAll || selected.has(opt),
+            type:'checkbox', checked: !isClear && (isAll || selected.has(opt)),
             onChange: () => toggle(opt)
           }),
           ce('span', null, opt)
@@ -2686,6 +2700,7 @@ function App() {
     if (!effectiveData) return [];
     const allM = [...new Set(effectiveData.maps.lm)].sort((a,b) => monthOrder(b)-monthOrder(a));
     if (!filters.months || filters.months.size === 0) return allM;
+    if (filters.months === FILTER_CLEARED) return ['\x00'];
     return allM.filter(m => filters.months.has(m));
   }, [effectiveData, filters.months]);
 
