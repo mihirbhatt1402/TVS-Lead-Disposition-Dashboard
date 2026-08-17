@@ -938,6 +938,22 @@ LEAD_COL_MAP = {
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+# Explicit city aliases (title-cased key → canonical name).
+# Only strong, confirmed aliases are listed here.
+_CITY_ALIAS = {
+    'New Delhi': 'Delhi',
+}
+
+def normalize_city(raw):
+    """Canonical city name: strip, collapse whitespace, title-case, apply alias."""
+    s = re.sub(r'\s+', ' ', str(raw or '').strip())
+    if not s:
+        return 'Unknown'
+    # title() capitalises after any non-alpha char: handles spaces, hyphens,
+    # parentheses, apostrophes — matches JS canonicalCity() exactly.
+    s = s.title()
+    return _CITY_ALIAS.get(s, s)
+
 def norm_month(s):
     s = str(s or '').strip()
     if not s: return s
@@ -1406,7 +1422,7 @@ def build_payload(all_leads, retail_map):
         st   = _sts[i].strip().title() or 'Unknown'
         zone = _zones[i].strip() or 'Unknown'
         bd   = _bds[i].strip() or '0'
-        city = _cities[i].strip() or 'Unknown'
+        city = normalize_city(_cities[i])
 
         if not lm or not lid: continue
 
