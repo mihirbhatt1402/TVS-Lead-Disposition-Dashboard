@@ -941,7 +941,10 @@ LEAD_COL_MAP = {
 # Explicit city aliases (title-cased key → canonical name).
 # Only strong, confirmed aliases are listed here.
 _CITY_ALIAS = {
-    'New Delhi': 'Delhi',
+    'New Delhi':          'Delhi',
+    'Bengaluru':          'Bangalore',
+    'Prayagraj':          'Allahabad',
+    'Thiruvananthapuram': 'Trivandrum',
 }
 
 def normalize_city(raw):
