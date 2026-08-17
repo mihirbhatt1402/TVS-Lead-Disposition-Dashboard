@@ -531,7 +531,11 @@ const MultiSelect = React.memo(function MultiSelect({ label, options, selected, 
 
   function toggle(opt) {
     const next = new Set(selected || []);
-    if (next.has(opt)) next.delete(opt); else next.add(opt);
+    if (isAll) {
+      options.forEach(o => { if (o !== opt) next.add(o); });
+    } else {
+      if (next.has(opt)) next.delete(opt); else next.add(opt);
+    }
     onChange(next.size === options.length ? new Set() : next);
   }
   function selectAll() { onChange(new Set()); }
@@ -555,7 +559,7 @@ const MultiSelect = React.memo(function MultiSelect({ label, options, selected, 
       ce('div', { className:'ms-dropdown-list' },
         options.map(opt => ce('label', { key:opt, className:'ms-option' },
           ce('input', {
-            type:'checkbox', checked: !isAll && selected.has(opt),
+            type:'checkbox', checked: isAll || selected.has(opt),
             onChange: () => toggle(opt)
           }),
           ce('span', null, opt)
@@ -2534,9 +2538,14 @@ const CityModelTab = React.memo(function CityModelTab({ data, filters, months, R
           }, [])
         )
       : null;
+    const cityRowFilter = stFilter
+      ? (filters.cities && filters.cities.size > 0
+          ? new Set([...stFilter].filter(c => filters.cities.has(c)))
+          : stFilter)
+      : filters.cities;
     return buildCrossAgg(
       cxm, maps, 'city', 'mdl', 'lm', 0, 1, 2, monthSet,
-      stFilter || filters.cities, filters.models, getLR, data.rt_cols
+      cityRowFilter, filters.models, getLR, data.rt_cols
     );
   }, [cxm, maps, filters, getLR, data.rt_cols]);
 
