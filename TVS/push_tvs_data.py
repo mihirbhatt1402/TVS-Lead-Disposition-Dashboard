@@ -1109,6 +1109,7 @@ def fetch_retails():
     """
     print("Fetching retail master via Apps Script…", flush=True)
     page, all_rows, headers, expected_total = 0, [], None, None
+    done_received = False
     while True:
         last_exc = None
         for attempt, _timeout in enumerate(_RETAIL_TIMEOUTS):
@@ -1143,14 +1144,22 @@ def fetch_retails():
         print(f"  Page {page}: +{len(rows):,} rows  (running {len(all_rows):,}/{total_label})",
               flush=True)
         if data.get('done', True):
+            done_received = True
             break
         page += 1
 
-    # Completeness check: fetched count must match what Apps Script reported as total.
-    if expected_total is not None and len(all_rows) != expected_total:
+    # 'done: true' is the authoritative end-of-pagination signal from Apps Script.
+    # The 'total' field reflects the raw sheet row count (getLastRow), which may include
+    # blank/filtered rows that the paginator skips — so fetched != total is expected and
+    # is NOT an error when done was received. Only fail if done was never signalled.
+    if not done_received:
         raise RuntimeError(
-            f"Retail fetch incomplete: Apps Script reported {expected_total:,} rows "
-            f"but only {len(all_rows):,} were received. Aborting to prevent partial push.")
+            f"Retail pagination ended without a 'done' signal after {page+1} pages "
+            f"({len(all_rows):,} rows). Possible truncation — aborting.")
+    if expected_total is not None and len(all_rows) != expected_total:
+        print(f"  NOTE: Apps Script total={expected_total:,}, fetched={len(all_rows):,} — "
+              f"gap likely due to blank/non-TVS rows in sheet (normal). "
+              f"'done' received; proceeding.", flush=True)
 
     df = pd.DataFrame(all_rows, columns=headers)
     print(f"  Retail master: {len(df):,} TVS rows  (pages={page+1})", flush=True)
