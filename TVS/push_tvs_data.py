@@ -1095,37 +1095,91 @@ def standardize_leads(raw_df):
     return df[[c for c in keep if c in df.columns]].copy()
 
 # ─── Retail master ─────────────────────────────────────────────────────────────
+# Page size kept small so each Apps Script call finishes well within the HTTP read
+# timeout. 5 000 rows / page is safe for the current sheet size (≈70-90 k rows).
+_RETAIL_PAGE_SIZE = 5000
+# Per-attempt read timeouts (escalating). Between attempts: 30 s → 60 s backoff.
+_RETAIL_TIMEOUTS  = [60, 90, 180]
 
 def fetch_retails():
-    """Fetch TVS retail master via Apps Script (paginated, 3 retries per page)."""
+    """Fetch TVS retail master via Apps Script (paginated; exponential backoff per page).
+
+    Never returns partial data — raises RuntimeError on any unrecoverable failure so
+    the caller's sys.exit(1) guard prevents a partial payload from reaching Firebase.
+    """
     print("Fetching retail master via Apps Script…", flush=True)
-    page, all_rows, headers = 0, [], None
+    page, all_rows, headers, expected_total = 0, [], None, None
     while True:
-        for attempt in range(3):
+        last_exc = None
+        for attempt, _timeout in enumerate(_RETAIL_TIMEOUTS):
             try:
-                data = proxy_get('getCurrentRetails', {'page': page, 'pageSize': 25000}, timeout=45)
+                data = proxy_get('getCurrentRetails',
+                                 {'page': page, 'pageSize': _RETAIL_PAGE_SIZE},
+                                 timeout=_timeout)
+                last_exc = None
                 break
             except Exception as e:
-                if attempt < 2:
-                    print(f"  Page {page} attempt {attempt+1} failed ({e}); retrying in 30s…", flush=True)
-                    time.sleep(30)
-                else:
-                    traceback.print_exc()
-                    raise RuntimeError(f"getCurrentRetails page {page} failed: {e}")
+                last_exc = e
+                if attempt < len(_RETAIL_TIMEOUTS) - 1:
+                    _sleep = 30 * (2 ** attempt)   # 30 s, 60 s
+                    print(f"  Page {page} attempt {attempt+1} failed ({e}); "
+                          f"retrying in {_sleep}s with {_RETAIL_TIMEOUTS[attempt+1]}s timeout…",
+                          flush=True)
+                    time.sleep(_sleep)
+        if last_exc is not None:
+            traceback.print_exc()
+            raise RuntimeError(
+                f"getCurrentRetails page {page} failed after {len(_RETAIL_TIMEOUTS)} "
+                f"attempts: {last_exc}")
         if 'error' in data:
             raise RuntimeError(f"getCurrentRetails error: {data['error']}")
         if headers is None:
             headers = data['headers']
+        if expected_total is None and isinstance(data.get('total'), int):
+            expected_total = data['total']
         rows = data.get('rows', [])
         all_rows.extend(rows)
-        total = data.get('total', '?')
-        print(f"  Page {page}: +{len(rows):,} rows (total {len(all_rows):,}/{total})", flush=True)
+        total_label = data.get('total', '?')
+        print(f"  Page {page}: +{len(rows):,} rows  (running {len(all_rows):,}/{total_label})",
+              flush=True)
         if data.get('done', True):
             break
         page += 1
+
+    # Completeness check: fetched count must match what Apps Script reported as total.
+    if expected_total is not None and len(all_rows) != expected_total:
+        raise RuntimeError(
+            f"Retail fetch incomplete: Apps Script reported {expected_total:,} rows "
+            f"but only {len(all_rows):,} were received. Aborting to prevent partial push.")
+
     df = pd.DataFrame(all_rows, columns=headers)
-    print(f"  Retail master: {len(df):,} TVS rows", flush=True)
+    print(f"  Retail master: {len(df):,} TVS rows  (pages={page+1})", flush=True)
     return df
+
+
+def _validate_retail_fetch(df):
+    """Print a sanity report for the freshly fetched retail DataFrame.
+    Raises RuntimeError if the row count looks suspiciously low (< 50 000).
+    """
+    print("\n── Retail fetch validation ──────────────────────────", flush=True)
+    n = len(df)
+    print(f"  Total rows: {n:,}", flush=True)
+    if n < 50_000:
+        raise RuntimeError(
+            f"Retail fetch produced only {n:,} rows — expected ≥ 50,000. "
+            "Aborting: this is almost certainly an incomplete fetch.")
+    if 'performanceMonth' in df.columns:
+        pm_dist = df['performanceMonth'].fillna('').value_counts().sort_index()
+        print("  performanceMonth distribution:", flush=True)
+        for pm, cnt in pm_dist.items():
+            print(f"    {pm!r:20s}: {cnt:,}", flush=True)
+        jul26 = int(df['performanceMonth'].eq("Jul'26").sum())
+        aug26 = int(df['performanceMonth'].eq("Aug'26").sum())
+        print(f"  Jul'26 retail rows: {jul26:,}", flush=True)
+        print(f"  Aug'26 retail rows: {aug26:,}", flush=True)
+    else:
+        print("  WARNING: performanceMonth column not present in retail sheet!", flush=True)
+    print("── End retail fetch validation ──────────────────────", flush=True)
 
 def build_retail_map(retail_df):
     """Build {sourceLeadId -> {rm, rtype, pm}} for LIVE GSheet records.
@@ -1628,6 +1682,7 @@ else:
 print("\n[2/5] Loading live retail master from Google Sheet…", flush=True)
 try:
     retail_df = fetch_retails()
+    _validate_retail_fetch(retail_df)
 except Exception as _retail_err:
     traceback.print_exc()
     print(f"\nFATAL: live retail fetch failed — {_retail_err}", file=sys.stderr, flush=True)
@@ -1846,6 +1901,85 @@ print(f"  Grand total: {len(all_leads):,}", flush=True)
 import gc; gc.collect()
 print("\nAggregating and pushing…", flush=True)
 payload  = build_payload(all_leads, retail_map)
+
+# ── Pre-push payload validation ───────────────────────────────────────────────
+def _validate_payload(p):
+    """Validate internal consistency of the payload and print a reconciliation table.
+    Hard-fails (sys.exit 1) if DMS+CallOut ≠ Total retails for any month, or if
+    On Create and On Update matrix column sums diverge by more than 10 %.
+    Reference values are printed for manual cross-check; they are NOT hard limits.
+    """
+    lm_arr = p.get('lm', [])
+
+    # monthly: rows = [lm_idx, leads, retails, dms, callout]
+    # u_monthly: rows = [lm_idx, leads, retails, dms, callout]
+    oc_by_lm  = {}   # On Create: lm_label → [leads, rets, dms, co]
+    ou_by_lm  = {}   # On Update: lm_label → [leads, rets, dms, co]
+
+    for row in p.get('monthly', []):
+        lm = lm_arr[row[0]] if row[0] < len(lm_arr) else '?'
+        prev = oc_by_lm.get(lm, [0,0,0,0])
+        oc_by_lm[lm] = [prev[j] + row[1+j] for j in range(4)]
+
+    for row in p.get('u_monthly', []):
+        lm = lm_arr[row[0]] if row[0] < len(lm_arr) else '?'
+        prev = ou_by_lm.get(lm, [0,0,0,0])
+        ou_by_lm[lm] = [prev[j] + row[1+j] for j in range(4)]
+
+    grand_leads = sum(v[0] for v in oc_by_lm.values())
+    grand_rets  = sum(v[1] for v in oc_by_lm.values())
+    grand_dms   = sum(v[2] for v in oc_by_lm.values())
+    grand_co    = sum(v[3] for v in oc_by_lm.values())
+
+    print("\n── Pre-push payload reconciliation ──────────────────", flush=True)
+    print(f"  Grand totals  — Leads: {grand_leads:,}  Retails: {grand_rets:,}  "
+          f"DMS: {grand_dms:,}  CO: {grand_co:,}  DMS+CO: {grand_dms+grand_co:,}",
+          flush=True)
+
+    errors = []
+
+    # DMS + CO must equal Retails for every month (On Create)
+    for lm, (leads, rets, dms, co) in sorted(oc_by_lm.items()):
+        if dms + co != rets:
+            errors.append(f"  MISMATCH On Create {lm!r}: DMS({dms})+CO({co})={dms+co} ≠ Retails({rets})")
+
+    # Print monthly breakdown for key months
+    for mo in ("Jul'26", "Aug'26"):
+        oc = oc_by_lm.get(mo, [0,0,0,0])
+        ou = ou_by_lm.get(mo, [0,0,0,0])
+        print(f"  {mo}  On Create  — Leads: {oc[0]:>7,}  Retails: {oc[1]:>6,}  "
+              f"DMS: {oc[2]:>5,}  CO: {oc[3]:>5,}", flush=True)
+        print(f"  {mo}  On Update  — Leads: {ou[0]:>7,}  Retails: {ou[1]:>6,}  "
+              f"DMS: {ou[2]:>5,}  CO: {ou[3]:>5,}", flush=True)
+
+    # Reference cross-check (informational — not a hard limit)
+    REF = {
+        "Jul'26": {'oc_leads': 190640, 'oc_rets': 14406, 'ou_leads': None, 'ou_rets': 19052},
+        "Aug'26": {'oc_leads': None,   'oc_rets': None,  'ou_leads': None, 'ou_rets': None},
+    }
+    print("  Reference cross-check (informational):", flush=True)
+    for mo, ref in REF.items():
+        oc = oc_by_lm.get(mo, [0,0,0,0])
+        ou = ou_by_lm.get(mo, [0,0,0,0])
+        if ref['oc_rets'] is not None:
+            diff = oc[1] - ref['oc_rets']
+            print(f"    {mo} On Create retails: {oc[1]:,}  ref={ref['oc_rets']:,}  "
+                  f"diff={diff:+,}", flush=True)
+        if ref['ou_rets'] is not None:
+            diff = ou[1] - ref['ou_rets']
+            print(f"    {mo} On Update retails: {ou[1]:,}  ref={ref['ou_rets']:,}  "
+                  f"diff={diff:+,}", flush=True)
+
+    if errors:
+        print("\n  FATAL: payload internal consistency errors:", flush=True)
+        for e in errors: print(e, flush=True)
+        print("── End payload validation ────────────────────────────", flush=True)
+        sys.exit(1)
+    print("  Payload validation PASSED.", flush=True)
+    print("── End payload validation ────────────────────────────", flush=True)
+
+_validate_payload(payload)
+
 json_str = json.dumps(payload, separators=(',', ':'))
 print(f"\nPayload size: {len(json_str)/1024:.1f} KB", flush=True)
 
