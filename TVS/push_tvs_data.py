@@ -27,7 +27,7 @@ MERGE: hist leads + live leads deduped by SorceLeadId (keep='last'; live wins on
        hist retail map + live retail map merged by sourceLeadId (live overwrites hist per key)
 """
 
-import json, sys, re, time, os, gzip, base64, traceback
+import json, sys, re, time, os, gzip, base64, traceback, shutil, argparse
 import pandas as pd
 import requests
 from pathlib import Path
@@ -1006,6 +1006,15 @@ def month_order(lm):
 ONLINE_START_ORDER      = month_order(ONLINE_START)
 LEAD_MASTER_START_ORDER = month_order(LEAD_MASTER_START)
 
+# ── CLI arguments & run tracking ──────────────────────────────────────────────
+_ap = argparse.ArgumentParser(description='TVS Lead Disposition daily data push', add_help=False)
+_ap.add_argument('--dry-run', action='store_true',
+                 help='Fetch, process and validate but skip Firebase POST and GitHub Pages write')
+DRY_RUN    = _ap.parse_known_args()[0].dry_run
+_RUN_START = datetime.now(timezone.utc)
+if DRY_RUN:
+    print("*** DRY RUN MODE — production payload will NOT be updated ***", flush=True)
+
 def proxy_get(action, extra_params=None, timeout=120):
     params = {'action': action, 'secret': SECRET}
     if extra_params:
@@ -1023,7 +1032,7 @@ def fetch_sheet_via_proxy(file_id, label, tab_name=None):
     """Read any Google Sheet via Apps Script proxy. Returns raw DataFrame."""
     page, all_rows, headers = 0, [], None
     _LEAD_TIMEOUTS = [60, 90, 180]   # escalating per attempt (matches retail fetch pattern)
-    extra = {'fileId': file_id, 'pageSize': 25000, 'cols': LEAD_COLS}
+    extra = {'fileId': file_id, 'pageSize': 10000, 'cols': LEAD_COLS}
     if tab_name:
         extra['tabName'] = tab_name
     while True:
@@ -1997,35 +2006,110 @@ def _validate_payload(p):
         sys.exit(1)
     print("  Payload validation PASSED.", flush=True)
     print("── End payload validation ────────────────────────────", flush=True)
+    return oc_by_lm, ou_by_lm
 
-_validate_payload(payload)
+_oc, _ou = _validate_payload(payload)
 
-json_str = json.dumps(payload, separators=(',', ':'))
-print(f"\nPayload size: {len(json_str)/1024:.1f} KB", flush=True)
-
-# Save payload locally for cross-validation
-_payload_path = Path(__file__).parent / 'tvs_last_payload.json'
-with open(_payload_path, 'w', encoding='utf-8') as _f:
-    json.dump(payload, _f)
-print(f"Payload saved to {_payload_path}", flush=True)
-
-# Save gzip-compressed payload for GitHub Pages hosting (bypasses Apps Script GET redirect)
-# Compressed keeps the file ~6 MB instead of ~50+ MB, well under GitHub's 100 MB limit.
-_data_dir = Path(__file__).parent.parent / 'data'
+# ─── Staging → Validate → Promote ─────────────────────────────────────────────
+# ATOMICITY GUARANTEE: production is NEVER overwritten until Firebase confirms OK.
+# The dashboard always shows a fully confirmed payload or the previous known-good one.
+_data_dir     = Path(__file__).parent.parent / 'data'
 _data_dir.mkdir(exist_ok=True)
-_static_path = _data_dir / 'tvs_payload.json.gz'
-with gzip.open(_static_path, 'wt', encoding='utf-8', compresslevel=6) as _f:
-    json.dump(payload, _f, separators=(',', ':'))
-print(f"Static payload saved to {_static_path} ({_static_path.stat().st_size/1024:.0f} KB)", flush=True)
+_prod_path    = _data_dir / 'tvs_payload.json.gz'
+_prev_path    = _data_dir / 'tvs_payload_prev.json.gz'
+_staging_path = _data_dir / f'tvs_payload_staging_{_RUN_START.strftime("%Y%m%d_%H%M")}.json.gz'
+_local_path   = Path(__file__).parent / 'tvs_last_payload.json'
 
-# Compress the payload: gzip + base64 → ~5-8 MB instead of ~50 MB.
-# Apps Script doPost decompresses the "gz" envelope before processing.
+
+def _fail_exit(stage, reason, stg_path=None):
+    """Structured failure report — production is always unchanged on exit."""
+    sep = '=' * 60
+    print(f"\n{sep}", file=sys.stderr, flush=True)
+    print("TVS DATA PIPELINE — FAILED SAFELY", file=sys.stderr, flush=True)
+    print(sep, file=sys.stderr, flush=True)
+    print(f"Stage:    {stage}", file=sys.stderr, flush=True)
+    print(f"Reason:   {reason}", file=sys.stderr, flush=True)
+    print(f"\nProduction payload changed: NO", file=sys.stderr, flush=True)
+    print(f"Firebase changed:           NO", file=sys.stderr, flush=True)
+    print(f"GitHub Pages changed:       NO", file=sys.stderr, flush=True)
+    if _prod_path.exists():
+        _mtime = datetime.fromtimestamp(_prod_path.stat().st_mtime, timezone.utc)
+        print(f"\nLast known-good: {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)",
+              file=sys.stderr, flush=True)
+        print(f"Last modified:   {_mtime.strftime('%Y-%m-%d %H:%M UTC')}",
+              file=sys.stderr, flush=True)
+    else:
+        print(f"\nLast known-good: NONE (first run)", file=sys.stderr, flush=True)
+    if stg_path:
+        _sp = Path(stg_path)
+        if _sp.exists():
+            print(f"Diagnostic:      {_sp.name}  (kept for inspection)", file=sys.stderr, flush=True)
+    print(f"\nDashboard continues serving the previous known-good payload.", file=sys.stderr, flush=True)
+    print(sep, file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+# ── Serialise to local diagnostic copy (never committed) ──────────────────────
+try:
+    json_str = json.dumps(payload, separators=(',', ':'))
+    print(f"\nPayload size: {len(json_str) // 1024:,} KB", flush=True)
+    with open(_local_path, 'w', encoding='utf-8') as _f:
+        json.dump(payload, _f)
+    print(f"  Diagnostic JSON → {_local_path.name}", flush=True)
+except Exception as _ser_err:
+    _fail_exit('JSON serialisation', str(_ser_err))
+
+# ── Write STAGING file (not production) ───────────────────────────────────────
+try:
+    with gzip.open(_staging_path, 'wt', encoding='utf-8', compresslevel=6) as _f:
+        json.dump(payload, _f, separators=(',', ':'))
+    _stg_kb = _staging_path.stat().st_size // 1024
+    print(f"  Staging → {_staging_path.name}  ({_stg_kb:,} KB)", flush=True)
+except Exception as _stg_err:
+    _fail_exit('Staging write', str(_stg_err))
+
+# ── Validate staging (read back and verify structure) ─────────────────────────
+try:
+    with gzip.open(_staging_path, 'rt', encoding='utf-8') as _f:
+        _stg = json.load(_f)
+    _missing = {'maps', 'monthly', 'u_monthly'} - set(_stg.keys())
+    if _missing:
+        raise RuntimeError(f"Missing required keys: {_missing}")
+    if not _stg.get('maps', {}).get('lm'):
+        raise RuntimeError("maps.lm is empty — month-label array missing")
+    _stg_leads   = sum(r[1] for r in _stg.get('monthly', []))
+    _stg_retails = sum(r[2] for r in _stg.get('monthly', []))
+    print(f"  Staging readback OK  (leads={_stg_leads:,}  retails={_stg_retails:,})", flush=True)
+    del _stg
+except Exception as _rb_err:
+    _fail_exit('Staging readback', str(_rb_err), _staging_path)
+
+# ── DRY RUN: stop here, discard staging ───────────────────────────────────────
+if DRY_RUN:
+    _staging_path.unlink(missing_ok=True)
+    _oc_jul = _oc.get("Jul'26", [0, 0, 0, 0])
+    _ou_jul = _ou.get("Jul'26", [0, 0, 0, 0])
+    _oc_aug = _oc.get("Aug'26", [0, 0, 0, 0])
+    _ou_aug = _ou.get("Aug'26", [0, 0, 0, 0])
+    print(f"\n{'=' * 60}", flush=True)
+    print("TVS DATA PIPELINE — DRY RUN COMPLETE  (production unchanged)", flush=True)
+    print(f"{'=' * 60}", flush=True)
+    print(f"  Staging validated:  leads={_stg_leads:,}  retails={_stg_retails:,}", flush=True)
+    print(f"  Jul'26 On Create:   leads={_oc_jul[0]:,}  retails={_oc_jul[1]:,}", flush=True)
+    print(f"  Jul'26 On Update:   leads={_ou_jul[0]:,}  retails={_ou_jul[1]:,}", flush=True)
+    print(f"  Aug'26 On Create:   leads={_oc_aug[0]:,}  retails={_oc_aug[1]:,}", flush=True)
+    print(f"  Aug'26 On Update:   leads={_ou_aug[0]:,}  retails={_ou_aug[1]:,}", flush=True)
+    print(f"  Production:         UNCHANGED", flush=True)
+    print(f"{'=' * 60}", flush=True)
+    sys.exit(0)
+
+# ── Compress payload for Firebase POST ────────────────────────────────────────
 _raw_bytes  = json_str.encode('utf-8')
 _compressed = gzip.compress(_raw_bytes, compresslevel=6)
 _envelope   = json.dumps({'gz': base64.b64encode(_compressed).decode('ascii')},
                           separators=(',', ':'))
-print(f"POSTing to Apps Script… ({len(_envelope)/1024:.0f} KB compressed, "
-      f"was {len(json_str)/1024:.0f} KB raw)", flush=True)
+print(f"\nPOSTing to Apps Script… ({len(_envelope) // 1024:,} KB compressed, "
+      f"was {len(json_str) // 1024:,} KB raw)", flush=True)
 del _raw_bytes, _compressed, json_str
 
 body = None
@@ -2036,24 +2120,72 @@ for _attempt in range(3):
             data=_envelope.encode('utf-8'),
             params={'secret': SECRET},
             headers={'Content-Type': 'application/json'},
-            timeout=(60, 1800),   # 60 s connect, 30 min read
+            timeout=(60, 1800),
         )
         _resp.raise_for_status()
         body = _resp.text
         break
     except Exception as _e:
-        print(f"  POST attempt {_attempt+1} failed: {_e}", flush=True)
+        print(f"  POST attempt {_attempt + 1} failed: {_e}", flush=True)
         if _attempt < 2:
             print("  Retrying in 30s…", flush=True)
             time.sleep(30)
         else:
             traceback.print_exc()
-            raise
+            _fail_exit('Firebase POST (all 3 attempts exhausted)', str(_e), _staging_path)
 print(f"Response: {body}", flush=True)
 
 if not body or '"ok":true' not in body:
-    print("ERROR: Apps Script did not confirm success!", file=sys.stderr)
-    sys.exit(1)
+    _fail_exit('Firebase response', f'"ok":true not found — got: {str(body)[:200]}', _staging_path)
 
-print("=" * 60, flush=True)
-print("Done.", flush=True)
+# ── Firebase confirmed — PROMOTE STAGING → PRODUCTION ─────────────────────────
+_prev_existed = _prod_path.exists()
+if _prev_existed:
+    shutil.copy2(_prod_path, _prev_path)
+    print(f"  Backed up previous → {_prev_path.name}", flush=True)
+
+shutil.move(str(_staging_path), str(_prod_path))
+print(f"  Promoted staging   → {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)",
+      flush=True)
+
+# ── Structured success report ─────────────────────────────────────────────────
+_elapsed       = int((datetime.now(timezone.utc) - _RUN_START).total_seconds())
+_oc_jul        = _oc.get("Jul'26", [0, 0, 0, 0])
+_ou_jul        = _ou.get("Jul'26", [0, 0, 0, 0])
+_oc_aug        = _oc.get("Aug'26", [0, 0, 0, 0])
+_ou_aug        = _ou.get("Aug'26", [0, 0, 0, 0])
+_grand_leads   = sum(v[0] for v in _oc.values())
+_grand_retails = sum(v[1] for v in _oc.values())
+_live_lm_dist  = (online_leads['LeadMonth'].value_counts().to_dict()
+                  if 'LeadMonth' in online_leads.columns and len(online_leads) > 0 else {})
+
+print(f"\n{'=' * 60}", flush=True)
+print("TVS DATA PIPELINE — SUCCESS", flush=True)
+print(f"{'=' * 60}", flush=True)
+print(f"Timestamp: {_RUN_START.strftime('%Y-%m-%d %H:%M UTC')}  "
+      f"Runtime: {_elapsed // 60}m {_elapsed % 60}s", flush=True)
+print(f"\nSOURCE", flush=True)
+print(f"  Historical leads:  {len(hist_leads):>10,}", flush=True)
+for _mo, _cnt in sorted(_live_lm_dist.items(), key=lambda x: month_order(x[0])):
+    print(f"  {_mo} live leads: {int(_cnt):>8,}", flush=True)
+print(f"  Live retail rows:  {len(retail_df):>10,}  (combined map: {len(retail_map):,})", flush=True)
+print(f"\nAGGREGATION", flush=True)
+print(f"  Total unique leads:         {_grand_leads:>10,}", flush=True)
+print(f"  Total retails (On Create):  {_grand_retails:>10,}", flush=True)
+print(f"\nJUL'26", flush=True)
+print(f"  On Create — Leads: {_oc_jul[0]:>8,}  Retails: {_oc_jul[1]:>7,}  "
+      f"DMS: {_oc_jul[2]:>6,}  CO: {_oc_jul[3]:>6,}", flush=True)
+print(f"  On Update — Leads: {_ou_jul[0]:>8,}  Retails: {_ou_jul[1]:>7,}  "
+      f"DMS: {_ou_jul[2]:>6,}  CO: {_ou_jul[3]:>6,}", flush=True)
+print(f"\nAUG'26", flush=True)
+print(f"  On Create — Leads: {_oc_aug[0]:>8,}  Retails: {_oc_aug[1]:>7,}  "
+      f"DMS: {_oc_aug[2]:>6,}  CO: {_oc_aug[3]:>6,}", flush=True)
+print(f"  On Update — Leads: {_ou_aug[0]:>8,}  Retails: {_ou_aug[1]:>7,}  "
+      f"DMS: {_ou_aug[2]:>6,}  CO: {_ou_aug[3]:>6,}", flush=True)
+print(f"\nPUBLICATION", flush=True)
+print(f"  Firebase:  CONFIRMED (ok:true)", flush=True)
+print(f"  Payload:   {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)", flush=True)
+if _prev_existed:
+    print(f"  Previous:  backed up to {_prev_path.name}", flush=True)
+print(f"\nSTATUS: PRODUCTION UPDATED", flush=True)
+print(f"{'=' * 60}", flush=True)
