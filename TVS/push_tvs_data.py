@@ -1987,11 +1987,11 @@ for sheet in LEAD_SHEETS:
             _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
             print(f"  [{_lbl}] STAGE 6 FINAL: {len(std):,} rows kept [{_range}]", flush=True)
 
-            # Source metrics: record RAW row count (before month filter) so the
-            # comparison is independent of month filter boundaries changing over time.
-            _raw_count = len(raw)
-            _current_metrics[_lbl] = {'rows': _raw_count}
-            _check_source_drop(_lbl, _raw_count, _prev_metrics)
+            # Source metrics: track FILTERED row count (post-month-filter) for the
+            # drop comparison — this is what actually contributes to the dashboard.
+            # Raw row count is stored separately for diagnostics only.
+            _current_metrics[_lbl] = {'rows': len(std), 'raw_rows': len(raw)}
+            _check_source_drop(_lbl, len(std), _prev_metrics)
             print(f"", flush=True)
             break  # success
         except SystemExit:
