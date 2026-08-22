@@ -43,6 +43,7 @@ jobs:
           git add last_run.txt
           git add data/tvs_payload.json.gz 2>/dev/null || true
           git add data/tvs_payload_prev.json.gz 2>/dev/null || true
+          git add TVS/source_metrics.json 2>/dev/null || true
           git rm --cached data/tvs_payload.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "chore: pipeline run $(date -u '+%Y-%m-%d')"
           git pull --rebase

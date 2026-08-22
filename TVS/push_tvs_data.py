@@ -22,7 +22,7 @@ DATA SOURCES
   Retails (live)     : Google Sheet via Apps Script proxy (all dates, overwrites hist per lid)
 
 JOIN: Lead.opty_id = Retail.sourceLeadId  (primary-key join, date/source never matter)
-RETAIL MONTH: Retail_Attribution_Date drives all retail calculations
+RETAIL MONTH: performanceMonth is authoritative for On Update (u_monthly); LeadMonth for On Create (monthly)
 MERGE: hist leads + live leads deduped by SorceLeadId (keep='last'; live wins on overlap)
        hist retail map + live retail map merged by sourceLeadId (live overwrites hist per key)
 """
@@ -1641,11 +1641,103 @@ def build_payload(all_leads, retail_map):
     print(f"Done — {total:,} leads  {len(retail_map):,} retails", flush=True)
     return payload
 
+# ─── Pipeline guard functions (defined here so every stage can call them) ─────
+
+_METRICS_PATH = Path(__file__).parent / 'source_metrics.json'
+
+# Required columns that must be present in every live lead sheet.
+# These are the columns requested via LEAD_COLS; missing any of these means the
+# Apps Script returned a truncated/corrupted response.
+_LEAD_REQUIRED_COLS = {'opty_id', 'Lead_Month', 'Date', 'model'}
+
+# Required columns that must be present in the live retail sheet.
+_RETAIL_REQUIRED_COLS = {'sourceLeadId', 'performanceMonth'}
+
+
+def _fail_exit(stage, reason, stg_path=None):
+    """Print a structured failure report and exit 1. Production is never modified."""
+    _data_dir = Path(__file__).parent.parent / 'data'
+    _prod     = _data_dir / 'tvs_payload.json.gz'
+    sep = '=' * 60
+    print(f"\n{sep}", file=sys.stderr, flush=True)
+    print("TVS DATA PIPELINE — FAILED SAFELY", file=sys.stderr, flush=True)
+    print(sep, file=sys.stderr, flush=True)
+    print(f"Stage:    {stage}", file=sys.stderr, flush=True)
+    print(f"Reason:   {reason}", file=sys.stderr, flush=True)
+    print(f"\nProduction payload changed: NO", file=sys.stderr, flush=True)
+    print(f"Firebase changed:           NO", file=sys.stderr, flush=True)
+    print(f"GitHub Pages changed:       NO", file=sys.stderr, flush=True)
+    if _prod.exists():
+        _mtime = datetime.fromtimestamp(_prod.stat().st_mtime, timezone.utc)
+        print(f"\nLast known-good: {_prod.name}  ({_prod.stat().st_size // 1024:,} KB)",
+              file=sys.stderr, flush=True)
+        print(f"Last modified:   {_mtime.strftime('%Y-%m-%d %H:%M UTC')}",
+              file=sys.stderr, flush=True)
+    else:
+        print(f"\nLast known-good: NONE (first run)", file=sys.stderr, flush=True)
+    if stg_path:
+        _sp = Path(stg_path)
+        if _sp.exists():
+            print(f"Diagnostic:      {_sp.name}  (kept for inspection)", file=sys.stderr, flush=True)
+    print(f"\nDashboard continues serving the previous known-good payload.", file=sys.stderr, flush=True)
+    print(sep, file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+def _load_source_metrics():
+    """Load previous-run source row counts from source_metrics.json (or return {})."""
+    if _METRICS_PATH.exists():
+        try:
+            with open(_METRICS_PATH, 'r', encoding='utf-8') as _mf:
+                return json.load(_mf)
+        except Exception as _me:
+            print(f"  NOTE: Could not read source_metrics.json ({_me}); "
+                  f"baseline comparison skipped this run.", flush=True)
+    return {}
+
+
+def _check_source_drop(label, current_count, prev_metrics, threshold=0.80):
+    """Fail the run if current_count is below threshold * previous count.
+    Silently passes if no baseline exists for this label.
+    """
+    prev = prev_metrics.get(label, {}).get('rows') if isinstance(prev_metrics.get(label), dict) \
+        else prev_metrics.get(label)
+    if prev is None or prev == 0:
+        return  # no baseline yet — first run for this source
+    ratio = current_count / prev
+    if ratio < threshold:
+        _fail_exit(
+            f'Source completeness check — {label}',
+            f'Row count dropped from {prev:,} to {current_count:,} '
+            f'({ratio:.1%} of previous run; minimum acceptable: {threshold:.0%}). '
+            f'This almost certainly indicates an incomplete fetch or sheet truncation. '
+            f'If this is a genuine data reduction, delete {_METRICS_PATH.name} to reset the baseline.'
+        )
+    pct = f'{ratio:.1%}'
+    print(f"  Source check [{label}]: {current_count:,} rows  (prev {prev:,}, {pct}) ✓", flush=True)
+
+
+def _save_source_metrics(metrics_dict, run_start):
+    """Write source row counts to source_metrics.json after a successful run."""
+    try:
+        with open(_METRICS_PATH, 'w', encoding='utf-8') as _mf:
+            json.dump({**metrics_dict, 'date': run_start.strftime('%Y-%m-%d')}, _mf, indent=2)
+        print(f"  Source metrics saved → {_METRICS_PATH.name}", flush=True)
+    except Exception as _me:
+        print(f"  WARNING: Could not save source_metrics.json: {_me}", flush=True)
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 print("=" * 60, flush=True)
 print("TVS Lead Disposition — Daily Data Push", flush=True)
+print(f"Run start: {_RUN_START.strftime('%Y-%m-%d %H:%M UTC')}"
+      + ("  [DRY RUN]" if DRY_RUN else ""), flush=True)
 print("=" * 60, flush=True)
+
+# Load previous-run source counts for baseline comparison
+_prev_metrics = _load_source_metrics()
+_current_metrics: dict = {}   # populated as each source is fetched
 
 # ── Step 1: Historical data ───────────────────────────────────────────────────
 # PRODUCTION: load the committed hist_cache.json.gz (always present on GitHub Actions).
@@ -1692,10 +1784,14 @@ elif _cache_exists:
         hist_leads['ModelName'] = hist_leads['ModelName'].apply(normalize_lead_model)
 
 else:
-    # This branch should never fire in production — hist_cache.json.gz is always committed.
-    print("\n[1/5] WARNING: hist_cache.json.gz not found and no local Excel files present.", flush=True)
-    print("              This should not occur in production. Continuing with live data only.", flush=True)
-    retail_map = {}
+    # hist_cache.json.gz is always committed in production — this branch fires only locally
+    # if the cache is absent. Hard-fail: without hist data the payload is incomplete.
+    _fail_exit(
+        'Historical cache load',
+        f'hist_cache.json.gz not found at {HIST_CACHE_PATH} and no local Excel fallback. '
+        f'In production the cache is always present. On a fresh checkout, ensure it is committed.'
+    )
+    retail_map = {}   # unreachable — satisfies type checker
     hist_leads  = pd.DataFrame()
 
 # ── Step 2: Live retail master (overwrites hist for ONLINE_START+ months only) ─
@@ -1707,11 +1803,25 @@ else:
 print("\n[2/5] Loading live retail master from Google Sheet…", flush=True)
 try:
     retail_df = fetch_retails()
+    # Schema validation — required columns must be present
+    _missing_ret_cols = _RETAIL_REQUIRED_COLS - set(retail_df.columns)
+    if _missing_ret_cols:
+        _fail_exit(
+            'Retail schema validation',
+            f'Required columns missing from retail sheet: {sorted(_missing_ret_cols)}. '
+            f'Available: {list(retail_df.columns)}'
+        )
     _validate_retail_fetch(retail_df)
+except SystemExit:
+    raise
 except Exception as _retail_err:
     traceback.print_exc()
-    print(f"\nFATAL: live retail fetch failed — {_retail_err}", file=sys.stderr, flush=True)
-    sys.exit(1)
+    _fail_exit('Live retail fetch', str(_retail_err))
+
+# Source metrics comparison
+_current_metrics['retail_raw'] = {'rows': len(retail_df)}
+_check_source_drop('retail_raw', len(retail_df), _prev_metrics)
+
 online_rmap, unexpected_call_types = build_retail_map(retail_df)
 
 # Three-way merge: prioritised by data quality.
@@ -1796,8 +1906,21 @@ for sheet in LEAD_SHEETS:
             print(f"\n  [{_lbl}] STAGE 1 — fetched from sheet: {len(raw):,} rows", flush=True)
             print(f"  [{_lbl}] columns: {list(raw.columns)}", flush=True)
 
-            # ── STAGE 2: DataFrame created (same as fetched; confirm) ──────────
+            # ── STAGE 2: Schema validation — fail if required columns are missing ─
             print(f"  [{_lbl}] STAGE 2 — DataFrame rows: {len(raw):,}", flush=True)
+            _missing_cols = _LEAD_REQUIRED_COLS - set(raw.columns)
+            if _missing_cols:
+                _fail_exit(
+                    f'Lead schema — {_lbl}',
+                    f'Required columns missing: {sorted(_missing_cols)}. '
+                    f'Available columns: {list(raw.columns)}'
+                )
+            if len(raw) == 0:
+                _fail_exit(
+                    f'Lead sheet empty — {_lbl}',
+                    f'Sheet returned 0 rows. This is almost certainly an incomplete fetch '
+                    f'or a sheet access error.'
+                )
 
             # ── STAGE 3: raw Lead_Month distribution BEFORE standardize_leads ──
             if 'Lead_Month' in raw.columns:
@@ -1862,14 +1985,28 @@ for sheet in LEAD_SHEETS:
 
             lead_dfs.append(std)
             _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
-            print(f"  [{_lbl}] STAGE 6 FINAL: {len(std):,} rows kept [{_range}]\n", flush=True)
+            print(f"  [{_lbl}] STAGE 6 FINAL: {len(std):,} rows kept [{_range}]", flush=True)
+
+            # Source metrics: record RAW row count (before month filter) so the
+            # comparison is independent of month filter boundaries changing over time.
+            _raw_count = len(raw)
+            _current_metrics[_lbl] = {'rows': _raw_count}
+            _check_source_drop(_lbl, _raw_count, _prev_metrics)
+            print(f"", flush=True)
             break  # success
+        except SystemExit:
+            raise   # let _fail_exit propagate
         except Exception as e:
             if _sheet_attempt < 2:
-                print(f"  WARNING: {sheet['label']} attempt {_sheet_attempt+1} failed: {e}; retrying in 30s…", flush=True)
+                print(f"  WARNING: {sheet['label']} attempt {_sheet_attempt+1} failed: {e}; retrying in 30s…",
+                      flush=True)
                 time.sleep(30)
             else:
-                print(f"  ERROR: Could not load {sheet['label']} after 3 attempts: {e}", flush=True)
+                traceback.print_exc()
+                _fail_exit(
+                    f'Lead sheet fetch — {sheet["label"]}',
+                    f'All 3 attempts failed: {e}'
+                )
 
 # Override rtype from embedded sheet columns (DMS_Retail_Month / Retail By).
 # Only override when Retail By is non-empty AND retail month is Jul'26+ (ONLINE_START).
@@ -1894,6 +2031,34 @@ if 'LeadMonth' in online_leads.columns:
     _ol_lm = online_leads['LeadMonth'].value_counts(dropna=False).to_dict()
     for _lm_v, _lm_c in sorted(_ol_lm.items(), key=lambda x: -x[1]):
         print(f"    {_lm_v!r:25s}: {_lm_c:,}", flush=True)
+
+# ── Live month presence check ─────────────────────────────────────────────────
+# Every calendar month from ONLINE_START through the current month must appear in
+# online_leads with at least 1 row. Zero rows for a live month = silently dropped sheet.
+_ref_m  = ONLINE_START_ORDER % 100    # e.g. 7 (July)
+_ref_y  = ONLINE_START_ORDER // 100   # e.g. 26
+_cur_m  = _RUN_START.month
+_cur_y  = _RUN_START.year % 100       # 2-digit
+_expected_live_months = []
+_m, _y  = _ref_m, _ref_y
+while (_y * 100 + _m) <= (_cur_y * 100 + _cur_m):
+    _expected_live_months.append(f"{MONTH_NAMES[_m - 1]}'{_y:02d}")
+    _m += 1
+    if _m > 12:
+        _m, _y = 1, _y + 1
+
+_online_lm_set = set(online_leads['LeadMonth'].unique()) \
+    if 'LeadMonth' in online_leads.columns and len(online_leads) > 0 else set()
+_missing_live = [mo for mo in _expected_live_months if mo not in _online_lm_set]
+if _missing_live:
+    _fail_exit(
+        'Live month presence check',
+        f'Expected live months with zero rows after filtering: {_missing_live}. '
+        f'Expected: {_expected_live_months}. '
+        f'Actual months in online_leads: {sorted(_online_lm_set)}. '
+        f'One or more source sheets may have returned empty data or failed silently.'
+    )
+print(f"  Live month check — expected: {_expected_live_months} — all present ✓", flush=True)
 
 parts     = [df for df in [hist_leads, online_leads] if len(df) > 0]
 all_leads = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
@@ -1963,14 +2128,34 @@ def _validate_payload(p):
           flush=True)
 
     errors = []
-    # DMS+CO vs Retails: NOT a hard check. Historical retail entries (Apr'25–Jun'26) sourced
-    # from Excel may have blank rtype (neither 'DMS' nor 'Call Out'), so DMS+CO ≤ Retails is
-    # expected. Report the gap as informational only.
+
+    # DMS+CO vs Retails:
+    # - Historical months (pre-Jul'26): Excel may have blank rtype → DMS+CO ≤ Retails is expected.
+    # - Live months (Jul'26+): all retails come from live GSheet with Call Type → DMS+CO MUST equal Retails.
     _grand_unclassified = grand_rets - (grand_dms + grand_co)
     if _grand_unclassified > 0:
         print(f"  NOTE: {_grand_unclassified:,} retail records have unclassified Call Type "
-              f"(DMS+CO={grand_dms+grand_co:,} vs Retails={grand_rets:,}) — "
-              f"typical for historical records with blank Excel rtype.", flush=True)
+              f"(DMS+CO={grand_dms+grand_co:,} vs Retails={grand_rets:,}). "
+              f"Checking per-month for live months…", flush=True)
+
+    for lm, oc in sorted(oc_by_lm.items(), key=lambda x: month_order(x[0])):
+        if month_order(lm) < ONLINE_START_ORDER:
+            continue   # historical — blank rtype is normal
+        if oc[1] == 0:
+            continue   # no retails this month — no check needed
+        _unclass = oc[1] - (oc[2] + oc[3])
+        if _unclass != 0:
+            errors.append(
+                f"  LIVE DMS+CO ≠ Retails [{lm} On Create]: "
+                f"DMS={oc[2]:,}  CO={oc[3]:,}  DMS+CO={oc[2]+oc[3]:,}  "
+                f"Retails={oc[1]:,}  diff={_unclass:+,}"
+            )
+
+    # Verify every expected live month has leads in the payload
+    _pay_lm_set = set(oc_by_lm.keys())
+    for _elmo in globals().get('_expected_live_months', []):
+        if _elmo not in _pay_lm_set:
+            errors.append(f"  Live month {_elmo!r} has 0 leads in payload (expected non-zero)")
 
     # Print monthly breakdown for key months
     for mo in ("Jul'26", "Aug'26"):
@@ -2021,34 +2206,6 @@ _staging_path = _data_dir / f'tvs_payload_staging_{_RUN_START.strftime("%Y%m%d_%
 _local_path   = Path(__file__).parent / 'tvs_last_payload.json'
 
 
-def _fail_exit(stage, reason, stg_path=None):
-    """Structured failure report — production is always unchanged on exit."""
-    sep = '=' * 60
-    print(f"\n{sep}", file=sys.stderr, flush=True)
-    print("TVS DATA PIPELINE — FAILED SAFELY", file=sys.stderr, flush=True)
-    print(sep, file=sys.stderr, flush=True)
-    print(f"Stage:    {stage}", file=sys.stderr, flush=True)
-    print(f"Reason:   {reason}", file=sys.stderr, flush=True)
-    print(f"\nProduction payload changed: NO", file=sys.stderr, flush=True)
-    print(f"Firebase changed:           NO", file=sys.stderr, flush=True)
-    print(f"GitHub Pages changed:       NO", file=sys.stderr, flush=True)
-    if _prod_path.exists():
-        _mtime = datetime.fromtimestamp(_prod_path.stat().st_mtime, timezone.utc)
-        print(f"\nLast known-good: {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)",
-              file=sys.stderr, flush=True)
-        print(f"Last modified:   {_mtime.strftime('%Y-%m-%d %H:%M UTC')}",
-              file=sys.stderr, flush=True)
-    else:
-        print(f"\nLast known-good: NONE (first run)", file=sys.stderr, flush=True)
-    if stg_path:
-        _sp = Path(stg_path)
-        if _sp.exists():
-            print(f"Diagnostic:      {_sp.name}  (kept for inspection)", file=sys.stderr, flush=True)
-    print(f"\nDashboard continues serving the previous known-good payload.", file=sys.stderr, flush=True)
-    print(sep, file=sys.stderr, flush=True)
-    sys.exit(1)
-
-
 # ── Serialise to local diagnostic copy (never committed) ──────────────────────
 try:
     json_str = json.dumps(payload, separators=(',', ':'))
@@ -2087,19 +2244,35 @@ except Exception as _rb_err:
 # ── DRY RUN: stop here, discard staging ───────────────────────────────────────
 if DRY_RUN:
     _staging_path.unlink(missing_ok=True)
-    _oc_jul = _oc.get("Jul'26", [0, 0, 0, 0])
-    _ou_jul = _ou.get("Jul'26", [0, 0, 0, 0])
-    _oc_aug = _oc.get("Aug'26", [0, 0, 0, 0])
-    _ou_aug = _ou.get("Aug'26", [0, 0, 0, 0])
+    _elapsed_dr = int((datetime.now(timezone.utc) - _RUN_START).total_seconds())
     print(f"\n{'=' * 60}", flush=True)
     print("TVS DATA PIPELINE — DRY RUN COMPLETE  (production unchanged)", flush=True)
     print(f"{'=' * 60}", flush=True)
-    print(f"  Staging validated:  leads={_stg_leads:,}  retails={_stg_retails:,}", flush=True)
-    print(f"  Jul'26 On Create:   leads={_oc_jul[0]:,}  retails={_oc_jul[1]:,}", flush=True)
-    print(f"  Jul'26 On Update:   leads={_ou_jul[0]:,}  retails={_ou_jul[1]:,}", flush=True)
-    print(f"  Aug'26 On Create:   leads={_oc_aug[0]:,}  retails={_oc_aug[1]:,}", flush=True)
-    print(f"  Aug'26 On Update:   leads={_ou_aug[0]:,}  retails={_ou_aug[1]:,}", flush=True)
-    print(f"  Production:         UNCHANGED", flush=True)
+    print(f"Timestamp: {_RUN_START.strftime('%Y-%m-%d %H:%M UTC')}  "
+          f"Runtime: {_elapsed_dr // 60}m {_elapsed_dr % 60}s", flush=True)
+
+    print(f"\nSOURCE STATUS", flush=True)
+    print(f"  Historical leads:    {len(hist_leads):>10,}", flush=True)
+    for _lbl_m, _m_info in sorted(_current_metrics.items(), key=lambda x: x[0]):
+        _prev_r = _prev_metrics.get(_lbl_m, {}).get('rows') if isinstance(_prev_metrics.get(_lbl_m), dict) \
+            else _prev_metrics.get(_lbl_m)
+        _prev_str = f"prev {_prev_r:,}" if _prev_r is not None else "no baseline"
+        print(f"  {_lbl_m:30s}: {_m_info['rows']:>10,}  ({_prev_str})", flush=True)
+
+    print(f"\nSTAGING VALIDATION", flush=True)
+    print(f"  Staging leads:      {_stg_leads:>10,}", flush=True)
+    print(f"  Staging retails:    {_stg_retails:>10,}", flush=True)
+
+    print(f"\nLIVE MONTHS RECONCILIATION", flush=True)
+    for _mo in _expected_live_months:
+        _oc_v = _oc.get(_mo, [0,0,0,0])
+        _ou_v = _ou.get(_mo, [0,0,0,0])
+        print(f"  {_mo} On Create — Leads: {_oc_v[0]:>8,}  Retails: {_oc_v[1]:>7,}  "
+              f"DMS: {_oc_v[2]:>6,}  CO: {_oc_v[3]:>6,}", flush=True)
+        print(f"  {_mo} On Update — Leads: {_ou_v[0]:>8,}  Retails: {_ou_v[1]:>7,}  "
+              f"DMS: {_ou_v[2]:>6,}  CO: {_ou_v[3]:>6,}", flush=True)
+
+    print(f"\nPRODUCTION: UNCHANGED  (dry run — Firebase not called)", flush=True)
     print(f"{'=' * 60}", flush=True)
     sys.exit(0)
 
@@ -2148,12 +2321,12 @@ shutil.move(str(_staging_path), str(_prod_path))
 print(f"  Promoted staging   → {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)",
       flush=True)
 
+# ── Save source metrics (only on actual publish, not dry-run) ─────────────────
+if not DRY_RUN:
+    _save_source_metrics(_current_metrics, _RUN_START)
+
 # ── Structured success report ─────────────────────────────────────────────────
 _elapsed       = int((datetime.now(timezone.utc) - _RUN_START).total_seconds())
-_oc_jul        = _oc.get("Jul'26", [0, 0, 0, 0])
-_ou_jul        = _ou.get("Jul'26", [0, 0, 0, 0])
-_oc_aug        = _oc.get("Aug'26", [0, 0, 0, 0])
-_ou_aug        = _ou.get("Aug'26", [0, 0, 0, 0])
 _grand_leads   = sum(v[0] for v in _oc.values())
 _grand_retails = sum(v[1] for v in _oc.values())
 _live_lm_dist  = (online_leads['LeadMonth'].value_counts().to_dict()
@@ -2164,28 +2337,41 @@ print("TVS DATA PIPELINE — SUCCESS", flush=True)
 print(f"{'=' * 60}", flush=True)
 print(f"Timestamp: {_RUN_START.strftime('%Y-%m-%d %H:%M UTC')}  "
       f"Runtime: {_elapsed // 60}m {_elapsed % 60}s", flush=True)
-print(f"\nSOURCE", flush=True)
-print(f"  Historical leads:  {len(hist_leads):>10,}", flush=True)
-for _mo, _cnt in sorted(_live_lm_dist.items(), key=lambda x: month_order(x[0])):
-    print(f"  {_mo} live leads: {int(_cnt):>8,}", flush=True)
-print(f"  Live retail rows:  {len(retail_df):>10,}  (combined map: {len(retail_map):,})", flush=True)
-print(f"\nAGGREGATION", flush=True)
+
+print(f"\nSOURCE STATUS", flush=True)
+print(f"  Historical leads:    {len(hist_leads):>10,}", flush=True)
+for _lbl_m, _m_info in sorted(_current_metrics.items(), key=lambda x: x[0]):
+    _prev_r = _prev_metrics.get(_lbl_m, {}).get('rows') if isinstance(_prev_metrics.get(_lbl_m), dict) \
+        else _prev_metrics.get(_lbl_m)
+    _prev_str = f"prev {_prev_r:,}" if _prev_r is not None else "no baseline"
+    print(f"  {_lbl_m:30s}: {_m_info['rows']:>10,}  ({_prev_str})", flush=True)
+
+print(f"\nMONTH RECONCILIATION (On Create)", flush=True)
+for _mo in sorted(_oc.keys(), key=month_order):
+    _oc_v = _oc[_mo]
+    _is_live = '(live)' if month_order(_mo) >= ONLINE_START_ORDER else '(hist)'
+    print(f"  {_mo} {_is_live:6s} — Leads: {_oc_v[0]:>7,}  Retails: {_oc_v[1]:>6,}  "
+          f"DMS: {_oc_v[2]:>5,}  CO: {_oc_v[3]:>5,}", flush=True)
+
+print(f"\nLIVE MONTHS — ON CREATE vs ON UPDATE", flush=True)
+for _mo in _expected_live_months:
+    _oc_v = _oc.get(_mo, [0,0,0,0])
+    _ou_v = _ou.get(_mo, [0,0,0,0])
+    print(f"  {_mo} On Create — Leads: {_oc_v[0]:>8,}  Retails: {_oc_v[1]:>7,}  "
+          f"DMS: {_oc_v[2]:>6,}  CO: {_oc_v[3]:>6,}", flush=True)
+    print(f"  {_mo} On Update — Leads: {_ou_v[0]:>8,}  Retails: {_ou_v[1]:>7,}  "
+          f"DMS: {_ou_v[2]:>6,}  CO: {_ou_v[3]:>6,}", flush=True)
+
+print(f"\nAGGREGATION TOTALS", flush=True)
 print(f"  Total unique leads:         {_grand_leads:>10,}", flush=True)
 print(f"  Total retails (On Create):  {_grand_retails:>10,}", flush=True)
-print(f"\nJUL'26", flush=True)
-print(f"  On Create — Leads: {_oc_jul[0]:>8,}  Retails: {_oc_jul[1]:>7,}  "
-      f"DMS: {_oc_jul[2]:>6,}  CO: {_oc_jul[3]:>6,}", flush=True)
-print(f"  On Update — Leads: {_ou_jul[0]:>8,}  Retails: {_ou_jul[1]:>7,}  "
-      f"DMS: {_ou_jul[2]:>6,}  CO: {_ou_jul[3]:>6,}", flush=True)
-print(f"\nAUG'26", flush=True)
-print(f"  On Create — Leads: {_oc_aug[0]:>8,}  Retails: {_oc_aug[1]:>7,}  "
-      f"DMS: {_oc_aug[2]:>6,}  CO: {_oc_aug[3]:>6,}", flush=True)
-print(f"  On Update — Leads: {_ou_aug[0]:>8,}  Retails: {_ou_aug[1]:>7,}  "
-      f"DMS: {_ou_aug[2]:>6,}  CO: {_ou_aug[3]:>6,}", flush=True)
+print(f"  Combined retail map:        {len(retail_map):>10,}", flush=True)
+
 print(f"\nPUBLICATION", flush=True)
 print(f"  Firebase:  CONFIRMED (ok:true)", flush=True)
 print(f"  Payload:   {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)", flush=True)
 if _prev_existed:
     print(f"  Previous:  backed up to {_prev_path.name}", flush=True)
+
 print(f"\nSTATUS: PRODUCTION UPDATED", flush=True)
 print(f"{'=' * 60}", flush=True)
