@@ -1,0 +1,14 @@
+{
+  "retail_raw": {
+    "rows": 73330
+  },
+  "Jul'26-LeadMaster": {
+    "rows": 190631,
+    "raw_rows": 280440
+  },
+  "Aug26+-LeadMaster": {
+    "rows": 138112,
+    "raw_rows": 138112
+  },
+  "date": "2026-08-22"
+}
