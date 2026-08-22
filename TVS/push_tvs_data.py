@@ -1069,19 +1069,38 @@ def fetch_sheet_via_proxy(file_id, label, tab_name=None):
 # ─── Lead sheet processing ─────────────────────────────────────────────────────
 
 def extract_rtype_map(raw_df):
-    """Extract {opty_id → {rm, rtype}} from embedded retail columns if present."""
+    """Extract {opty_id → {rm, rtype}} from embedded retail columns if present.
+
+    Normalizes 'Retail By' values: 'DMS' → 'DMS'; 'CC'/'Call Out'/any variant
+    containing 'CALL' → 'Call Out'. Unknown non-empty values are preserved verbatim
+    and reported so the dashboard's bump() will count them as unclassified — making
+    the validation catch them rather than silently discarding them.
+    """
     rmap = {}
     if 'DMS_Retail_Month' not in raw_df.columns:
         return rmap
+    _unknown_rb: dict = {}
     for _, row in raw_df.iterrows():
         rm = str(row.get('DMS_Retail_Month', '') or '').strip()
         if not rm: continue
         lid = to_id(row.get('opty_id', ''))
         if not lid: continue
-        rmap[lid] = {
-            'rm':    norm_month(rm),
-            'rtype': str(row.get('Retail By', '') or '').strip(),
-        }
+        _rb_raw = str(row.get('Retail By', '') or '').strip()
+        _rb_u   = _rb_raw.upper()
+        if 'DMS' in _rb_u:
+            _rtype = 'DMS'
+        elif 'CALL' in _rb_u or _rb_u == 'CC':
+            # 'CC' = Call Center abbreviation used in lead sheets; treat as Call Out
+            _rtype = 'Call Out'
+        else:
+            _rtype = _rb_raw          # preserve for validation to catch
+            if _rb_raw:
+                _unknown_rb[_rb_raw] = _unknown_rb.get(_rb_raw, 0) + 1
+        rmap[lid] = {'rm': norm_month(rm), 'rtype': _rtype}
+    if _unknown_rb:
+        print(f"  NOTE: extract_rtype_map — unrecognized 'Retail By' values "
+              f"(will be unclassified in aggregation): "
+              f"{dict(sorted(_unknown_rb.items()))}", flush=True)
     return rmap
 
 def standardize_leads(raw_df):
