@@ -1078,7 +1078,9 @@ def extract_rtype_map(raw_df):
     """
     rmap = {}
     if 'DMS_Retail_Month' not in raw_df.columns:
+        print(f"  DEBUG extract_rtype_map: DMS_Retail_Month NOT in columns {list(raw_df.columns)}", flush=True)
         return rmap
+    _rb_counts: dict = {}
     _unknown_rb: dict = {}
     for _, row in raw_df.iterrows():
         rm = str(row.get('DMS_Retail_Month', '') or '').strip()
@@ -1087,16 +1089,23 @@ def extract_rtype_map(raw_df):
         if not lid: continue
         _rb_raw = str(row.get('Retail By', '') or '').strip()
         _rb_u   = _rb_raw.upper()
+        _rb_counts[_rb_raw] = _rb_counts.get(_rb_raw, 0) + 1
         if 'DMS' in _rb_u:
             _rtype = 'DMS'
         elif 'CALL' in _rb_u or _rb_u == 'CC':
             # 'CC' = Call Center abbreviation used in lead sheets; treat as Call Out
             _rtype = 'Call Out'
         else:
-            _rtype = _rb_raw          # preserve for validation to catch
-            if _rb_raw:
+            # '-', blank, 'N/A', or any unrecognized sentinel → no override.
+            # Only DMS / Call Out variants provide positive classification evidence.
+            # Storing '' ensures the override guard (if info['rtype']) skips it,
+            # preserving the live retail sheet's correctly-classified Call Type.
+            _rtype = ''
+            if _rb_raw and _rb_raw not in ('-', '–', 'N/A', 'NA', 'na', 'n/a'):
                 _unknown_rb[_rb_raw] = _unknown_rb.get(_rb_raw, 0) + 1
         rmap[lid] = {'rm': norm_month(rm), 'rtype': _rtype}
+    print(f"  DEBUG extract_rtype_map: {len(rmap):,} retailed leads — "
+          f"'Retail By' distribution: {dict(sorted(_rb_counts.items(), key=lambda x: -x[1])[:10])}", flush=True)
     if _unknown_rb:
         print(f"  NOTE: extract_rtype_map — unrecognized 'Retail By' values "
               f"(will be unclassified in aggregation): "
@@ -1899,6 +1908,16 @@ print(f"  Live retail: {len(online_rmap):,} total  "
       f"| {_kept_rm:,} rm kept (pre-Jul'26, invalid new rm)  "
       f"| {_added_new:,} added new (pre-Jul'26, not in hist)", flush=True)
 
+# DEBUG: Inspect rtype distribution for Jul'26+ entries in retail_map after merge
+_dbg_live_rt: dict = {}
+for _lid, _info in retail_map.items():
+    _rm = _info.get('rm', '')
+    if month_order(_rm) >= ONLINE_START_ORDER:
+        _rt = _info.get('rtype', '<<missing>>')
+        _dbg_live_rt[_rt] = _dbg_live_rt.get(_rt, 0) + 1
+print(f"  DEBUG retail_map after merge — Jul'26+ rtype distribution: "
+      f"{dict(sorted(_dbg_live_rt.items(), key=lambda x: -x[1]))}", flush=True)
+
 # Remove retail entries whose Retail_Attribution_Date is before LEAD_MASTER_START (Apr'25).
 # Dashboard scope begins Apr'25; Jan'25–Mar'25 retails must not appear anywhere.
 _pre_filter = len(retail_map)
@@ -2030,15 +2049,26 @@ for sheet in LEAD_SHEETS:
 # Override rtype from embedded sheet columns (DMS_Retail_Month / Retail By).
 # Only override when Retail By is non-empty AND retail month is Jul'26+ (ONLINE_START).
 # Pre-Jul'26 hist retail types are authoritative and must not be overwritten by live sheets.
+_override_applied = 0
+_override_skipped_hist = 0
+_override_not_in_rmap = 0
 for lid, info in rtype_map.items():
     if lid in retail_map:
         _rm_ord = month_order(info.get('rm', ''))
         if 0 < _rm_ord < ONLINE_START_ORDER:
+            _override_skipped_hist += 1
             continue   # hist retail month — live sheet must not override
         if info['rtype']:
             retail_map[lid]['rtype'] = info['rtype']
+            _override_applied += 1
         if info['rm'] and not retail_map[lid]['rm']:
             retail_map[lid]['rm'] = info['rm']
+    else:
+        _override_not_in_rmap += 1
+print(f"  DEBUG rtype override: {_override_applied:,} applied  "
+      f"{_override_skipped_hist:,} skipped(hist)  "
+      f"{_override_not_in_rmap:,} lid not in retail_map  "
+      f"(total rtype_map entries: {len(rtype_map):,})", flush=True)
 
 # ── Step 5: Merge, gap-fill, aggregate, push ──────────────────────────────────
 print("\n[5/5] Merging leads, gap-fill, aggregating…", flush=True)
