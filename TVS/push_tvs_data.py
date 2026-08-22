@@ -956,23 +956,54 @@ LEAD_COL_MAP = {
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 # Explicit city aliases (title-cased key → canonical name).
-# Only strong, confirmed aliases are listed here.
+# Only strong, confirmed aliases belong here — do not add guesses.
+# Keys must be in Title Case (how str.title() would produce them).
 _CITY_ALIAS = {
     'New Delhi':          'Delhi',
     'Bengaluru':          'Bangalore',
+    'Bengalore':          'Bangalore',   # misspelling seen in source data
     'Prayagraj':          'Allahabad',
     'Thiruvananthapuram': 'Trivandrum',
 }
 
+# Separators that indicate a compound city string such as
+# "Bengaluru / Bangalore" or "Begur, Bengaluru".
+_COMPOUND_SEP_RE = re.compile(r'(\s*[/,|&]\s*)')
+
 def normalize_city(raw):
-    """Canonical city name: strip, collapse whitespace, title-case, apply alias."""
+    """Canonical city name: strip, collapse whitespace, title-case, apply alias.
+
+    Also handles compound strings produced by source data entry:
+      'Bengaluru / Bangalore'  -> 'Bangalore'   (both tokens same canon)
+      'Begur, Bengaluru'       -> 'Begur, Bangalore'
+      'New Delhi / Delhi'      -> 'Delhi'
+    Separators in the original string are preserved when parts differ.
+    """
     s = re.sub(r'\s+', ' ', str(raw or '').strip())
     if not s:
         return 'Unknown'
     # title() capitalises after any non-alpha char: handles spaces, hyphens,
     # parentheses, apostrophes — matches JS canonicalCity() exactly.
     s = s.title()
-    return _CITY_ALIAS.get(s, s)
+    # Fast path: exact alias match on the whole string
+    if s in _CITY_ALIAS:
+        return _CITY_ALIAS[s]
+    # Compound string: split, canonicalize each token, then rejoin.
+    # re.split with a capturing group keeps the separators in the result list.
+    if _COMPOUND_SEP_RE.search(s):
+        tokens     = _COMPOUND_SEP_RE.split(s)   # [part, sep, part, sep, ...]
+        parts      = tokens[0::2]                 # city tokens
+        seps       = tokens[1::2]                 # separators between them
+        canon      = [_CITY_ALIAS.get(p.strip(), p.strip()) for p in parts]
+        # Collapse when every token resolves to the same canonical city
+        if len(set(canon)) == 1:
+            return canon[0]
+        # Otherwise reassemble, preserving original separators
+        result = canon[0]
+        for sep, cp in zip(seps, canon[1:]):
+            result += sep + cp
+        return result
+    return s
 
 def norm_month(s):
     s = str(s or '').strip()
@@ -1218,17 +1249,55 @@ def fetch_retails():
     return df
 
 
-def _validate_retail_fetch(df):
+def _validate_retail_fetch(df, prev_metrics=None):
     """Print a sanity report for the freshly fetched retail DataFrame.
-    Raises RuntimeError if the row count looks suspiciously low (< 50 000).
+
+    Fails via _fail_exit() if the row count is suspiciously low.
+    Floor is dynamic when a previous-run baseline exists:
+      floor = max(RETAIL_ABS_FLOOR, int(prev_count * RETAIL_DROP_THRESHOLD))
+    This prevents false rejections as the business grows while still catching
+    truncated fetches.  prev_metrics should be the _prev_metrics dict from the
+    global pipeline state (pass explicitly so the function is unit-testable).
     """
-    print("\n── Retail fetch validation ──────────────────────────", flush=True)
+    print("\n-- Retail fetch validation --------------------------------------------------", flush=True)
     n = len(df)
     print(f"  Total rows: {n:,}", flush=True)
-    if n < 50_000:
-        raise RuntimeError(
-            f"Retail fetch produced only {n:,} rows — expected ≥ 50,000. "
-            "Aborting: this is almost certainly an incomplete fetch.")
+
+    RETAIL_ABS_FLOOR       = 50_000   # absolute minimum regardless of history
+    RETAIL_DROP_THRESHOLD  = 0.80     # must be ≥ 80 % of previous run
+
+    prev = None
+    if prev_metrics:
+        _pm = prev_metrics.get('retail_raw')
+        if isinstance(_pm, dict):
+            prev = _pm.get('rows')
+        elif isinstance(_pm, int):
+            prev = _pm
+
+    if prev is not None and prev > 0:
+        floor = max(RETAIL_ABS_FLOOR, int(prev * RETAIL_DROP_THRESHOLD))
+        pct   = f'{n / prev:.1%}'
+        print(f"  Previous run count: {prev:,}  Current: {n:,}  Ratio: {pct}", flush=True)
+        if n < floor:
+            _fail_exit(
+                'Retail fetch size validation',
+                f'Retail fetch produced only {n:,} rows — less than '
+                f'{RETAIL_DROP_THRESHOLD:.0%} of previous run ({prev:,}). '
+                f'Minimum expected: {floor:,}. '
+                f'This almost certainly indicates an incomplete fetch or sheet truncation. '
+                f'If this is a genuine data reduction, delete source_metrics.json to reset the baseline.'
+            )
+        print(f"  Retail row count OK ({pct} of previous run).", flush=True)
+    else:
+        # No baseline yet (first run or reset). Use absolute floor only.
+        if n < RETAIL_ABS_FLOOR:
+            _fail_exit(
+                'Retail fetch size validation',
+                f'Retail fetch produced only {n:,} rows — expected ≥ {RETAIL_ABS_FLOOR:,}. '
+                f'This is almost certainly an incomplete fetch. '
+                f'(No historical baseline available; using absolute floor.)'
+            )
+        print(f"  Retail row count OK ({n:,} rows; no previous baseline).", flush=True)
     if 'performanceMonth' in df.columns:
         # The live retail sheet stores performanceMonth as raw date strings (YYYY-MM-DD),
         # not as month labels like "Jul'26". Count rows using parse_ym() so we match
@@ -1869,7 +1938,7 @@ try:
             f'Required columns missing from retail sheet: {sorted(_missing_ret_cols)}. '
             f'Available: {list(retail_df.columns)}'
         )
-    _validate_retail_fetch(retail_df)
+    _validate_retail_fetch(retail_df, _prev_metrics)
 except SystemExit:
     raise
 except Exception as _retail_err:
@@ -2221,8 +2290,15 @@ payload  = build_payload(all_leads, retail_map)
 # ── Pre-push payload validation ───────────────────────────────────────────────
 def _validate_payload(p):
     """Validate internal consistency of the payload and print a reconciliation table.
-    Hard-fails (sys.exit 1) if DMS+CallOut ≠ Total retails for any month, or if
-    On Create and On Update matrix column sums diverge by more than 10 %.
+
+    Hard-fails via _fail_exit() if:
+      - DMS+CO != Retails for any live month (>= ONLINE_START) in On Create
+      - DMS+CO != Retails for any live month in On Update
+      - Any expected live month has 0 leads in the payload
+
+    Uses _fail_exit (not sys.exit) so the structured failure report is always printed
+    and the staging path is captured when available.  _validate_payload is called before
+    the staging file is written, so stg_path is always None at this stage.
     Reference values are printed for manual cross-check; they are NOT hard limits.
     """
     # Month labels are nested under payload['maps']['lm'], not at payload['lm'].
@@ -2230,8 +2306,8 @@ def _validate_payload(p):
 
     # monthly: rows = [lm_idx, leads, retails, dms, callout]
     # u_monthly: rows = [lm_idx, leads, retails, dms, callout]
-    oc_by_lm  = {}   # On Create: lm_label → [leads, rets, dms, co]
-    ou_by_lm  = {}   # On Update: lm_label → [leads, rets, dms, co]
+    oc_by_lm  = {}   # On Create: lm_label -> [leads, rets, dms, co]
+    ou_by_lm  = {}   # On Update: lm_label -> [leads, rets, dms, co]
 
     for row in p.get('monthly', []):
         lm = lm_arr[row[0]] if row[0] < len(lm_arr) else '?'
@@ -2248,55 +2324,90 @@ def _validate_payload(p):
     grand_dms   = sum(v[2] for v in oc_by_lm.values())
     grand_co    = sum(v[3] for v in oc_by_lm.values())
 
-    print("\n── Pre-push payload reconciliation ──────────────────", flush=True)
-    print(f"  Grand totals  — Leads: {grand_leads:,}  Retails: {grand_rets:,}  "
+    print("\n-- Pre-push payload reconciliation --------------------------------------------------", flush=True)
+    print(f"  Grand totals  -- Leads: {grand_leads:,}  Retails: {grand_rets:,}  "
           f"DMS: {grand_dms:,}  CO: {grand_co:,}  DMS+CO: {grand_dms+grand_co:,}",
           flush=True)
 
     errors = []
 
-    # DMS+CO vs Retails:
-    # - Historical months (pre-Jul'26): Excel may have blank rtype → DMS+CO ≤ Retails is expected.
-    # - Live months (Jul'26+): all retails come from live GSheet with Call Type → DMS+CO MUST equal Retails.
+    # DMS+CO vs Retails (On Create):
+    # - Historical months (pre-ONLINE_START): hist Excel may have blank rtype -> informational only.
+    # - Live months (ONLINE_START+): retail master provides Call Type for every row ->
+    #   DMS+CO MUST equal Retails. Any gap means a '-' sentinel or unknown Call Type
+    #   bypassed normalization and reached aggregation unclassified.
     _grand_unclassified = grand_rets - (grand_dms + grand_co)
     if _grand_unclassified > 0:
         print(f"  NOTE: {_grand_unclassified:,} retail records have unclassified Call Type "
               f"(DMS+CO={grand_dms+grand_co:,} vs Retails={grand_rets:,}). "
-              f"Checking per-month for live months…", flush=True)
+              f"Checking per-month for live months...", flush=True)
 
     for lm, oc in sorted(oc_by_lm.items(), key=lambda x: month_order(x[0])):
         if month_order(lm) < ONLINE_START_ORDER:
-            continue   # historical — blank rtype is normal
+            continue   # historical -- blank rtype is normal
         if oc[1] == 0:
-            continue   # no retails this month — no check needed
+            continue   # no retails this month -- no check needed
         _unclass = oc[1] - (oc[2] + oc[3])
         if _unclass != 0:
             errors.append(
-                f"  LIVE DMS+CO ≠ Retails [{lm} On Create]: "
+                f"LIVE DMS+CO != Retails [{lm} On Create]: "
                 f"DMS={oc[2]:,}  CO={oc[3]:,}  DMS+CO={oc[2]+oc[3]:,}  "
                 f"Retails={oc[1]:,}  diff={_unclass:+,}"
+            )
+
+    # DMS+CO vs Retails (On Update):
+    # OU retail month is the performanceMonth (retail month), not lead-creation month.
+    # Live retail months (rm >= ONLINE_START) must also be fully classified.
+    _ou_grand_rets = sum(v[1] for v in ou_by_lm.values())
+    _ou_grand_dms  = sum(v[2] for v in ou_by_lm.values())
+    _ou_grand_co   = sum(v[3] for v in ou_by_lm.values())
+    _ou_unclass    = _ou_grand_rets - (_ou_grand_dms + _ou_grand_co)
+    if _ou_unclass > 0:
+        print(f"  NOTE: {_ou_unclass:,} OU retail records have unclassified Call Type. "
+              f"Checking per-month for live retail months...", flush=True)
+
+    for lm, ou in sorted(ou_by_lm.items(), key=lambda x: month_order(x[0])):
+        if month_order(lm) < ONLINE_START_ORDER:
+            continue   # historical OU retail months are exempt
+        if ou[1] == 0:
+            continue
+        _unclass_ou = ou[1] - (ou[2] + ou[3])
+        if _unclass_ou != 0:
+            errors.append(
+                f"LIVE DMS+CO != Retails [{lm} On Update retail month]: "
+                f"DMS={ou[2]:,}  CO={ou[3]:,}  DMS+CO={ou[2]+ou[3]:,}  "
+                f"Retails={ou[1]:,}  diff={_unclass_ou:+,}"
             )
 
     # Verify every expected live month has leads in the payload
     _pay_lm_set = set(oc_by_lm.keys())
     for _elmo in globals().get('_expected_live_months', []):
         if _elmo not in _pay_lm_set:
-            errors.append(f"  Live month {_elmo!r} has 0 leads in payload (expected non-zero)")
+            errors.append(f"Live month {_elmo!r} has 0 leads in payload (expected non-zero)")
 
-    # Print monthly breakdown for all live months (dynamic — no hardcoded month list).
+    # Print monthly breakdown for all live months (dynamic -- no hardcoded month list).
     for mo in globals().get('_expected_live_months', []):
         if month_order(mo) < ONLINE_START_ORDER:
             continue
         oc = oc_by_lm.get(mo, [0,0,0,0])
         ou = ou_by_lm.get(mo, [0,0,0,0])
-        print(f"  {mo}  On Create  — Leads: {oc[0]:>7,}  Retails: {oc[1]:>6,}  "
-              f"DMS: {oc[2]:>5,}  CO: {oc[3]:>5,}", flush=True)
-        print(f"  {mo}  On Update  — Leads: {ou[0]:>7,}  Retails: {ou[1]:>6,}  "
-              f"DMS: {ou[2]:>5,}  CO: {ou[3]:>5,}", flush=True)
+        _oc_unclass = oc[1] - (oc[2] + oc[3])
+        _ou_unclass_mo = ou[1] - (ou[2] + ou[3])
+        print(f"  {mo}  On Create  -- Leads: {oc[0]:>7,}  Retails: {oc[1]:>6,}  "
+              f"DMS: {oc[2]:>5,}  CO: {oc[3]:>5,}"
+              + (f"  UNCLASS={_oc_unclass:+,}" if _oc_unclass != 0 else ""),
+              flush=True)
+        print(f"  {mo}  On Update  -- Leads: {ou[0]:>7,}  Retails: {ou[1]:>6,}  "
+              f"DMS: {ou[2]:>5,}  CO: {ou[3]:>5,}"
+              + (f"  UNCLASS={_ou_unclass_mo:+,}" if _ou_unclass_mo != 0 else ""),
+              flush=True)
 
-    # Reference cross-check (informational — not a hard limit)
+    # Reference cross-check (informational -- NOT hard limits; update after each certified run).
+    # Root cause of the 2026-08-22 payload issue: '-' sentinel in lead-sheet 'Retail By'
+    # column was stored verbatim by old extract_rtype_map, overriding the correct 'Call Out'
+    # from the retail master. Fixed in commit 97abaeb. These values reflect the corrected run.
     REF = {
-        "Jul'26": {'oc_leads': 190640, 'oc_rets': 14406, 'ou_leads': None, 'ou_rets': 19052},
+        "Jul'26": {'oc_leads': 191541, 'oc_rets': 14182, 'ou_leads': None, 'ou_rets': 19054},
         "Aug'26": {'oc_leads': None,   'oc_rets': None,  'ou_leads': None, 'ou_rets': None},
     }
     print("  Reference cross-check (informational):", flush=True)
@@ -2305,20 +2416,26 @@ def _validate_payload(p):
         ou = ou_by_lm.get(mo, [0,0,0,0])
         if ref['oc_rets'] is not None:
             diff = oc[1] - ref['oc_rets']
+            flag = '  <-- DRIFT' if abs(diff) > 500 else ''
             print(f"    {mo} On Create retails: {oc[1]:,}  ref={ref['oc_rets']:,}  "
-                  f"diff={diff:+,}", flush=True)
+                  f"diff={diff:+,}{flag}", flush=True)
         if ref['ou_rets'] is not None:
             diff = ou[1] - ref['ou_rets']
+            flag = '  <-- DRIFT' if abs(diff) > 500 else ''
             print(f"    {mo} On Update retails: {ou[1]:,}  ref={ref['ou_rets']:,}  "
-                  f"diff={diff:+,}", flush=True)
+                  f"diff={diff:+,}{flag}", flush=True)
 
     if errors:
         print("\n  FATAL: payload internal consistency errors:", flush=True)
-        for e in errors: print(e, flush=True)
-        print("── End payload validation ────────────────────────────", flush=True)
-        sys.exit(1)
+        for e in errors:
+            print(f"    {e}", flush=True)
+        print("-- End payload validation ------------------------------------------------------------", flush=True)
+        # Use _fail_exit (not sys.exit) so the structured report is always printed.
+        # Staging has not been written yet at this stage, so stg_path is None.
+        _fail_exit('Payload validation -- DMS+CO mismatch in live months',
+                   '\n'.join(errors))
     print("  Payload validation PASSED.", flush=True)
-    print("── End payload validation ────────────────────────────", flush=True)
+    print("-- End payload validation ------------------------------------------------------------", flush=True)
     return oc_by_lm, ou_by_lm
 
 _oc, _ou = _validate_payload(payload)

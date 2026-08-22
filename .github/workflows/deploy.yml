@@ -1,4 +1,4 @@
-name: Deploy HMSI Analytics Dashboard
+name: Deploy TVS Lead Disposition Dashboard
 
 on:
   push:

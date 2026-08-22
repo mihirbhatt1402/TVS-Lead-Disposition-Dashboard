@@ -17,6 +17,7 @@ concurrency:
 jobs:
   push-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 60        # Apps Script fetch + processing should complete well within 1 hour
     permissions:
       contents: write         # needed for the keep-alive commit and data file
 
