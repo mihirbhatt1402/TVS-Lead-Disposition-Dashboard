@@ -2056,32 +2056,100 @@ if 'LeadMonth' in online_leads.columns:
         print(f"    {_lm_v!r:25s}: {_lm_c:,}", flush=True)
 
 # ── Live month presence check ─────────────────────────────────────────────────
-# Every calendar month from ONLINE_START through the current month must appear in
-# online_leads with at least 1 row. Zero rows for a live month = silently dropped sheet.
+# LOGIC:
+#
+#   Prior live months (ONLINE_START through end of the PREVIOUS calendar month):
+#     REQUIRED — hard-fail if any are absent. These are closed periods; zero rows
+#     means a source sheet failed or lost data silently.
+#
+#   Current calendar month:
+#     - Hard-fail if NO entry in LEAD_SHEETS covers it (no sheet configured to
+#       fetch the current month → data gap is guaranteed).
+#     - WARN (not fail) if a covering sheet returned 0 rows. This is normal at the
+#       start of a new month before any leads are created in CRM.
+#
+# This design makes Sep'26 roll-over automatic: the Aug26+ sheet has max_mo=None,
+# so it already covers Sep'26 and every future month without any code change. The
+# pipeline only hard-fails if CRM moves to a brand-new GSheet AND that sheet is not
+# added to LEAD_SHEETS (in which case _cur_month_covered is False → hard-fail with
+# a clear message).
+
 _ref_m  = ONLINE_START_ORDER % 100    # e.g. 7 (July)
 _ref_y  = ONLINE_START_ORDER // 100   # e.g. 26
 _cur_m  = _RUN_START.month
 _cur_y  = _RUN_START.year % 100       # 2-digit
-_expected_live_months = []
-_m, _y  = _ref_m, _ref_y
-while (_y * 100 + _m) <= (_cur_y * 100 + _cur_m):
-    _expected_live_months.append(f"{MONTH_NAMES[_m - 1]}'{_y:02d}")
+_prev_m = _cur_m - 1 if _cur_m > 1 else 12
+_prev_y = _cur_y if _cur_m > 1 else _cur_y - 1
+
+# Months from ONLINE_START through end of PREVIOUS calendar month — always required.
+_prior_live_months: list = []
+_m, _y = _ref_m, _ref_y
+while (_y * 100 + _m) <= (_prev_y * 100 + _prev_m):
+    _prior_live_months.append(f"{MONTH_NAMES[_m - 1]}'{_y:02d}")
     _m += 1
     if _m > 12:
         _m, _y = 1, _y + 1
 
-_online_lm_set = set(online_leads['LeadMonth'].unique()) \
+_cur_month_str   = f"{MONTH_NAMES[_cur_m - 1]}'{_cur_y:02d}"
+_cur_month_order = _cur_y * 100 + _cur_m
+
+# Is the current month within the min_mo..max_mo range of at least one LEAD_SHEET?
+_cur_month_covered = any(
+    s.get('min_mo', 0) <= _cur_month_order and
+    (s.get('max_mo') is None or s.get('max_mo') >= _cur_month_order)
+    for s in LEAD_SHEETS
+)
+
+_online_lm_set = (
+    set(online_leads['LeadMonth'].unique())
     if 'LeadMonth' in online_leads.columns and len(online_leads) > 0 else set()
-_missing_live = [mo for mo in _expected_live_months if mo not in _online_lm_set]
-if _missing_live:
+)
+
+# Hard-fail for any prior live month with 0 rows.
+_missing_prior = [mo for mo in _prior_live_months if mo not in _online_lm_set]
+if _missing_prior:
     _fail_exit(
         'Live month presence check',
-        f'Expected live months with zero rows after filtering: {_missing_live}. '
-        f'Expected: {_expected_live_months}. '
+        f'Prior live months with zero rows after filtering: {_missing_prior}. '
+        f'Required (prior): {_prior_live_months}. '
         f'Actual months in online_leads: {sorted(_online_lm_set)}. '
         f'One or more source sheets may have returned empty data or failed silently.'
     )
-print(f"  Live month check — expected: {_expected_live_months} — all present ✓", flush=True)
+
+# Hard-fail if no LEAD_SHEET covers the current month at all.
+if not _cur_month_covered:
+    _fail_exit(
+        'Live month presence check — current month not covered',
+        f'Current month {_cur_month_str!r} (order {_cur_month_order}) is not covered by any '
+        f'entry in LEAD_SHEETS. Check min_mo/max_mo for each sheet. '
+        f'Add a new LEAD_SHEETS entry, or extend max_mo of an existing entry, '
+        f'to ensure this month is fetched on future runs.',
+    )
+
+# Current month: warn if 0 rows (normal at start of month), do not fail.
+_cur_month_in_data = _cur_month_str in _online_lm_set
+if not _cur_month_in_data:
+    print(
+        f"  WARNING: current month {_cur_month_str!r} is covered by LEAD_SHEETS but "
+        f"has 0 rows in online_leads. This is expected if no leads have been created "
+        f"this month yet in CRM. Continuing — monitor daily.", flush=True
+    )
+
+# _expected_live_months drives: reconciliation output, _validate_payload checks,
+# DRY RUN and SUCCESS report tables.
+# Include current month only when it has actual data (so zero-row months don't
+# trigger _validate_payload's "0 leads in payload" error).
+_expected_live_months = _prior_live_months.copy()
+if _cur_month_in_data:
+    _expected_live_months.append(_cur_month_str)
+
+if _prior_live_months:
+    print(f"  Live month check — required prior: {_prior_live_months} — all present ✓", flush=True)
+print(
+    f"  Current month {_cur_month_str!r}: "
+    f"{'present ✓' if _cur_month_in_data else '0 rows (new month — monitoring)'}",
+    flush=True
+)
 
 parts     = [df for df in [hist_leads, online_leads] if len(df) > 0]
 all_leads = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
@@ -2180,8 +2248,10 @@ def _validate_payload(p):
         if _elmo not in _pay_lm_set:
             errors.append(f"  Live month {_elmo!r} has 0 leads in payload (expected non-zero)")
 
-    # Print monthly breakdown for key months
-    for mo in ("Jul'26", "Aug'26"):
+    # Print monthly breakdown for all live months (dynamic — no hardcoded month list).
+    for mo in globals().get('_expected_live_months', []):
+        if month_order(mo) < ONLINE_START_ORDER:
+            continue
         oc = oc_by_lm.get(mo, [0,0,0,0])
         ou = ou_by_lm.get(mo, [0,0,0,0])
         print(f"  {mo}  On Create  — Leads: {oc[0]:>7,}  Retails: {oc[1]:>6,}  "
