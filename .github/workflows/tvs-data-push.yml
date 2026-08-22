@@ -3,7 +3,12 @@ name: TVS Daily Data Push
 on:
   schedule:
     - cron: "0 6 * * *"    # 11:30 AM IST (UTC+5:30) — 30-min buffer for GitHub queue lag
-  workflow_dispatch:         # allow manual runs from GitHub UI
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — fetch, process and validate but do NOT publish'
+        type: boolean
+        default: false
 
 concurrency:
   group: tvs-data-push
@@ -28,7 +33,7 @@ jobs:
         run: pip install requests pandas openpyxl pyxlsb
 
       - name: Run data push
-        run: python TVS/push_tvs_data.py
+        run: python TVS/push_tvs_data.py ${{ inputs.dry_run == true && '--dry-run' || '' }}
 
       - name: Keep repo active
         run: |
@@ -36,8 +41,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "Last run: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > last_run.txt
           git add last_run.txt
-          git add data/tvs_payload.json.gz
+          git add data/tvs_payload.json.gz 2>/dev/null || true
+          git add data/tvs_payload_prev.json.gz 2>/dev/null || true
           git rm --cached data/tvs_payload.json 2>/dev/null || true
-          git commit -m "chore: pipeline run $(date -u '+%Y-%m-%d')"
+          git diff --cached --quiet || git commit -m "chore: pipeline run $(date -u '+%Y-%m-%d')"
           git pull --rebase
           git push
