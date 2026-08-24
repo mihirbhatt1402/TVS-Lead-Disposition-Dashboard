@@ -2,7 +2,7 @@ name: TVS Daily Data Push
 
 on:
   schedule:
-    - cron: "0 6 * * *"    # 11:30 AM IST (UTC+5:30) — 30-min buffer for GitHub queue lag
+    - cron: "0 4 * * *"    # 09:30 AM IST (UTC+5:30) — 30-min buffer for GitHub queue lag
   workflow_dispatch:
     inputs:
       dry_run:
