@@ -1,0 +1,42 @@
+{
+  "date": "2026-08-25",
+  "total_unknown_leads": 2099,
+  "total_unknown_rets": 82,
+  "distinct_raw_values": 1,
+  "rows": [
+    {
+      "raw_repr": "'TVS NTorq 150'",
+      "reason": "NTORQ_150",
+      "leads": 2099,
+      "rets": 82,
+      "by_month": {
+        "Aug'26": {
+          "leads": 2005,
+          "rets": 79
+        },
+        "Jul'26": {
+          "leads": 94,
+          "rets": 3
+        }
+      },
+      "by_src": {
+        "Whatsapp": {
+          "leads": 1128,
+          "rets": 33
+        },
+        "Non CPS": {
+          "leads": 45,
+          "rets": 1
+        },
+        "Organic": {
+          "leads": 888,
+          "rets": 45
+        },
+        "Facebook": {
+          "leads": 38,
+          "rets": 3
+        }
+      }
+    }
+  ]
+}
