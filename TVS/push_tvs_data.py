@@ -392,6 +392,10 @@ PURCHASED_MODEL_MAP = {
     # TVS NTORQ 125
     'TVS NTorq': 'TVS NTORQ 125',
 
+    # TVS NTORQ 150  (production raw value confirmed 2026-08-25)
+    'TVS NTorq 150':   'TVS NTORQ 150',
+    'TVS NTORQ 150':   'TVS NTORQ 150',
+
     # TVS Scooty Zest
     'TVS Zest': 'TVS Scooty Zest',
 
