@@ -2507,6 +2507,43 @@ print(f"  Promoted staging   → {_prod_path.name}  ({_prod_path.stat().st_size 
 if not DRY_RUN:
     _save_source_metrics(_current_metrics, _RUN_START)
 
+# ── Write Unknown-model diagnostic (production path) ─────────────────────────
+# Written alongside source_metrics so it lands in the same Keep-repo-active
+# commit.  A failure here must never abort a production push — hence try/except.
+if not DRY_RUN and _unk_mdl_detail:
+    _diag_path = Path(__file__).parent / 'unknown_model_diagnostic.json'
+    try:
+        _diag_rows_prod = []
+        for _rv, _rd in sorted(_unk_mdl_detail.items(), key=lambda x: -x[1]['leads']):
+            _reason = _unk_mdl_reasons.get(_rv, 'EMPTY' if not _rv else 'LEAD_MAP_EMPTY')
+            _diag_rows_prod.append({
+                'raw_repr':  _rd['raw_repr'],
+                'reason':    _reason,
+                'leads':     _rd['leads'],
+                'rets':      _rd['rets'],
+                'by_month':  {m: {'leads': v[0], 'rets': v[1]}
+                              for m, v in _rd['by_month'].items()},
+                'by_src':    {s: {'leads': v[0], 'rets': v[1]}
+                              for s, v in _rd['by_src'].items()},
+            })
+        _unk_prod_leads = sum(v['leads'] for v in _unk_mdl_detail.values())
+        _unk_prod_rets  = sum(v['rets']  for v in _unk_mdl_detail.values())
+        _diag_out_prod  = {
+            'date':                 _RUN_START.strftime('%Y-%m-%d'),
+            'total_unknown_leads':  _unk_prod_leads,
+            'total_unknown_rets':   _unk_prod_rets,
+            'distinct_raw_values':  len(_unk_mdl_detail),
+            'rows':                 _diag_rows_prod,
+        }
+        with open(_diag_path, 'w', encoding='utf-8') as _dfd:
+            json.dump(_diag_out_prod, _dfd, indent=2, ensure_ascii=False)
+        print(f"  Unknown model diagnostic → {_diag_path.name}  "
+              f"({len(_unk_mdl_detail)} raw value(s), {_unk_prod_leads:,} Unknown leads)",
+              flush=True)
+    except Exception as _diag_err:
+        print(f"  WARNING: could not write unknown_model_diagnostic.json: {_diag_err}",
+              flush=True)
+
 # ── Structured success report ─────────────────────────────────────────────────
 _elapsed       = int((datetime.now(timezone.utc) - _RUN_START).total_seconds())
 _grand_leads   = sum(v[0] for v in _oc.values())
