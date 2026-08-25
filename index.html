@@ -2703,6 +2703,14 @@ const TABS = [
   { id:'ageing',      label:'Retail Ageing' },
 ];
 
+const _FS_KEY   = 'tvs_dashboard_font_scale';
+const _FS_STEPS = ['small', 'default', 'large', 'xl'];
+const _FS_ZOOM  = { small: 0.85, default: 1.0, large: 1.12, xl: 1.25 };
+function _initFS() {
+  try { const v = localStorage.getItem(_FS_KEY); if (v && _FS_ZOOM[v] !== undefined) return v; } catch(e) {}
+  return 'default';
+}
+
 function App() {
   // ── Auth state (must be before any early returns) ──────────────────
   const [auth, setAuth]           = useState(() => {
@@ -2721,6 +2729,14 @@ function App() {
   const [leadsMode, setLeadsMode] = useState('update');
   const [RT, setRT]               = useState('all');
   const [filters, setFilters]     = useState({ months:new Set(), leadTypes:new Set(), sources:new Set(), models:new Set(), states:new Set(), cities:new Set() });
+  const [fontScale, setFontScale] = useState(_initFS);
+  const bumpFS = useCallback((dir) => {
+    setFontScale(cur => {
+      const next = _FS_STEPS[Math.max(0, Math.min(_FS_STEPS.length-1, _FS_STEPS.indexOf(cur)+dir))];
+      try { localStorage.setItem(_FS_KEY, next); } catch(e) {}
+      return next;
+    });
+  }, []);
 
   // ── Auth helpers ───────────────────────────────────────────────────
   const handleLogin = useCallback((email, name, role) => {
@@ -2841,7 +2857,7 @@ function App() {
       viewerMode ? 'Viewer' : 'Full'),
   );
 
-  return ce('div', { style:{minHeight:'100vh',background:'#f8fafc'} },
+  return ce('div', { style:{minHeight:'100vh',background:'#f8fafc',zoom:_FS_ZOOM[fontScale]} },
 
     // ── Header ──
     ce('div', { style:{background:'#fff',borderBottom:'1px solid #E2E8F0',position:'sticky',top:0,zIndex:100,boxShadow:'0 1px 4px rgba(0,0,0,.06)'} },
@@ -2872,6 +2888,22 @@ function App() {
                 style:{padding:'4px 12px',fontSize:10,fontWeight:700,fontFamily:'inherit',border:'none',borderRadius:18,cursor:'pointer',transition:'all 120ms',
                   background:leadsMode==='update'?'#003087':'transparent',color:leadsMode==='update'?'#fff':'#64748B'}
               }, 'On Update'),
+            ),
+            ce('div', { style:{display:'flex',alignItems:'center',gap:2,background:'#F1F5F9',border:'1px solid #E2E8F0',borderRadius:20,padding:'2px 4px'}, title:'Adjust font size' },
+              ce('button', {
+                onClick:()=>bumpFS(-1),
+                disabled:_FS_STEPS.indexOf(fontScale)===0,
+                style:{background:'none',border:'none',cursor:_FS_STEPS.indexOf(fontScale)===0?'not-allowed':'pointer',fontSize:11,fontWeight:700,fontFamily:'inherit',padding:'3px 9px',borderRadius:16,
+                  color:_FS_STEPS.indexOf(fontScale)===0?'#CBD5E1':'#475569',transition:'color 120ms',lineHeight:1},
+                title:'Decrease font size ('+_FS_STEPS[Math.max(0,_FS_STEPS.indexOf(fontScale)-1)]+')'
+              }, 'A−'),
+              ce('button', {
+                onClick:()=>bumpFS(1),
+                disabled:_FS_STEPS.indexOf(fontScale)===_FS_STEPS.length-1,
+                style:{background:'none',border:'none',cursor:_FS_STEPS.indexOf(fontScale)===_FS_STEPS.length-1?'not-allowed':'pointer',fontSize:13,fontWeight:700,fontFamily:'inherit',padding:'3px 9px',borderRadius:16,
+                  color:_FS_STEPS.indexOf(fontScale)===_FS_STEPS.length-1?'#CBD5E1':'#475569',transition:'color 120ms',lineHeight:1},
+                title:'Increase font size ('+_FS_STEPS[Math.min(_FS_STEPS.length-1,_FS_STEPS.indexOf(fontScale)+1)]+')'
+              }, 'A+'),
             ),
             loading && ce('div', { className:'spinner' }),
             ce('button', { className:'btn btn-secondary', style:{fontSize:11}, onClick:doFetch }, '⟳ Refresh'),
