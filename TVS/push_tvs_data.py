@@ -878,6 +878,12 @@ PURCHASED_MODEL_MAP = {
 # Lead model map uses the same 345-entry lookup as the retail map
 LEAD_MODEL_MAP = PURCHASED_MODEL_MAP
 
+# Diagnostic: tracks raw model values that normalize to 'Unknown'.
+# Populated by normalize_purchased_model (reason) and the main aggregation loop (context).
+# Cleared implicitly on each fresh process start; never written to production payload.
+_unk_mdl_reasons: dict = {}   # {stripped_raw: reason_str}
+_unk_mdl_detail:  dict = {}   # {stripped_raw: {raw_repr, leads, rets, by_month, by_src}}
+
 def normalize_lead_model(mdl):
     """Map raw lead ModelName to canonical model name using lookup table, with keyword fallback."""
     mdl = str(mdl or '').strip()
@@ -891,7 +897,9 @@ def normalize_lead_model(mdl):
 def normalize_purchased_model(pm):
     """Map raw purchasedModel string to canonical lead-model name."""
     pm = str(pm or '').strip()
-    if not pm: return 'Unknown'
+    if not pm:
+        _unk_mdl_reasons[''] = 'EMPTY'
+        return 'Unknown'
     # Try exact match (handles both proper unicode and corrupted encodings via keyword fallback)
     if pm in PURCHASED_MODEL_MAP:
         val = str(PURCHASED_MODEL_MAP[pm] or '').strip()
@@ -909,16 +917,21 @@ def normalize_purchased_model(pm):
     if 'JUPITER 125' in pu:                                       return 'TVS Jupiter 125'
     if ('JUPITER' in pu or 'JUPTR' in pu) and '125' not in pu:   return 'TVS Jupiter'
     if 'NTORQ' in pu and '150' not in pu:                        return 'TVS NTORQ 125'
-    if 'NTORQ' in pu or 'NTRQ' in pu:                            return 'Unknown'
+    if 'NTORQ' in pu or 'NTRQ' in pu:
+        _unk_mdl_reasons[pm] = 'NTORQ_150'
+        return 'Unknown'
     if 'IQUBE' in pu or 'IQUE' in pu:                            return 'TVS iQube'
     if 'RONIN' in pu:                                             return 'TVS Ronin'
     if 'RADEON' in pu:                                            return 'TVS Radeon'
-    if 'ORBITER' in pu:                                           return 'Unknown'
+    if 'ORBITER' in pu:
+        _unk_mdl_reasons[pm] = 'ORBITER'
+        return 'Unknown'
     if 'SPORT' in pu and 'TVS' not in pu.replace('TVS SPORT',''):return 'TVS Sport'
     if 'SPORT' in pu:                                             return 'TVS Sport'
     if 'XL 100' in pu or 'XL100' in pu:                          return 'TVS XL100'
     if 'ZEST' in pu:                                              return 'TVS Scooty Zest'
     if 'STAR CITY' in pu or 'STARCITY' in pu or 'CITY+' in pu:  return 'TVS Star City Plus'
+    _unk_mdl_reasons[pm] = 'CATCH_ALL'
     return 'Unknown'
 
 LEAD_COL_MAP = {
@@ -1532,6 +1545,24 @@ def build_payload(all_leads, retail_map):
         if not lm or not lid: continue
 
         is_ret = lid in retail_map
+
+        # Diagnostic: capture context for every lead whose model normalizes to Unknown.
+        # Stored in _unk_mdl_detail keyed by stripped raw value; reason comes from
+        # _unk_mdl_reasons (populated by normalize_purchased_model) or inferred for empty.
+        if mdl == 'Unknown':
+            _raw_v      = str(_mdls[i])
+            _stripped_v = _raw_v.strip()
+            _rec = _unk_mdl_detail.setdefault(_stripped_v, {
+                'raw_repr': repr(_raw_v), 'leads': 0, 'rets': 0, 'by_month': {}, 'by_src': {}
+            })
+            _rec['leads'] += 1
+            _rec['by_month'].setdefault(lm, [0, 0])[0] += 1
+            _rec['by_src'].setdefault(src, [0, 0])[0] += 1
+            if is_ret:
+                _rec['rets'] += 1
+                _rec['by_month'][lm][1] += 1
+                _rec['by_src'][src][1] += 1
+
         li   = ix(lm_idx,   lm_arr,   lm)
         si   = ix(src_idx,  src_arr,  src)
         tti  = ix(lt_idx,   lt_arr,   lt)
@@ -2366,7 +2397,65 @@ if DRY_RUN:
               f"DMS: {_ou_v[2]:>6,}  CO: {_ou_v[3]:>6,}", flush=True)
 
     print(f"\nPRODUCTION: UNCHANGED  (dry run — Firebase not called)", flush=True)
+
+    # ── UNKNOWN MODEL DIAGNOSTIC ─────────────────────────────────────────────
+    # Payload baseline: Unknown model totals as of the last production push (2026-08-24).
+    # 1,886 = Aug'26 Unknown leads visible in dashboard (on-create view for Aug only).
+    # 1,980 = full payload Unknown leads across all live months (Jul'26: 94 + Aug'26: 1,886).
+    _PAYLOAD_UNK_LEADS = 1980
+    _PAYLOAD_UNK_RETS  = 70
+
+    print(f"\n{'=' * 60}", flush=True)
+    print(f"UNKNOWN MODEL DIAGNOSTIC", flush=True)
     print(f"{'=' * 60}", flush=True)
+    print(f"  Payload baseline (last prod push 2026-08-24): {_PAYLOAD_UNK_LEADS:,} leads  {_PAYLOAD_UNK_RETS:,} retails", flush=True)
+    print(f"  (1,886 = Aug'26 on-create view; 1,980 = all live months in payload mm-array)", flush=True)
+
+    if _unk_mdl_detail:
+        _unk_total_leads = sum(v['leads'] for v in _unk_mdl_detail.values())
+        _unk_total_rets  = sum(v['rets']  for v in _unk_mdl_detail.values())
+        print(f"\n  This run — {len(_unk_mdl_detail)} distinct raw value(s) produced Unknown:", flush=True)
+        print(f"  Total leads: {_unk_total_leads:,}   Total retails: {_unk_total_rets:,}", flush=True)
+        _ldiff = _unk_total_leads - _PAYLOAD_UNK_LEADS
+        _rdiff = _unk_total_rets  - _PAYLOAD_UNK_RETS
+        print(f"  vs baseline: leads {_ldiff:+,}   retails {_rdiff:+,}", flush=True)
+        print(flush=True)
+        print(f"  {'raw_value (repr)':<52}  {'reason':<12}  {'leads':>7}  {'rets':>5}", flush=True)
+        print(f"  {'-' * 84}", flush=True)
+        _diag_rows = []
+        for _rv, _rd in sorted(_unk_mdl_detail.items(), key=lambda x: -x[1]['leads']):
+            _reason = _unk_mdl_reasons.get(_rv, 'EMPTY' if not _rv else 'LEAD_MAP_EMPTY')
+            print(f"  {_rd['raw_repr']:<52}  {_reason:<12}  {_rd['leads']:>7,}  {_rd['rets']:>5,}", flush=True)
+            for _mo, _mv in sorted(_rd['by_month'].items()):
+                print(f"      month {_mo:<10}  leads={_mv[0]:>6,}  rets={_mv[1]:>4,}", flush=True)
+            for _src, _sv in sorted(_rd['by_src'].items(), key=lambda x: -x[1][0]):
+                print(f"      src   {_src:<16} leads={_sv[0]:>6,}  rets={_sv[1]:>4,}", flush=True)
+            _diag_rows.append({
+                'raw_repr': _rd['raw_repr'],
+                'reason': _reason,
+                'leads': _rd['leads'],
+                'rets':  _rd['rets'],
+                'by_month': {m: {'leads': v[0], 'rets': v[1]} for m, v in _rd['by_month'].items()},
+                'by_src':   {s: {'leads': v[0], 'rets': v[1]} for s, v in _rd['by_src'].items()},
+            })
+        _diag_path = Path(__file__).parent / 'unknown_model_diagnostic.json'
+        try:
+            _diag_out = {
+                'date': _RUN_START.strftime('%Y-%m-%d'),
+                'payload_baseline': {'leads': _PAYLOAD_UNK_LEADS, 'rets': _PAYLOAD_UNK_RETS},
+                'this_run': {'leads': _unk_total_leads, 'rets': _unk_total_rets},
+                'distinct_raw_values': len(_unk_mdl_detail),
+                'rows': _diag_rows,
+            }
+            with open(_diag_path, 'w', encoding='utf-8') as _df:
+                json.dump(_diag_out, _df, indent=2, ensure_ascii=False)
+            print(f"\n  Diagnostic written to {_diag_path.name}", flush=True)
+        except Exception as _de:
+            print(f"\n  WARNING: could not write diagnostic JSON: {_de}", flush=True)
+    else:
+        print(f"\n  No Unknown model leads found in this run.", flush=True)
+
+    print(f"\n{'=' * 60}", flush=True)
     sys.exit(0)
 
 # ── Compress payload for Firebase POST ────────────────────────────────────────
