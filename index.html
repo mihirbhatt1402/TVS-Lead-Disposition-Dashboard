@@ -2624,11 +2624,13 @@ const StateModelTab = React.memo(function StateModelTab({ data, filters, months,
    ════════════════════════════════════════════════════════════════════ */
 const CityModelTab = React.memo(function CityModelTab({ data, filters, months, RT, viewerMode }) {
   const { maps } = data;
-  const cxm = data.cxm || [];
+  // cxsm format: [city_idx, src_idx, mdl_idx, lm_idx, L, R_all, R_dms, R_co]
+  // cxm  format: [city_idx, mdl_idx, lm_idx, L, R_all, R_dms, R_co]  (legacy, no source dim)
+  const cxsm = data.cxsm || [];
+  const cxm  = data.cxm  || [];
+  const useCxsm = cxsm.length > 0;        // prefer source-aware matrix when available
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
 
-  // cxm format: [city_idx, mdl_idx, lm_idx, L, R_all, R_dms, R_co]
-  // rows = cities, cols = models
   const buildAgg = useCallback((monthSet) => {
     const stFilter = (filters.states && filters.states.size > 0 && maps.city_state)
       ? new Set(
@@ -2644,11 +2646,24 @@ const CityModelTab = React.memo(function CityModelTab({ data, filters, months, R
           ? new Set([...stFilter].filter(c => filters.cities.has(c)))
           : stFilter)
       : filters.cities;
+
+    if (useCxsm) {
+      // Apply source filter by pre-filtering rows (src at index 1)
+      const srcSet = filters.sources && filters.sources.size > 0 ? filters.sources : null;
+      const table = srcSet
+        ? cxsm.filter(row => srcSet.has(maps.src[row[1]]))
+        : cxsm;
+      return buildCrossAgg(
+        table, maps, 'city', 'mdl', 'lm', 0, 2, 3, monthSet,
+        cityRowFilter, filters.models, getLR, data.rt_cols
+      );
+    }
+    // Fallback: legacy cxm (no source dimension — source filter ignored)
     return buildCrossAgg(
       cxm, maps, 'city', 'mdl', 'lm', 0, 1, 2, monthSet,
       cityRowFilter, filters.models, getLR, data.rt_cols
     );
-  }, [cxm, maps, filters, getLR, data.rt_cols]);
+  }, [cxsm, cxm, useCxsm, maps, filters, getLR, data.rt_cols]);
 
   const summaryAgg = useMemo(() => {
     if (cxm.length===0) return null;
@@ -2795,7 +2810,7 @@ function App() {
       mxst: data.u_mxst, mlt: data.u_mlt, stlt: data.u_stlt, disp: data.u_disp,
       stcm: data.u_stcm, univ: data.u_univ,
       stdm: data.u_stdm, mxdl: data.u_mxdl, ltdl: data.u_ltdl,
-      cm: data.u_cm || [], csm: data.u_csm || [], cxm: data.u_cxm || [],
+      cm: data.u_cm || [], csm: data.u_csm || [], cxm: data.u_cxm || [], cxsm: data.u_cxsm || [],
       cdm: data.u_cdm || [], cdsm: data.u_cdsm || [],
     };
   }, [data, leadsMode]);
@@ -3500,7 +3515,8 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
     { key:'stlt', dims:['st','lt','lm']          },
     { key:'cm',   dims:['city','lm']             },
     { key:'csm',  dims:['city','src','lm']       },
-    { key:'cxm',  dims:['city','mdl','lm']       },
+    { key:'cxm',  dims:['city','mdl','lm']          },
+    { key:'cxsm', dims:['city','src','mdl','lm']   },
     { key:'cdm',  dims:['city','dl','lm']        },
     { key:'cdsm', dims:['city','dl','src','lm']  },
     { key:'stcm', dims:['st','city','lm']        },
