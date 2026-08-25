@@ -948,6 +948,723 @@ class TestFutureDataExtensibility(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Regression: commit 980ca6e — '-' sentinel overrode retail master Call Type
+# ---------------------------------------------------------------------------
+class TestDashSentinelRetailChain(unittest.TestCase):
+    """End-to-end regression for the 2026-08-22 production incident.
+
+    Root cause: extract_rtype_map at 3b76a6e stored 'Retail By' verbatim,
+    so '-' reached the override guard as a truthy rtype and wiped the retail
+    master's valid 'Call Out'.  Fix in 97abaeb: normalize '-'/'–'/blank/N/A
+    to ''.  This test exercises the full chain in one place.
+    """
+
+    def test_dash_in_retail_by_preserves_call_out_from_retail_master(self):
+        # Step 1: lead sheet has Retail By='-' for a Jul'26 retail
+        rows = [{'opty_id': 'L9001', 'Retail By': '-', 'DMS_Retail_Month': "Jul'26"}]
+        rtype_map, _ = extract_rtype_map(rows)
+        self.assertEqual(rtype_map.get('L9001', {}).get('rtype'), '',
+                         "'-' must produce rtype='' from extract_rtype_map")
+
+        # Step 2: retail master has a valid Call Type for the same lead
+        retail_map = {'L9001': {'rm': "Jul'26", 'rtype': 'Call Out', 'pm': 'TVS iQube'}}
+
+        # Step 3: apply rtype_map override (mirrors the production loop)
+        for lid, info in rtype_map.items():
+            if lid in retail_map:
+                _rm_ord = month_order(info.get('rm', ''))
+                if 0 < _rm_ord < ONLINE_START_ORDER:
+                    continue
+                if info['rtype']:   # '' is falsy → guard blocks the override
+                    retail_map[lid]['rtype'] = info['rtype']
+
+        # Step 4: retail master's Call Out must be preserved
+        self.assertEqual(retail_map['L9001']['rtype'], 'Call Out',
+                         "retail master 'Call Out' must survive a '-' sentinel in lead sheet")
+
+        # Step 5: aggregation with preserved Call Out → DMS+CO == Retails (no unclassified)
+        d = {}
+        bump(d, 'Jul26', is_ret=True, rtype=retail_map['L9001']['rtype'])
+        leads, rets, dms, co = d['Jul26']
+        self.assertEqual(rets, 1)
+        self.assertEqual(dms + co, rets,
+                         "DMS+CO must equal Retails when Call Out is correctly preserved")
+
+
+class TestNtorqNormalization(unittest.TestCase):
+    """Regression tests for the TVS NTORQ 125 / NTORQ 150 split.
+
+    Root cause (confirmed 2026-08-25): 'TVS NTorq 150' hit the NTORQ_150 branch
+    in normalize_purchased_model (no map entry, and keyword guard rejected it
+    as an ambiguous 150 variant).  Fix: explicit map entries for both mixed-case
+    and uppercase forms.  This class guards against regression and confirms the
+    two models remain independent.
+
+    These tests inline the relevant PURCHASED_MODEL_MAP entries and the NTORQ
+    path of normalize_purchased_model so no module-level I/O is required.
+    Keep in sync with push_tvs_data.py whenever either changes.
+    """
+
+    _MAP = {
+        # new entries (fix)
+        'TVS NTorq 150':                      'TVS NTORQ 150',
+        'TVS NTORQ 150':                      'TVS NTORQ 150',
+        # existing entries that must not be disturbed
+        'TVS NTorq':                          'TVS NTORQ 125',
+        'TVS NTORQ 125':                      'TVS NTORQ 125',
+        'NTORQ 125 DISC – Race Edition BSVI': 'TVS NTORQ 125',
+        'TVS NTORQ 125 RACE XP':              'TVS NTORQ 125',
+        'TVS NTORQ 125 DISC BSVI':            'TVS NTORQ 125',
+    }
+
+    def _norm(self, pm):
+        """Minimal inline of the NTORQ paths in normalize_purchased_model."""
+        pm = str(pm or '').strip()
+        if not pm:
+            return 'Unknown'
+        if pm in self._MAP:
+            val = str(self._MAP[pm] or '').strip()
+            if val and val.upper() not in ('NA', 'N/A', 'NAN', 'NONE'):
+                return val
+        pu = pm.upper()
+        if 'NTORQ' in pu and '150' not in pu:
+            return 'TVS NTORQ 125'
+        if 'NTORQ' in pu or 'NTRQ' in pu:
+            return 'Unknown'
+        return 'Unknown'
+
+    def test_production_raw_value_maps_to_ntorq_150(self):
+        """'TVS NTorq 150' (exact production value confirmed by diagnostic) → 'TVS NTORQ 150'."""
+        self.assertEqual(self._norm('TVS NTorq 150'), 'TVS NTORQ 150')
+
+    def test_uppercase_variant_maps_to_ntorq_150(self):
+        """'TVS NTORQ 150' (canonical uppercase form) → 'TVS NTORQ 150'."""
+        self.assertEqual(self._norm('TVS NTORQ 150'), 'TVS NTORQ 150')
+
+    def test_ntorq_125_exact_entry_unchanged(self):
+        """Existing exact map entry 'TVS NTORQ 125' must not be disturbed."""
+        self.assertEqual(self._norm('TVS NTORQ 125'), 'TVS NTORQ 125')
+
+    def test_ntorq_bare_exact_entry_unchanged(self):
+        """'TVS NTorq' (bare, no variant) must still map to 'TVS NTORQ 125'."""
+        self.assertEqual(self._norm('TVS NTorq'), 'TVS NTORQ 125')
+
+    def test_ntorq_125_keyword_fallback_unchanged(self):
+        """'TVS NTorq 125' (mixed-case, not in map) must resolve via keyword to 'TVS NTORQ 125'."""
+        self.assertEqual(self._norm('TVS NTorq 125'), 'TVS NTORQ 125')
+
+    def test_unrecognized_ntorq_150_variant_still_unknown(self):
+        """A future NTORQ+150 variant not in the map must still return Unknown."""
+        self.assertEqual(self._norm('NTORQ SPORT 150 SPECIAL'), 'Unknown')
+
+    def test_ntorq_150_and_125_not_merged(self):
+        """'TVS NTORQ 150' and 'TVS NTORQ 125' must resolve to different canonical names."""
+        self.assertNotEqual(self._norm('TVS NTorq 150'), self._norm('TVS NTORQ 125'))
+
+
+# ---------------------------------------------------------------------------
+# Retail Ageing tests
+# ---------------------------------------------------------------------------
+# Inline copies of the three new ageing functions from push_tvs_data.py.
+# Keep in sync with push_tvs_data.py whenever those functions change.
+
+import pandas as _pd
+import datetime as _datetime
+
+def _parse_date(s):
+    """Inline copy of push_tvs_data.parse_date."""
+    try:
+        ts = _pd.Timestamp(str(s or '').strip())
+        if _pd.isnull(ts):
+            return None
+        return ts.date()
+    except Exception:
+        return None
+
+def _age_bucket(days):
+    """Inline copy of push_tvs_data.age_bucket."""
+    if days <= 7:  return 0
+    if days <= 14: return 1
+    if days <= 30: return 2
+    return 3
+
+_AGE_BUCKET_LABELS_TEST = ['0-7 days', '8-14 days', '15-30 days', '30+ days']
+
+def _run_ageing_fixture(leads, retail_map):
+    """Minimal inline of the ageing aggregation from build_payload's is_ret block.
+
+    leads: list of dicts with keys: lid, lm, src, mdl, cd  (cd=CreateDate string)
+    retail_map: {lid: {rm, rtype, pm, rd}}
+
+    Returns:
+        ram: {(mi,si,abi,li): [rets,dms,co]}
+        meta: {total, valid, no_rd, no_cd, neg}
+        maps: {mdl:[], src:[], lm:[]}
+    """
+    mdl_idx,  src_idx,  lm_idx  = {}, {}, {}
+    mdl_arr,  src_arr,  lm_arr  = [], [], []
+
+    def ix(d, arr, v):
+        if v not in d:
+            d[v] = len(arr); arr.append(v)
+        return d[v]
+
+    ram = {}
+    total = valid = no_rd = no_cd = neg = 0
+
+    for lead in leads:
+        lid = lead['lid']
+        if lid not in retail_map:
+            continue
+        mi  = ix(mdl_idx, mdl_arr, lead['mdl'])
+        si  = ix(src_idx, src_arr, lead['src'])
+        li  = ix(lm_idx,  lm_arr,  lead['lm'])
+        rtype = retail_map[lid].get('rtype', 'DMS')
+
+        total += 1
+        _rd = retail_map[lid].get('rd')
+        _cd = _parse_date(lead.get('cd', ''))
+        if _rd is None:
+            no_rd += 1
+        elif _cd is None:
+            no_cd += 1
+        else:
+            age_days = (_rd - _cd).days
+            if age_days < 0:
+                neg += 1
+            else:
+                abi = _age_bucket(age_days)
+                k = (mi, si, abi, li)
+                if k not in ram: ram[k] = [0, 0, 0]
+                ram[k][0] += 1
+                rt_u = rtype.upper()
+                if 'DMS' in rt_u:    ram[k][1] += 1
+                elif 'CALL' in rt_u: ram[k][2] += 1
+                valid += 1
+
+    meta = {'total': total, 'valid': valid, 'no_rd': no_rd, 'no_cd': no_cd, 'neg': neg}
+    maps = {'mdl': mdl_arr, 'src': src_arr, 'lm': lm_arr}
+    return ram, meta, maps
+
+
+class TestRetailAgeing(unittest.TestCase):
+    """20 regression tests for the Retail Ageing feature."""
+
+    # ── 1-8: age_bucket boundary correctness ──────────────────────────────────
+
+    def test_age_0_maps_to_bucket_0(self):
+        """age=0 days → bucket 0 (0-7 days)."""
+        self.assertEqual(_age_bucket(0), 0)
+
+    def test_age_7_maps_to_bucket_0(self):
+        """age=7 days → bucket 0 (0-7 days, inclusive boundary)."""
+        self.assertEqual(_age_bucket(7), 0)
+
+    def test_age_8_maps_to_bucket_1(self):
+        """age=8 days → bucket 1 (8-14 days)."""
+        self.assertEqual(_age_bucket(8), 1)
+
+    def test_age_14_maps_to_bucket_1(self):
+        """age=14 days → bucket 1 (inclusive boundary)."""
+        self.assertEqual(_age_bucket(14), 1)
+
+    def test_age_15_maps_to_bucket_2(self):
+        """age=15 days → bucket 2 (15-30 days)."""
+        self.assertEqual(_age_bucket(15), 2)
+
+    def test_age_30_maps_to_bucket_2(self):
+        """age=30 days → bucket 2 (inclusive boundary)."""
+        self.assertEqual(_age_bucket(30), 2)
+
+    def test_age_31_maps_to_bucket_3(self):
+        """age=31 days → bucket 3 (30+ days)."""
+        self.assertEqual(_age_bucket(31), 3)
+
+    def test_age_large_maps_to_bucket_3(self):
+        """age=365 days → bucket 3 (30+)."""
+        self.assertEqual(_age_bucket(365), 3)
+
+    # ── 9-11: exclusion cases ─────────────────────────────────────────────────
+
+    def test_negative_age_excluded(self):
+        """Retail_Date < CreateDate → not in ram, counted in meta.neg."""
+        rmap = {'lid1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': 'TVS Raider',
+                         'rd': _datetime.date(2026, 8, 1)}}
+        leads = [{'lid': 'lid1', 'lm': "Aug'26", 'mdl': 'TVS Raider',
+                  'src': 'Organic', 'cd': '2026-08-10'}]  # cd AFTER rd → negative
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(len(ram), 0, "ram must be empty for negative age")
+        self.assertEqual(meta['neg'], 1)
+        self.assertEqual(meta['valid'], 0)
+
+    def test_missing_retail_date_excluded(self):
+        """rd=None → excluded from ram, counted in meta.no_rd."""
+        rmap = {'lid1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': 'TVS Raider', 'rd': None}}
+        leads = [{'lid': 'lid1', 'lm': "Aug'26", 'mdl': 'TVS Raider',
+                  'src': 'Organic', 'cd': '2026-08-01'}]
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(len(ram), 0)
+        self.assertEqual(meta['no_rd'], 1)
+        self.assertEqual(meta['valid'], 0)
+
+    def test_missing_create_date_excluded(self):
+        """cd='' → parse_date returns None → excluded, counted in meta.no_cd."""
+        rmap = {'lid1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': 'TVS Raider',
+                         'rd': _datetime.date(2026, 8, 10)}}
+        leads = [{'lid': 'lid1', 'lm': "Aug'26", 'mdl': 'TVS Raider',
+                  'src': 'Organic', 'cd': ''}]  # missing CreateDate
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(len(ram), 0)
+        self.assertEqual(meta['no_cd'], 1)
+        self.assertEqual(meta['valid'], 0)
+
+    # ── 12: date parsing ──────────────────────────────────────────────────────
+
+    def test_iso_date_parsing(self):
+        """parse_date('2026-08-15') → datetime.date(2026, 8, 15)."""
+        result = _parse_date('2026-08-15')
+        self.assertEqual(result, _datetime.date(2026, 8, 15))
+
+    def test_parse_date_invalid_returns_none(self):
+        """parse_date('bad') → None."""
+        self.assertIsNone(_parse_date('bad'))
+
+    def test_parse_date_empty_returns_none(self):
+        """parse_date('') → None."""
+        self.assertIsNone(_parse_date(''))
+
+    # ── 13-14: model and source come from lead master ─────────────────────────
+
+    def test_model_comes_from_lead_master(self):
+        """Model index in ram uses lead master ModelName, not retail purchasedModel."""
+        rmap = {'lid1': {'rm': "Aug'26", 'rtype': 'DMS',
+                         'pm': 'TVS Apache RTR 160',   # retail purchased model (different)
+                         'rd': _datetime.date(2026, 8, 10)}}
+        leads = [{'lid': 'lid1', 'lm': "Aug'26", 'mdl': 'TVS Raider',  # lead model
+                  'src': 'Organic', 'cd': '2026-08-01'}]
+        ram, meta, maps = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 1)
+        # The model in the ram key must be the lead model index
+        (mi, si, abi, li), _ = list(ram.items())[0]
+        self.assertEqual(maps['mdl'][mi], 'TVS Raider')  # lead master model, not retail pm
+
+    def test_source_comes_from_lead_master(self):
+        """Source index in ram uses lead master Source, not any retail attribute."""
+        rmap = {'lid1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': 'TVS Raider',
+                         'rd': _datetime.date(2026, 8, 10)}}
+        leads = [{'lid': 'lid1', 'lm': "Aug'26", 'mdl': 'TVS Raider',
+                  'src': 'Facebook', 'cd': '2026-08-01'}]  # lead source
+        ram, meta, maps = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 1)
+        (mi, si, abi, li) = list(ram.keys())[0]
+        self.assertEqual(maps['src'][si], 'Facebook')
+
+    # ── 15: bucket reconciliation ─────────────────────────────────────────────
+
+    def test_ageing_bucket_reconciliation(self):
+        """Sum of all bucket rets == meta.valid (every valid retail lands in exactly one bucket)."""
+        rd_base = _datetime.date(2026, 8, 1)
+        ages = [0, 5, 8, 12, 15, 25, 31, 90]  # one per bucket (multiple per bucket)
+        leads = [{'lid': f'l{i}', 'lm': "Aug'26", 'mdl': 'TVS Raider',
+                  'src': 'Organic', 'cd': '2026-07-01'} for i in range(len(ages))]
+        rmap = {f'l{i}': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '',
+                           'rd': _datetime.date(2026, 7, 1) + _datetime.timedelta(days=a)}
+                for i, a in enumerate(ages)}
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        bucket_total = sum(v[0] for v in ram.values())
+        self.assertEqual(bucket_total, meta['valid'])
+        self.assertEqual(meta['valid'], len(ages))
+
+    # ── 16: DMS + Call Out = Retails within ageing ───────────────────────────
+
+    def test_dms_plus_co_equals_rets_in_ageing(self):
+        """For every ram cell: dms + co == rets (no retail is both DMS and Call Out)."""
+        leads = [
+            {'lid': 'dms1', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'cd': '2026-08-01'},
+            {'lid': 'co1',  'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'cd': '2026-08-01'},
+        ]
+        rd = _datetime.date(2026, 8, 10)
+        rmap = {
+            'dms1': {'rm': "Aug'26", 'rtype': 'DMS',      'pm': '', 'rd': rd},
+            'co1':  {'rm': "Aug'26", 'rtype': 'Call Out', 'pm': '', 'rd': rd},
+        }
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 2)
+        for k, v in ram.items():
+            rets, dms, co = v
+            self.assertEqual(dms + co, rets, f"dms+co != rets for ram key {k}: {v}")
+
+    # ── 17: duplicate opty_id no double count ─────────────────────────────────
+
+    def test_duplicate_opty_id_no_double_count(self):
+        """retail_map is keyed by lid (dict); each lid appears once — no double count."""
+        # retail_map overwrite: if a lid appears twice, only last survives (dict key)
+        rmap = {'lid1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '',
+                         'rd': _datetime.date(2026, 8, 10)}}
+        # leads deduplicated to one occurrence of lid1 (production dedup; here just one row)
+        leads = [{'lid': 'lid1', 'lm': "Aug'26", 'mdl': 'TVS Raider',
+                  'src': 'Organic', 'cd': '2026-08-01'}]
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        total_rets = sum(v[0] for v in ram.values())
+        self.assertEqual(total_rets, 1)
+        self.assertEqual(meta['valid'], 1)
+
+    # ── 18: rd is additional field — existing retail_map fields unchanged ──────
+
+    def test_rd_is_additional_field_in_retail_map(self):
+        """Adding rd to build_retail_map must not alter rm, rtype, pm."""
+        # Simulate the retail_map entry structure as built by build_retail_map
+        entry_without_rd = {'rm': "Aug'26", 'rtype': 'DMS', 'pm': 'TVS Raider'}
+        rd_map = {'lid1': _datetime.date(2026, 8, 15)}
+        # Simulate: rmap[lid] = {**entry_without_rd, 'rd': rd_map.get(lid)}
+        combined = {**entry_without_rd, 'rd': rd_map.get('lid1')}
+        self.assertEqual(combined['rm'],    "Aug'26")
+        self.assertEqual(combined['rtype'], 'DMS')
+        self.assertEqual(combined['pm'],    'TVS Raider')
+        self.assertEqual(combined['rd'],    _datetime.date(2026, 8, 15))
+        # rd_map=None case: rd must be None
+        combined_no_rd = {**entry_without_rd, 'rd': None}
+        self.assertIsNone(combined_no_rd['rd'])
+        self.assertEqual(combined_no_rd['rm'], "Aug'26")
+
+    # ── 19-20: ageing aggregation is additive — existing OC/OU unaffected ─────
+
+    def test_ageing_does_not_alter_lead_counts(self):
+        """The ram aggregation touches only retailed leads; lead counts in mm are unaffected."""
+        # Verify: lead count (index 0 in bump result) is independent of rd
+        # The ageing bump only runs inside 'if is_ret' and only increments ram — not mm.
+        # Verified by fixture: ageing meta.total == retails matched, not leads.
+        leads = [
+            {'lid': 'l1', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'cd': '2026-08-01'},
+            {'lid': 'l2', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'cd': '2026-08-01'},
+        ]
+        rmap = {  # only l1 retailed
+            'l1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 10)},
+        }
+        _, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['total'], 1, "ageing total must count retails only (not all leads)")
+        self.assertEqual(meta['valid'], 1)
+
+    def test_ageing_does_not_alter_existing_retail_total(self):
+        """Bucket totals must equal exactly the retails with valid dates — no extras."""
+        leads = [
+            {'lid': 'a', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'cd': '2026-08-01'},
+            {'lid': 'b', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'cd': ''},  # no cd
+            {'lid': 'c', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'cd': '2026-08-01'},
+        ]
+        rd = _datetime.date(2026, 8, 10)
+        rmap = {
+            'a': {'rm': "Aug'26", 'rtype': 'DMS',      'pm': '', 'rd': rd},
+            'b': {'rm': "Aug'26", 'rtype': 'Call Out', 'pm': '', 'rd': rd},
+            'c': {'rm': "Aug'26", 'rtype': 'DMS',      'pm': '', 'rd': None},  # no rd
+        }
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        bucket_total = sum(v[0] for v in ram.values())
+        # a: valid (age=9 → bucket 1); b: no_cd; c: no_rd
+        self.assertEqual(meta['total'],  3)
+        self.assertEqual(meta['valid'],  1)
+        self.assertEqual(meta['no_cd'],  1)
+        self.assertEqual(meta['no_rd'],  1)
+        self.assertEqual(bucket_total,   1)
+        self.assertEqual(meta['valid'] + meta['no_rd'] + meta['no_cd'] + meta['neg'], meta['total'])
+
+
+# ---------------------------------------------------------------------------
+# Test 21 — build_payload() isolation: ageing must not touch existing matrices
+# ---------------------------------------------------------------------------
+# This helper is a FAITHFUL STRUCTURAL COPY of the critical aggregation loop
+# inside build_payload() (push_tvs_data.py).  push_tvs_data.py cannot be
+# imported directly because it has unguarded module-level I/O; inlining the
+# loop body is the established pattern in this test suite.
+#
+# Matrices included (mirrors build_payload verbatim):
+#   monthly, sm, mm                    (On Create)
+#   u_monthly, u_sm, u_mm             (On Update)
+#   disp, u_disp                       (Retail Dispersion)
+#   ram, _ram_*                        (Retail Ageing — new)
+#
+# Structural guarantees preserved from the original:
+#   • bump/ubump call order is identical
+#   • ageing block is copy-pasted from lines 1808-1828 of push_tvs_data.py
+#   • _parse_date and _age_bucket are the same inlined copies used elsewhere
+#
+# leads: list of dicts with keys:
+#   lid, lm, src, lt, mdl, cd (CreateDate string), rm (retail month string)
+# retail_map: {lid: {rm, rtype, pm, rd}}  — rd may be None or datetime.date
+
+def _run_build_payload_core(leads, retail_map):
+    """Inline structural copy of build_payload()'s aggregation loop.
+
+    Covers every matrix that the ageing code could theoretically corrupt.
+    Keeps exact bump/ubump call order from push_tvs_data.py.
+    """
+    lm_idx,  src_idx, lt_idx, mdl_idx = {}, {}, {}, {}
+    lm_arr,  src_arr, lt_arr, mdl_arr = [], [], [], []
+
+    def _ix(d, arr, v):
+        if v not in d:
+            d[v] = len(arr); arr.append(v)
+        return d[v]
+
+    monthly  = {}
+    sm       = {}
+    mm       = {}
+    u_monthly = {}
+    u_sm      = {}
+    u_mm      = {}
+    disp      = {}
+    u_disp    = {}
+    ram       = {}
+    _ram_total = _ram_valid = _ram_neg = _ram_no_rd = _ram_no_cd = 0
+
+    def _bump(d, k, is_ret, rtype=''):
+        if k not in d: d[k] = [0, 0, 0, 0]
+        d[k][0] += 1
+        if is_ret:
+            d[k][1] += 1
+            rt_u = rtype.upper()
+            if 'DMS'  in rt_u: d[k][2] += 1
+            elif 'CALL' in rt_u: d[k][3] += 1
+
+    def _ubump(d, key_lead, key_ret, is_ret, rtype=''):
+        if key_lead not in d: d[key_lead] = [0, 0, 0, 0]
+        d[key_lead][0] += 1
+        if is_ret:
+            if key_ret not in d: d[key_ret] = [0, 0, 0, 0]
+            d[key_ret][1] += 1
+            rt_u = rtype.upper()
+            if 'DMS'  in rt_u: d[key_ret][2] += 1
+            elif 'CALL' in rt_u: d[key_ret][3] += 1
+
+    for lead in leads:
+        lid   = lead['lid']
+        lm    = lead['lm']
+        src   = lead['src']
+        lt    = lead.get('lt', 'Unknown')
+        mdl   = lead['mdl']
+
+        is_ret = lid in retail_map
+        rtype  = retail_map[lid]['rtype'] if is_ret else ''
+
+        mi  = _ix(mdl_idx, mdl_arr, mdl)
+        si  = _ix(src_idx, src_arr, src)
+        tti = _ix(lt_idx,  lt_arr,  lt)
+        li  = _ix(lm_idx,  lm_arr,  lm)
+
+        # ── On Create bumps (exact order from build_payload) ──────────────
+        _bump(monthly, str(li),                 is_ret, rtype)
+        _bump(sm,      f"{si}|{li}",            is_ret, rtype)
+        _bump(mm,      f"{mi}|{si}|{li}",       is_ret, rtype)
+
+        # ── On Update bumps ───────────────────────────────────────────────
+        rm  = retail_map[lid].get('rm', '') if is_ret else ''
+        um  = rm if rm else lm
+        uli = _ix(lm_idx, lm_arr, um)
+        _ubump(u_monthly, str(li),         str(uli),          is_ret, rtype)
+        _ubump(u_sm,  f"{si}|{li}",    f"{si}|{uli}",        is_ret, rtype)
+        _ubump(u_mm,  f"{mi}|{si}|{li}", f"{mi}|{si}|{uli}", is_ret, rtype)
+
+        if is_ret:
+            pm  = retail_map[lid].get('pm', '') or 'Unknown'
+            pmi = _ix(mdl_idx, mdl_arr, pm)
+            disp  [f"{mi}|{pmi}|{li}"]  = disp  .get(f"{mi}|{pmi}|{li}",  0) + 1
+            u_disp[f"{mi}|{pmi}|{uli}"] = u_disp.get(f"{mi}|{pmi}|{uli}", 0) + 1
+
+            # ── Retail Ageing block — copy-pasted from push_tvs_data.py ──
+            # Lines 1808-1828.  Touches ONLY ram and _ram_* counters.
+            _ram_total_ref = _ram_total   # capture before (unused; see assertion below)
+            _ram_total += 1
+            _rd = retail_map[lid].get('rd')
+            _cd = _parse_date(lead.get('cd', ''))
+            if _rd is None:
+                _ram_no_rd += 1
+            elif _cd is None:
+                _ram_no_cd += 1
+            else:
+                _age_days = (_rd - _cd).days
+                if _age_days < 0:
+                    _ram_neg += 1
+                else:
+                    _abi = _age_bucket(_age_days)
+                    _rk  = f"{mi}|{si}|{_abi}|{li}"
+                    if _rk not in ram: ram[_rk] = [0, 0, 0]
+                    ram[_rk][0] += 1
+                    _rt_u = rtype.upper()
+                    if 'DMS'  in _rt_u: ram[_rk][1] += 1
+                    elif 'CALL' in _rt_u: ram[_rk][2] += 1
+                    _ram_valid += 1
+
+    return {
+        'monthly':   dict(monthly),
+        'sm':        dict(sm),
+        'mm':        dict(mm),
+        'u_monthly': dict(u_monthly),
+        'u_sm':      dict(u_sm),
+        'u_mm':      dict(u_mm),
+        'disp':      dict(disp),
+        'u_disp':    dict(u_disp),
+        'ram':       dict(ram),
+        'ram_meta':  {
+            'total': _ram_total, 'valid': _ram_valid,
+            'no_rd': _ram_no_rd, 'no_cd': _ram_no_cd, 'neg': _ram_neg,
+        },
+    }
+
+
+class TestAgeingIsolation(unittest.TestCase):
+    """Test 21 — end-to-end build_payload() isolation.
+
+    Proves that supplying valid Retail_Date values (Run B) versus
+    rd=None / fetch failure (Run A) does NOT alter any pre-existing
+    matrix produced by the aggregation loop.
+
+    Uses _run_build_payload_core(), a faithful structural copy of
+    build_payload()'s loop (the established inlining pattern for this
+    test suite — push_tvs_data.py cannot be imported due to module-level I/O).
+    """
+
+    # Synthetic fixture: 3 leads — 2 retailed (DMS + Call Out), 1 non-retail
+    _LEADS = [
+        {'lid': 'L001', 'lm': "Aug'26", 'src': 'Facebook', 'lt': 'Hot',
+         'mdl': 'TVS Raider', 'cd': '2026-08-01', 'rm': "Aug'26"},
+        {'lid': 'L002', 'lm': "Aug'26", 'src': 'Organic',  'lt': 'Hot',
+         'mdl': 'TVS Apache RTR 160', 'cd': '2026-07-25', 'rm': "Aug'26"},
+        {'lid': 'L003', 'lm': "Aug'26", 'src': 'Facebook', 'lt': 'Warm',
+         'mdl': 'TVS Raider', 'cd': '2026-08-05'},   # non-retail
+    ]
+
+    # Run A: rd=None for all retails (simulates complete fetch failure)
+    _RMAP_NO_RD = {
+        'L001': {'rm': "Aug'26", 'rtype': 'DMS',      'pm': 'TVS Raider',         'rd': None},
+        'L002': {'rm': "Aug'26", 'rtype': 'Call Out',  'pm': 'TVS Apache RTR 160', 'rd': None},
+    }
+
+    # Run B: same data, valid rd supplied (9-day and 5-day age respectively)
+    _RMAP_WITH_RD = {
+        'L001': {'rm': "Aug'26", 'rtype': 'DMS',      'pm': 'TVS Raider',         'rd': _datetime.date(2026, 8, 10)},
+        'L002': {'rm': "Aug'26", 'rtype': 'Call Out',  'pm': 'TVS Apache RTR 160', 'rd': _datetime.date(2026, 7, 30)},
+    }
+
+    def _run_both(self):
+        pa = _run_build_payload_core(self._LEADS, self._RMAP_NO_RD)
+        pb = _run_build_payload_core(self._LEADS, self._RMAP_WITH_RD)
+        return pa, pb
+
+    # ── Matrix identity assertions ─────────────────────────────────────────────
+
+    def test_mm_identical_with_and_without_rd(self):
+        """Model×Source×Month matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['mm'], pb['mm'])
+
+    def test_sm_identical_with_and_without_rd(self):
+        """Source×Month matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['sm'], pb['sm'])
+
+    def test_monthly_identical_with_and_without_rd(self):
+        """Monthly (On Create) matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['monthly'], pb['monthly'])
+
+    def test_u_mm_identical_with_and_without_rd(self):
+        """On Update Model×Source matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['u_mm'], pb['u_mm'])
+
+    def test_u_monthly_identical_with_and_without_rd(self):
+        """On Update monthly matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['u_monthly'], pb['u_monthly'])
+
+    def test_u_sm_identical_with_and_without_rd(self):
+        """On Update Source×Month matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['u_sm'], pb['u_sm'])
+
+    def test_disp_identical_with_and_without_rd(self):
+        """Retail Dispersion (OC) matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['disp'], pb['disp'])
+
+    def test_u_disp_identical_with_and_without_rd(self):
+        """Retail Dispersion (OU) matrix is byte-identical regardless of Retail_Date availability."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['u_disp'], pb['u_disp'])
+
+    # ── Retail / lead total identity ───────────────────────────────────────────
+
+    def test_retail_total_identical(self):
+        """ram_meta.total (retails processed by ageing) is the same in both runs."""
+        pa, pb = self._run_both()
+        self.assertEqual(pa['ram_meta']['total'], pb['ram_meta']['total'])
+        self.assertEqual(pa['ram_meta']['total'], 2)   # fixture has 2 retails
+
+    def test_lead_count_identical(self):
+        """Lead totals in monthly OC are identical (ageing never touches lead counts)."""
+        pa, pb = self._run_both()
+        oc_leads_a = sum(v[0] for v in pa['monthly'].values())
+        oc_leads_b = sum(v[0] for v in pb['monthly'].values())
+        self.assertEqual(oc_leads_a, oc_leads_b)
+        self.assertEqual(oc_leads_a, 3)   # fixture has 3 leads
+
+    def test_dms_callout_identical(self):
+        """DMS and Call Out counts in mm are byte-identical between Run A and Run B."""
+        pa, pb = self._run_both()
+        dms_a  = sum(v[2] for v in pa['mm'].values())
+        co_a   = sum(v[3] for v in pa['mm'].values())
+        dms_b  = sum(v[2] for v in pb['mm'].values())
+        co_b   = sum(v[3] for v in pb['mm'].values())
+        self.assertEqual(dms_a,  dms_b)
+        self.assertEqual(co_a,   co_b)
+        self.assertEqual(dms_a,  1)   # L001 is DMS
+        self.assertEqual(co_a,   1)   # L002 is Call Out
+
+    # ── Ageing diverges correctly ──────────────────────────────────────────────
+
+    def test_run_a_has_no_ageing_rows(self):
+        """Run A (rd=None) must produce empty ram — simulates fetch failure."""
+        pa, _ = self._run_both()
+        self.assertEqual(pa['ram'], {})
+        self.assertEqual(pa['ram_meta']['valid'],  0)
+        self.assertEqual(pa['ram_meta']['no_rd'],  2)
+
+    def test_run_b_has_ageing_rows(self):
+        """Run B (valid rd) must produce non-empty ram with correct bucket assignments."""
+        _, pb = self._run_both()
+        self.assertGreater(len(pb['ram']), 0)
+        self.assertEqual(pb['ram_meta']['valid'], 2)
+        self.assertEqual(pb['ram_meta']['no_rd'], 0)
+
+    def test_run_b_ageing_bucket_correctness(self):
+        """Run B ageing rows land in the correct buckets.
+
+        L001: age = 2026-08-10 - 2026-08-01 = 9 days → bucket 1 (8-14 days)
+        L002: age = 2026-07-30 - 2026-07-25 = 5 days → bucket 0 (0-7 days)
+        """
+        _, pb = self._run_both()
+        bucket_sum = [0, 0, 0, 0]
+        for v in pb['ram'].values():
+            rets = v[0]
+            bucket_sum[0] += 0   # placeholder; we check by key below
+        # Verify bucket indices present in ram keys
+        abi_values = set()
+        for k in pb['ram']:
+            parts = k.split('|')
+            abi_values.add(int(parts[2]))
+        self.assertIn(0, abi_values)   # L002: 5 days → bucket 0
+        self.assertIn(1, abi_values)   # L001: 9 days → bucket 1
+
+    def test_run_b_dms_plus_co_equals_rets_in_ageing(self):
+        """Within ageing (Run B), DMS + Call Out == Retails for every ram cell."""
+        _, pb = self._run_both()
+        self.assertGreater(len(pb['ram']), 0, "Run B must produce ageing rows")
+        for k, v in pb['ram'].items():
+            rets, dms, co = v
+            self.assertEqual(dms + co, rets, f"dms+co != rets for key {k}: {v}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':

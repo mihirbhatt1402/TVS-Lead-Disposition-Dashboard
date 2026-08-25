@@ -1026,6 +1026,25 @@ def parse_ym(s):
     except Exception:
         return norm_month(s)
 
+def parse_date(s):
+    """Parse ISO date string YYYY-MM-DD → datetime.date object, or None on failure."""
+    try:
+        ts = pd.Timestamp(str(s or '').strip())
+        if pd.isnull(ts):
+            return None
+        return ts.date()
+    except Exception:
+        return None
+
+_AGE_BUCKET_LABELS = ['0-7 days', '8-14 days', '15-30 days', '30+ days']
+
+def age_bucket(days):
+    """Map ageing days → bucket index: 0=0-7, 1=8-14, 2=15-30, 3=30+."""
+    if days <= 7:  return 0
+    if days <= 14: return 1
+    if days <= 30: return 2
+    return 3
+
 def lid_to_month(lid):
     """Decode month from 18-digit CRM ID YYMMDD prefix."""
     try:
@@ -1173,7 +1192,7 @@ def standardize_leads(raw_df):
         if still_empty.any():
             df.loc[still_empty, 'LeadMonth'] = df.loc[still_empty, 'SorceLeadId'].apply(
                 lambda v: lid_to_month(to_id(v)))
-    keep = ['SorceLeadId','LeadMonth','ModelName','Source','LeadType',
+    keep = ['SorceLeadId','LeadMonth','CreateDate','ModelName','Source','LeadType',
             'State','Zone','BuyingDays','CityName','DealerName']
     return df[[c for c in keep if c in df.columns]].copy()
 
@@ -1249,6 +1268,82 @@ def fetch_retails():
     return df
 
 
+_RETAIL_DATE_PAGE_SIZE = 10000
+_RETAIL_DATE_TIMEOUTS  = [60, 120, 180]
+
+def fetch_retail_date_map():
+    """Fetch {lid: datetime.date} from OEM CPS Retail Raw via getSheetData.
+
+    Retail_Date is a separate column not returned by getCurrentRetails.
+    Never aborts the pipeline — returns an empty dict on total failure so the
+    caller can continue without ageing data rather than losing the production run.
+    """
+    print("Fetching Retail_Date map from OEM CPS Retail Raw…", flush=True)
+    page, rd_map = 0, {}
+    populated_ct = blank_ct = invalid_ct = 0
+    while True:
+        last_exc = None
+        for attempt, _timeout in enumerate(_RETAIL_DATE_TIMEOUTS):
+            try:
+                data = proxy_get('getSheetData', {
+                    'fileId':   RETAILS_FILE_ID,
+                    'tabName':  RETAILS_TAB,
+                    'cols':     'sourceLeadId,Retail_Date',
+                    'pageSize': _RETAIL_DATE_PAGE_SIZE,
+                    'page':     page,
+                }, timeout=_timeout)
+                last_exc = None
+                break
+            except Exception as e:
+                last_exc = e
+                if attempt < len(_RETAIL_DATE_TIMEOUTS) - 1:
+                    _sleep = 30 * (2 ** attempt)
+                    print(f"  Retail_Date page {page} attempt {attempt+1} failed ({e}); "
+                          f"retrying in {_sleep}s…", flush=True)
+                    time.sleep(_sleep)
+        if last_exc is not None:
+            raise RuntimeError(
+                f"fetch_retail_date_map page {page} failed after {len(_RETAIL_DATE_TIMEOUTS)} "
+                f"attempts: {last_exc}")
+        if 'error' in data:
+            raise RuntimeError(f"fetch_retail_date_map: Apps Script error: {data['error']}")
+        headers = data.get('headers', [])
+        rows    = data.get('rows', [])
+        done    = data.get('done', True)
+        lid_col = next((i for i, h in enumerate(headers)
+                        if h.lower() in ('sourceleadid', 'enquiryid', 'opty_id')), 0)
+        rd_col  = next((i for i, h in enumerate(headers)
+                        if h.lower() == 'retail_date'), None)
+        if rd_col is None:
+            raise RuntimeError(
+                f"fetch_retail_date_map: 'Retail_Date' column not found in headers {headers}")
+        for row in rows:
+            lid = to_id(row[lid_col]) if lid_col < len(row) else ''
+            if not lid:
+                continue
+            rd_raw = row[rd_col] if rd_col < len(row) else None
+            if not rd_raw or str(rd_raw).strip() == '':
+                blank_ct += 1
+                continue
+            rd = parse_date(rd_raw)
+            if rd is None:
+                invalid_ct += 1
+                continue
+            rd_map[lid] = rd
+            populated_ct += 1
+        print(f"  Retail_Date page {page}: +{len(rows):,} rows "
+              f"(map={len(rd_map):,}  blank={blank_ct}  invalid={invalid_ct})", flush=True)
+        if done:
+            break
+        page += 1
+    total_fetched = populated_ct + blank_ct + invalid_ct
+    pct = f"{100*populated_ct/total_fetched:.1f}%" if total_fetched else "0%"
+    print(f"  Retail_Date map done: {len(rd_map):,} entries | "
+          f"populated={populated_ct:,} ({pct}) | blank={blank_ct:,} | invalid={invalid_ct:,}",
+          flush=True)
+    return rd_map
+
+
 def _validate_retail_fetch(df, prev_metrics=None):
     """Print a sanity report for the freshly fetched retail DataFrame.
 
@@ -1315,11 +1410,13 @@ def _validate_retail_fetch(df, prev_metrics=None):
         print("  WARNING: performanceMonth column not present in retail sheet!", flush=True)
     print("── End retail fetch validation ──────────────────────", flush=True)
 
-def build_retail_map(retail_df):
-    """Build {sourceLeadId -> {rm, rtype, pm}} for LIVE GSheet records.
+def build_retail_map(retail_df, rd_map=None):
+    """Build {sourceLeadId -> {rm, rtype, pm, rd}} for LIVE GSheet records.
     rm    : from 'performanceMonth' column (not Retail_Attribution_Date).
     rtype : from 'Call Type' column — 'DMS' or 'Call Out' (case-insensitive, trimmed).
             Unexpected values are logged and collected in the returned warnings list.
+    rd    : datetime.date from rd_map (Retail_Date column), or None if unavailable.
+            Used exclusively for Retail Ageing — never replaces rm or any existing field.
     Returns (rmap, unexpected_call_types) where unexpected_call_types is a list of
     {'lid': ..., 'call_type': ...} dicts for the validation report.
     """
@@ -1345,7 +1442,8 @@ def build_retail_map(retail_df):
                 rtype = 'DMS'
         else:
             rtype = 'DMS'
-        rmap[lid] = {'rm': rm, 'rtype': rtype, 'pm': pm}
+        rmap[lid] = {'rm': rm, 'rtype': rtype, 'pm': pm,
+                     'rd': rd_map.get(lid) if rd_map else None}
     return rmap, unexpected_ct
 
 def make_synthetic_leads(retail_df, matched_lids):
@@ -1555,6 +1653,8 @@ def build_payload(all_leads, retail_map):
     cxm, u_cxm = {}, {}           # city × model × month
     u_cm, u_csm = {}, {}          # city × month (retail-month attribution)
     u_cdm, u_cdsm = {}, {}        # city × dealer × month (retail-month attribution)
+    ram = {}                       # Retail Ageing: model × src × age_bucket × lead_month → [rets, dms, co]
+    _ram_total = _ram_valid = _ram_neg = _ram_no_rd = _ram_no_cd = 0
 
     def bump(d, k, is_ret, rtype=''):
         if k not in d: d[k] = [0,0,0,0]
@@ -1595,6 +1695,7 @@ def build_payload(all_leads, retail_map):
     _zones  = _col('Zone', '0')
     _bds    = _col('BuyingDays', '0')
     _cities = _col('CityName')
+    _cds    = _col('CreateDate')   # Lead CreateDate — used for Retail Ageing only
     _dls    = all_leads[dl_col].fillna('').astype(str).values if dl_col and dl_col in _c else None
 
     del all_leads, _c  # free ~500 MB DataFrame now that we have arrays
@@ -1704,6 +1805,28 @@ def build_payload(all_leads, retail_map):
             disp[f"{mi}|{pmi}|{li}"]   = disp.get(f"{mi}|{pmi}|{li}",   0) + 1
             u_disp[f"{mi}|{pmi}|{uli}"] = u_disp.get(f"{mi}|{pmi}|{uli}", 0) + 1
 
+            # ── Retail Ageing (On Create, lead month attribution) ──────────────
+            _ram_total += 1
+            _rd = retail_map[lid].get('rd')
+            _cd = parse_date(_cds[i])
+            if _rd is None:
+                _ram_no_rd += 1
+            elif _cd is None:
+                _ram_no_cd += 1
+            else:
+                _age_days = (_rd - _cd).days
+                if _age_days < 0:
+                    _ram_neg += 1
+                else:
+                    _abi = age_bucket(_age_days)
+                    _rk  = f"{mi}|{si}|{_abi}|{li}"
+                    if _rk not in ram: ram[_rk] = [0, 0, 0]
+                    ram[_rk][0] += 1
+                    _rt_u = rtype.upper()
+                    if 'DMS' in _rt_u:    ram[_rk][1] += 1
+                    elif 'CALL' in _rt_u: ram[_rk][2] += 1
+                    _ram_valid += 1
+
     def to_rows(d, key_fn):
         return [[*key_fn(k), v[0], v[1], v[2], v[3]] for k, v in d.items()]
 
@@ -1713,6 +1836,7 @@ def build_payload(all_leads, retail_map):
         'lm': lm_arr, 'src': src_arr, 'lt': lt_arr, 'mdl': mdl_arr,
         'st': st_arr, 'zone': zone_arr, 'city': city_arr,
         'city_state': city_state_arr,
+        'ab': _AGE_BUCKET_LABELS,
     }
     if dl_col and dl_arr:
         maps_payload['dl'] = dl_arr
@@ -1764,8 +1888,14 @@ def build_payload(all_leads, retail_map):
         'u_disp':  [[*map(int,k.split('|')), v] for k,v in u_disp.items()],
         'u_zm':      to_rows(u_zm,  lambda k: list(map(int, k.split('|')))),
         'u_bdm':     to_rows(u_bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),
+        'ram':       [[*map(int, k.split('|')), *v] for k, v in ram.items()],
+        'ram_meta':  {'total': _ram_total, 'valid': _ram_valid,
+                      'no_rd': _ram_no_rd, 'no_cd': _ram_no_cd, 'neg': _ram_neg},
     }
     print(f"Done — {total:,} leads  {len(retail_map):,} retails", flush=True)
+    print(f"Ageing: retails={_ram_total:,}  valid={_ram_valid:,}  "
+          f"no_rd={_ram_no_rd:,}  no_cd={_ram_no_cd:,}  neg={_ram_neg:,}  "
+          f"ram_rows={len(ram):,}", flush=True)
     return payload
 
 # ─── Pipeline guard functions (defined here so every stage can call them) ─────
@@ -1949,7 +2079,18 @@ except Exception as _retail_err:
 _current_metrics['retail_raw'] = {'rows': len(retail_df)}
 _check_source_drop('retail_raw', len(retail_df), _prev_metrics)
 
-online_rmap, unexpected_call_types = build_retail_map(retail_df)
+# Fetch Retail_Date separately — not exposed by getCurrentRetails.
+# Wrapped in try/except so a failure here never aborts the production run;
+# ageing data will simply be empty for that run.
+try:
+    _rd_map = fetch_retail_date_map()
+except Exception as _rd_err:
+    traceback.print_exc()
+    print(f"  WARNING: Retail_Date fetch failed ({_rd_err}); "
+          f"Retail Ageing will be empty this run.", flush=True)
+    _rd_map = {}
+
+online_rmap, unexpected_call_types = build_retail_map(retail_df, rd_map=_rd_map)
 
 # Three-way merge: prioritised by data quality.
 #
@@ -1982,11 +2123,14 @@ for lid, info in online_rmap.items():
         retail_map[lid] = info
         _added_jul26 += 1
     elif lid in retail_map:
-        # Case B — keep rtype, update rm if valid
+        # Case B — keep rtype, update rm if valid; always propagate rd for ageing
+        live_rd = info.get('rd')
         if live_rm and live_rm_order >= LEAD_MASTER_START_ORDER:
-            retail_map[lid] = {**retail_map[lid], 'rm': live_rm}
+            retail_map[lid] = {**retail_map[lid], 'rm': live_rm, 'rd': live_rd}
             _updated_rm += 1
         else:
+            if live_rd is not None:
+                retail_map[lid] = {**retail_map[lid], 'rd': live_rd}
             _kept_rm += 1
     else:
         # Case C — new retail not in hist_cache

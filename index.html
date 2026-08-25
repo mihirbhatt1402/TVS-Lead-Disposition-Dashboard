@@ -2700,6 +2700,7 @@ const TABS = [
   { id:'cityxmodel',  label:'City × Model' },
   { id:'dispersion',  label:'Retail Dispersion' },
   { id:'pivot',       label:'Pivot Table' },
+  { id:'ageing',      label:'Retail Ageing' },
 ];
 
 function App() {
@@ -2799,21 +2800,22 @@ function App() {
 
   const tabContent = useMemo(() => {
     if (!effectiveData) return null;
-    const props = { data: effectiveData, filters, months, RT, viewerMode };
+    const props = { data: effectiveData, filters, months, RT, viewerMode, leadsMode };
     switch (tab) {
-      case 'overview':    return ce(OverviewTab,    props);
-      case 'source':      return ce(SourceTab,       props);
-      case 'ltxsrc':      return ce(LTSourceTab,      props);
-      case 'modelxsrc':   return ce(ModelSourceTab,   props);
-      case 'statexsrc':   return ce(StateSourceTab,   props);
-      case 'cityxsrc':    return ce(CitySourceTab,    props);
-      case 'statexmodel': return ce(StateModelTab,    props);
-      case 'cityxmodel':  return ce(CityModelTab,     props);
-      case 'dispersion':  return ce(DispersionTab,    props);
-      case 'pivot':       return ce(PivotTab,         props);
+      case 'overview':    return ce(OverviewTab,      props);
+      case 'source':      return ce(SourceTab,         props);
+      case 'ltxsrc':      return ce(LTSourceTab,       props);
+      case 'modelxsrc':   return ce(ModelSourceTab,    props);
+      case 'statexsrc':   return ce(StateSourceTab,    props);
+      case 'cityxsrc':    return ce(CitySourceTab,     props);
+      case 'statexmodel': return ce(StateModelTab,     props);
+      case 'cityxmodel':  return ce(CityModelTab,      props);
+      case 'dispersion':  return ce(DispersionTab,     props);
+      case 'pivot':       return ce(PivotTab,          props);
+      case 'ageing':      return ce(RetailAgeingTab,   props);
       default: return null;
     }
-  }, [effectiveData, tab, filters, months, RT, viewerMode]);
+  }, [effectiveData, tab, filters, months, RT, viewerMode, leadsMode]);
 
   // ── Auth gate — early returns after all hooks ──────────────────────
   if (authChecking) return ce('div', {
@@ -2911,6 +2913,224 @@ function App() {
     )
   );
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   RETAIL AGEING TAB
+   ════════════════════════════════════════════════════════════════════ */
+const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, months, RT, leadsMode }) {
+  const { maps, ram: ramRaw, ram_meta } = data;
+  const ram = ramRaw || [];
+  const AB = (maps && maps.ab) || ['0-7 days', '8-14 days', '15-30 days', '30+ days'];
+
+  // On Update mode: ageing is On Create only
+  if (leadsMode !== 'create') {
+    return ce('div', { className: 'fade-up' },
+      ce('div', { className: 'card', style: { padding: '32px 28px', textAlign: 'center', color: '#64748B' } },
+        ce('div', { style: { fontSize: 22, marginBottom: 10 } }, '⚠'),
+        ce('div', { style: { fontSize: 14, fontWeight: 700, marginBottom: 8, color: '#334155' } },
+          'Retail Ageing — On Create Mode Only'
+        ),
+        ce('div', { style: { fontSize: 12 } },
+          'Switch to On Create using the toggle above to view ageing data.'
+        )
+      )
+    );
+  }
+
+  // RT index in ram row [mi, si, abi, li, rets, dms, co]
+  const rtIdx = RT === 'dms' ? 5 : RT === 'co' ? 6 : 4;
+
+  const allSrcs   = useMemo(() => [...new Set(maps.src)], [maps]);
+  const srcGroups = useMemo(() => buildSrcGroups(allSrcs), [allSrcs]);
+  const [expandedGrps, setExpandedGrps] = useState(new Set());
+  const [expandedMdls, setExpandedMdls] = useState(new Set());
+
+  const onToggleGrp = useCallback(id => setExpandedGrps(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+  }), []);
+  const onToggleMdl = useCallback(mdl => setExpandedMdls(prev => {
+    const n = new Set(prev); n.has(mdl) ? n.delete(mdl) : n.add(mdl); return n;
+  }), []);
+
+  const { sortedMdls, grandBuckets, grandBySrc } = useMemo(() => {
+    const allSrcF  = !filters.sources || filters.sources.size === 0;
+    const allMdlF  = !filters.models  || filters.models.size  === 0;
+    const monthSet = new Set(months);
+
+    const mdlAgg      = new Map();
+    const grandBuckets = [0, 0, 0, 0];
+    const grandBySrc  = new Map();
+
+    for (const row of ram) {
+      const [mi, si, abi, li] = row;
+      const val = row[rtIdx];
+      if (!val) continue;
+      const m   = maps.lm[li];
+      const mdl = maps.mdl[mi];
+      const src = maps.src[si];
+      if (months.length > 0 && !monthSet.has(m)) continue;
+      if (!allSrcF && !filters.sources.has(src)) continue;
+      if (!allMdlF && !filters.models.has(mdl))  continue;
+
+      if (!mdlAgg.has(mdl)) mdlAgg.set(mdl, { buckets: [0,0,0,0], bySrc: new Map() });
+      const e = mdlAgg.get(mdl);
+      e.buckets[abi] += val;
+      if (!e.bySrc.has(src)) e.bySrc.set(src, [0,0,0,0]);
+      e.bySrc.get(src)[abi] += val;
+      grandBuckets[abi] += val;
+      if (!grandBySrc.has(src)) grandBySrc.set(src, [0,0,0,0]);
+      grandBySrc.get(src)[abi] += val;
+    }
+
+    const sortedMdls = [...mdlAgg.entries()].sort(
+      (a, b) => b[1].buckets.reduce((s,v)=>s+v,0) - a[1].buckets.reduce((s,v)=>s+v,0)
+    );
+    return { sortedMdls, grandBuckets, grandBySrc };
+  }, [ram, maps, filters, months, rtIdx]);
+
+  const grandTotal = grandBuckets.reduce((s,v)=>s+v,0);
+
+  if (!grandTotal) {
+    return ce('div', { className: 'fade-up' },
+      ce('div', { className: 'card', style: { padding: '24px', textAlign: 'center', color: '#94A3B8', fontSize: 13 } },
+        'No ageing data for the selected filters. (Coverage starts from Jul\'26.)'
+      )
+    );
+  }
+
+  // Column list: groups + expanded sub-groups + expanded individual sources + total
+  const visibleCols = useMemo(() => {
+    const cols = [];
+    for (const grp of srcGroups) {
+      const grpExp = expandedGrps.has(grp.id);
+      cols.push({ type: 'group', id: grp.id, label: grp.label, color: grp.color, srcs: grp.srcs, exp: grpExp });
+      if (grpExp) {
+        for (const sg of (grp.subGroups || [])) {
+          const sgExp = expandedGrps.has(sg.id);
+          cols.push({ type: 'subgroup', id: sg.id, label: sg.label, color: sg.color, srcs: sg.srcs, exp: sgExp });
+          if (sgExp) {
+            for (const src of sg.srcs) {
+              cols.push({ type: 'src', id: src, label: src, color: sg.color, srcs: [src] });
+            }
+          }
+        }
+      }
+    }
+    cols.push({ type: 'total', id: '_total', label: 'TOTAL', color: '#001F5B', srcs: allSrcs });
+    return cols;
+  }, [srcGroups, expandedGrps, allSrcs]);
+
+  function grpVal(srcs, bySrc, abi) {
+    let t = 0;
+    for (const s of srcs) { const v = bySrc.get(s); if (v) t += (abi == null ? v.reduce((a,b)=>a+b,0) : v[abi]); }
+    return t;
+  }
+
+  const pct = (part, tot) => tot ? Math.round(part*100/tot) + '%' : '';
+
+  const TH = (label, bg, extra={}) => ce('th', {
+    style: { background: bg, color: '#fff', padding: '6px 10px', fontSize: 10, fontWeight: 700,
+      textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'center',
+      border: '1px solid rgba(255,255,255,.15)', whiteSpace: 'nowrap',
+      position: 'sticky', top: 0, zIndex: 2, ...extra.style },
+    ...extra
+  }, label);
+
+  const NC = (v, bg='#fff', bold=false) => ce('td', {
+    style: { textAlign: 'center', fontFamily: "'DM Mono',monospace", fontSize: 11.5, fontWeight: bold?700:400,
+      color: v ? '#0f172a' : '#CBD5E1', border: '1px solid #E2E8F0',
+      padding: '6px 10px', background: bg }
+  }, v || '—');
+
+  return ce('div', { className: 'fade-up' },
+    // Coverage strip
+    ram_meta && ce('div', { className: 'card', style: {
+        padding: '10px 16px', marginBottom: 12,
+        display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap', fontSize: 11.5 } },
+      ce('span', { style: { fontWeight: 700, color: '#334155' } }, 'Coverage:'),
+      ce('span', { style: { color: '#059669' } }, `✓ ${(ram_meta.valid||0).toLocaleString()} valid`),
+      ce('span', { style: { color: '#94A3B8' } }, `· no Retail_Date: ${(ram_meta.no_rd||0).toLocaleString()}`),
+      ce('span', { style: { color: '#94A3B8' } }, `· no CreateDate: ${(ram_meta.no_cd||0).toLocaleString()}`),
+      ram_meta.neg > 0 && ce('span', { style: { color: '#DC2626' } }, `· negative age: ${ram_meta.neg.toLocaleString()}`),
+      ce('span', { style: { color: '#94A3B8', fontSize: 10.5 } }, `(total: ${(ram_meta.total||0).toLocaleString()})`)
+    ),
+    // Table card
+    ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14, borderTop: '3px solid #003087' } },
+      ce('div', { className: 'section-title', style: { marginBottom: 12 } }, 'Retail Ageing — Model × Source'),
+      ce('div', { style: { overflowX: 'auto' } },
+        ce('table', { style: { borderCollapse: 'collapse', width: '100%', minWidth: 400 } },
+          ce('thead', null,
+            ce('tr', null,
+              TH('Model / Bucket', '#001F5B', { style: { textAlign: 'left', position: 'sticky', left: 0, zIndex: 3, minWidth: 150 } }),
+              ...visibleCols.map(col => {
+                const tog = col.type === 'group' || col.type === 'subgroup';
+                return TH(
+                  col.label + (tog ? (col.exp ? ' ▴' : ' ▾') : ''),
+                  col.color,
+                  { style: { minWidth: 60, cursor: tog ? 'pointer' : 'default' },
+                    onClick: tog ? () => onToggleGrp(col.id) : undefined,
+                    title: tog ? (col.exp ? 'Collapse' : 'Expand sources') : undefined }
+                );
+              })
+            )
+          ),
+          ce('tbody', null,
+            // Model rows
+            ...sortedMdls.flatMap(([mdl, { buckets, bySrc }]) => {
+              const mdlTotal = buckets.reduce((s,v)=>s+v,0);
+              const exp = expandedMdls.has(mdl);
+              const rows = [
+                ce('tr', { key: mdl, style: { cursor: 'pointer' }, onClick: () => onToggleMdl(mdl) },
+                  ce('td', { className: 'label', style: {
+                      background: exp ? '#EFF6FF' : '#fff', borderRight: '2px solid #E2E8F0', paddingLeft: 10 } },
+                    (exp ? '▾ ' : '▸ ') + mdl
+                  ),
+                  ...visibleCols.map(col => NC(grpVal(col.srcs, bySrc, null) || 0, exp ? '#EFF6FF' : '#fff'))
+                )
+              ];
+              if (exp) {
+                for (let abi = 0; abi < 4; abi++) {
+                  const abT = buckets[abi];
+                  rows.push(ce('tr', { key: `${mdl}-${abi}` },
+                    ce('td', { className: 'sub-label', style: {
+                        background: '#FAFAFA', color: abi === 3 ? '#B91C1C' : '#475569' } },
+                      AB[abi] + (abT && mdlTotal ? `  ${pct(abT, mdlTotal)}` : '')
+                    ),
+                    ...visibleCols.map(col => NC(grpVal(col.srcs, bySrc, abi) || 0, '#FAFAFA'))
+                  ));
+                }
+              }
+              return rows;
+            }),
+            // Grand total
+            ce('tr', { key: '__grand' },
+              ce('td', { className: 'label', style: {
+                  background: '#001F5B', color: '#fff', fontWeight: 700,
+                  borderRight: '2px solid #334155', paddingLeft: 10 } }, 'Grand Total'
+              ),
+              ...visibleCols.map(col => ce('td', { key: col.id, style: {
+                  textAlign: 'center', fontFamily: "'DM Mono',monospace", fontSize: 12, fontWeight: 700,
+                  color: '#fff', background: '#001F5B', border: '1px solid #334155', padding: '6px 10px' } },
+                grpVal(col.srcs, grandBySrc, null) || '—'
+              ))
+            ),
+            // Grand bucket breakdown
+            ...AB.map((label, abi) => {
+              const abT = grandBuckets[abi];
+              return ce('tr', { key: `__grand-${abi}` },
+                ce('td', { className: 'sub-label', style: {
+                    background: '#F1F5F9', color: abi === 3 ? '#B91C1C' : '#475569' } },
+                  label + (abT ? `  ${pct(abT, grandTotal)}` : '')
+                ),
+                ...visibleCols.map(col => NC(grpVal(col.srcs, grandBySrc, abi) || 0, '#F1F5F9'))
+              );
+            })
+          )
+        )
+      )
+    )
+  );
+});
 
 /* ════════════════════════════════════════════════════════════════════
    RETAIL DISPERSION TAB
