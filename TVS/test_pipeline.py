@@ -2872,6 +2872,134 @@ class TestPostResponseValidation(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class TestExplicitContractResponse(unittest.TestCase):
+    """Verify the NEW explicit Apps Script response contract.
+
+    The Apps Script doPost will now return ONLY:
+      {"ok": true, "t": "<iso>", "rt_cols": <int>, "maps": {"lm": [...]}}
+
+    These tests ensure:
+      (A) The minimal explicit response is accepted by _validate_post_response.
+      (B) ok:false + error is correctly rejected.
+      (C) The response does NOT need to contain full maps (src, mdl, st, city, etc.).
+      (D) The Python validator treats ok:true as the primary success signal
+          regardless of whether extra fields are present.
+      (E) Backward compat: structural echo still accepted alongside explicit ok:true.
+    """
+
+    # Representative lm array matching current production months
+    _LM = ["Apr'25", "Jun'25", "May'25", "Jul'25", "Aug'25", "Sep'25",
+           "Oct'25", "Nov'25", "Dec'25", "Jan'26", "Feb'26", "Mar'26",
+           "Apr'26", "May'26", "Jun'26", "Jul'26", "Aug'26"]
+
+    def _explicit_success(self, **kwargs):
+        """Build the minimal explicit success response body."""
+        base = {
+            "ok": True,
+            "t": "2026-08-26T11:48:34.438772",
+            "rt_cols": 1,
+            "maps": {"lm": self._LM},
+        }
+        base.update(kwargs)
+        return json.dumps(base)
+
+    # T1 — new explicit contract: ok:true + minimal fields accepted
+    def test_explicit_minimal_response_accepted(self):
+        body = self._explicit_success()
+        ok, detail, parsed = _validate_post_response(body)
+        self.assertTrue(ok, f"Explicit minimal response should be accepted — got: {detail}")
+        self.assertEqual(detail, 'OK_TRUE')
+        self.assertIsNotNone(parsed)
+
+    # T2 — ok:true is confirmed by the validator
+    def test_explicit_response_signals_ok_true(self):
+        body = self._explicit_success()
+        ok, detail, _ = _validate_post_response(body)
+        self.assertTrue(ok)
+        self.assertEqual(detail, 'OK_TRUE')
+
+    # T3 — timestamp field is present and preserved in parsed output
+    def test_explicit_response_contains_timestamp(self):
+        body = self._explicit_success()
+        _, _, parsed = _validate_post_response(body)
+        self.assertIn('t', parsed)
+        self.assertTrue(parsed['t'].startswith('2026-08-26'))
+
+    # T4 — rt_cols field is present and preserved
+    def test_explicit_response_contains_rt_cols(self):
+        body = self._explicit_success()
+        _, _, parsed = _validate_post_response(body)
+        self.assertIn('rt_cols', parsed)
+        self.assertEqual(parsed['rt_cols'], 1)
+
+    # T5 — maps.lm is present and correct
+    def test_explicit_response_contains_maps_lm(self):
+        body = self._explicit_success()
+        _, _, parsed = _validate_post_response(body)
+        self.assertIn('maps', parsed)
+        self.assertIn('lm', parsed['maps'])
+        self.assertEqual(parsed['maps']['lm'], self._LM)
+
+    # T6 — full maps are NOT required: response without src/mdl/st/city is accepted
+    def test_full_maps_not_required_for_acceptance(self):
+        body = json.dumps({
+            "ok": True,
+            "t": "2026-08-26T11:48:34",
+            "rt_cols": 1,
+            "maps": {"lm": self._LM},   # only lm — no src, mdl, st, city, etc.
+        })
+        ok, detail, _ = _validate_post_response(body)
+        self.assertTrue(ok, "Response with only maps.lm should be accepted")
+        self.assertEqual(detail, 'OK_TRUE')
+
+    # T7 — ok:false + error is rejected even when other fields look valid
+    def test_firebase_failure_response_rejected(self):
+        body = json.dumps({
+            "ok": False,
+            "error": "Firebase write failed: quota exceeded",
+            "t": "2026-08-26T11:48:34",
+            "rt_cols": 1,
+            "maps": {"lm": self._LM},
+        })
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok, "ok:false must be rejected regardless of other fields")
+        self.assertIn('EXPLICIT_FAIL', detail)
+        self.assertIn('Firebase write failed', detail)
+
+    # T8 — response is valid JSON (round-trip check)
+    def test_explicit_response_is_valid_json(self):
+        body = self._explicit_success()
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError as exc:
+            self.fail(f"Explicit success response body is not valid JSON: {exc}")
+        self.assertIsInstance(parsed, dict)
+
+    # T9 — backward compat: structural echo (old contract, no ok) still accepted
+    def test_structural_echo_still_accepted_for_backward_compat(self):
+        body = json.dumps({
+            "t": "2026-08-26T11:48:34.438772",
+            "rt_cols": 1,
+            "maps": {
+                "lm": self._LM,
+                "src": ["Facebook", "Organic"],
+                "mdl": ["TVS Jupiter"],
+            }
+            # no "ok" key — structural echo format
+        })
+        ok, detail, _ = _validate_post_response(body)
+        self.assertTrue(ok, "Structural echo must still be accepted for backward compat")
+        self.assertIn('STRUCTURAL_OK', detail)
+
+    # T10 — ok:true + all production months passes lm length check
+    def test_explicit_response_lm_matches_production_months(self):
+        body = self._explicit_success()
+        _, _, parsed = _validate_post_response(body)
+        lm = parsed['maps']['lm']
+        self.assertGreaterEqual(len(lm), 1)
+        self.assertIn("Aug'26", lm)   # current month must be in lm
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
