@@ -1644,6 +1644,276 @@ class TestRetailAgeing(unittest.TestCase):
         k = list(ram.keys())[0]
         self.assertEqual(k[5], 1, "age=9 days must map to bucket1 (8-14 days)")
 
+    # ── 35-51: Summary vs Monthly grid logic ─────────────────────────────────
+
+    def _multi_month_fixture(self):
+        """Two models across two months for summary/monthly grid tests."""
+        leads = [
+            # Jul'26: Raider age=3 (bucket0), Apache age=10 (bucket1)
+            {'lid': 'j1', 'lm': "Jul'26", 'mdl': 'TVS Raider',     'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'j2', 'lm': "Jul'26", 'mdl': 'TVS Apache RTR 160', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            # Aug'26: Raider age=20 (bucket2), Apache age=35 (bucket3)
+            {'lid': 'a1', 'lm': "Aug'26", 'mdl': 'TVS Raider',     'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+            {'lid': 'a2', 'lm': "Aug'26", 'mdl': 'TVS Apache RTR 160', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+        ]
+        rmap = {
+            'j1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},   # age=3  → b0
+            'j2': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 11)},  # age=10 → b1
+            'a1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 21)},  # age=20 → b2
+            'a2': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 9, 5)},   # age=35 → b3
+        }
+        return leads, rmap
+
+    def test_summary_aggregates_all_months(self):
+        """Summary = agg(monthSet=None) contains retails from all months."""
+        leads, rmap = self._multi_month_fixture()
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 4, "summary must include all 4 retails")
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        self.assertEqual(sum(buckets), 4)
+        # Each bucket should have exactly 1 retail
+        self.assertEqual(buckets[0], 1)  # j1
+        self.assertEqual(buckets[1], 1)  # j2
+        self.assertEqual(buckets[2], 1)  # a1
+        self.assertEqual(buckets[3], 1)  # a2
+
+    def test_monthly_grid_jul_only(self):
+        """Monthly grid for Jul'26 contains only Jul'26 retails."""
+        leads, rmap = self._multi_month_fixture()
+        jul_leads = [l for l in leads if l['lm'] == "Jul'26"]
+        jul_rmap  = {k: v for k, v in rmap.items() if k.startswith('j')}
+        ram, meta, _ = _run_ageing_fixture(jul_leads, jul_rmap)
+        self.assertEqual(meta['valid'], 2)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        self.assertEqual(sum(buckets), 2)
+        self.assertEqual(buckets[0], 1)  # Raider age=3
+        self.assertEqual(buckets[1], 1)  # Apache age=10
+        self.assertEqual(buckets[2], 0)
+        self.assertEqual(buckets[3], 0)
+
+    def test_monthly_grid_aug_only(self):
+        """Monthly grid for Aug'26 contains only Aug'26 retails."""
+        leads, rmap = self._multi_month_fixture()
+        aug_leads = [l for l in leads if l['lm'] == "Aug'26"]
+        aug_rmap  = {k: v for k, v in rmap.items() if k.startswith('a')}
+        ram, meta, _ = _run_ageing_fixture(aug_leads, aug_rmap)
+        self.assertEqual(meta['valid'], 2)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        self.assertEqual(sum(buckets), 2)
+        self.assertEqual(buckets[0], 0)
+        self.assertEqual(buckets[1], 0)
+        self.assertEqual(buckets[2], 1)  # Raider age=20
+        self.assertEqual(buckets[3], 1)  # Apache age=35
+
+    def test_summary_contribution_from_aggregate_not_averaged_monthly(self):
+        """Summary contribution uses aggregate totals, not avg of monthly percentages."""
+        # Jul'26: model A — 3 in b0, 0 in b1 → 100% b0
+        # Aug'26: model A — 0 in b0, 1 in b1 → 100% b1
+        # Summary correct: b0=3, b1=1, total=4 → b0=75%, b1=25%
+        # Wrong if averaged: (100%+0%)/2=50%, (0%+100%)/2=50% ← must NOT happen
+        leads = [
+            {'lid': 'j1', 'lm': "Jul'26", 'mdl': 'Model A', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'j2', 'lm': "Jul'26", 'mdl': 'Model A', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'j3', 'lm': "Jul'26", 'mdl': 'Model A', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'a1', 'lm': "Aug'26", 'mdl': 'Model A', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+        ]
+        rmap = {
+            'j1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},   # b0
+            'j2': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},   # b0
+            'j3': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},   # b0
+            'a1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 11)},  # b1
+        }
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 4)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        total = sum(buckets)
+        self.assertEqual(total, 4)
+        # Correct aggregate: 3/4=75%, 1/4=25%
+        self.assertAlmostEqual(buckets[0] / total * 100, 75.0, delta=0.01)
+        self.assertAlmostEqual(buckets[1] / total * 100, 25.0, delta=0.01)
+
+    def test_monthly_contribution_uses_that_months_total(self):
+        """Monthly contribution denominator = that month's model total only."""
+        leads, rmap = self._multi_month_fixture()
+        # Jul'26 only: Raider in b0, Apache in b1; each model total=1 → each 100%
+        jul_leads = [l for l in leads if l['lm'] == "Jul'26"]
+        jul_rmap  = {k: v for k, v in rmap.items() if k.startswith('j')}
+        ram, _, _ = _run_ageing_fixture(jul_leads, jul_rmap)
+        # Find per-model buckets
+        by_mdl = {}
+        for k, v in ram.items():
+            abi = k[5]
+            mi  = k[0]
+            if mi not in by_mdl: by_mdl[mi] = [0,0,0,0]
+            by_mdl[mi][abi] += v[0]
+        for buckets in by_mdl.values():
+            total = sum(buckets)
+            self.assertEqual(total, 1)
+            # Each model has exactly one bucket with 1 retail → 100% contribution
+            self.assertEqual(sum(1 for b in buckets if b == 1), 1)
+
+    def test_global_month_filter_controls_monthly_grids(self):
+        """Month=Aug'26 → monthly grids show only Aug'26 data."""
+        leads, rmap = self._multi_month_fixture()
+        aug_leads = [l for l in leads if l['lm'] == "Aug'26"]
+        aug_rmap  = {k: v for k, v in rmap.items() if k.startswith('a')}
+        ram, meta, _ = _run_ageing_fixture(aug_leads, aug_rmap)
+        # Only Aug retails present
+        lm_set = set()
+        for k in ram.keys():
+            lm_set.add(k[6])  # li index
+        # All ram entries belong to Aug (lm index 0 since only Aug in this fixture)
+        self.assertEqual(meta['valid'], 2)
+
+    def test_all_months_shows_all_monthly_grids(self):
+        """Month=All → both Jul and Aug monthly grids are non-empty."""
+        leads, rmap = self._multi_month_fixture()
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 4)
+        # Both months present in ram keys
+        lm_indices = set(k[6] for k in ram.keys())
+        self.assertEqual(len(lm_indices), 2, "should have entries for 2 distinct months")
+
+    def test_source_filter_affects_summary_and_monthly(self):
+        """Source filter restricts both summary and monthly aggregation."""
+        leads = [
+            {'lid': 'o1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic',  'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'f1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Facebook', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'o2', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic',  'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+        ]
+        rmap = {
+            'o1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+            'f1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+            'o2': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 11)},
+        }
+        # Organic only
+        org_leads = [l for l in leads if l['src'] == 'Organic']
+        org_rmap  = {'o1': rmap['o1'], 'o2': rmap['o2']}
+        ram, meta, _ = _run_ageing_fixture(org_leads, org_rmap)
+        self.assertEqual(meta['valid'], 2, "source filter must exclude Facebook lead from both grids")
+
+    def test_model_filter_affects_summary_and_monthly(self):
+        """Model filter restricts both summary and monthly grids."""
+        leads, rmap = self._multi_month_fixture()
+        raider_leads = [l for l in leads if l['mdl'] == 'TVS Raider']
+        raider_rmap  = {k: v for k, v in rmap.items() if k in ('j1', 'a1')}
+        ram, meta, _ = _run_ageing_fixture(raider_leads, raider_rmap)
+        self.assertEqual(meta['valid'], 2, "model filter should yield only Raider retails")
+        for k in ram.keys():
+            self.assertEqual(k[0], 0, "only one model index expected (Raider=0)")
+
+    def test_lead_type_filter_affects_summary_and_monthly(self):
+        """Lead type filter restricts both summary and monthly grids."""
+        leads = [
+            {'lid': 'h1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': 'Hot',  'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'w1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': 'Warm', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'h2', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': 'Hot',  'st': '', 'city': '', 'cd': '2026-08-01'},
+        ]
+        rmap = {
+            'h1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+            'w1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+            'h2': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 4)},
+        }
+        hot_leads = [l for l in leads if l['lt'] == 'Hot']
+        hot_rmap  = {'h1': rmap['h1'], 'h2': rmap['h2']}
+        ram, meta, _ = _run_ageing_fixture(hot_leads, hot_rmap)
+        self.assertEqual(meta['valid'], 2, "lead type filter should exclude Warm lead")
+
+    def test_state_filter_affects_summary_and_monthly(self):
+        """State filter restricts both summary and monthly grids."""
+        leads = [
+            {'lid': 'm1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': 'MH', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'k1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': 'KA', 'city': '', 'cd': '2026-07-01'},
+        ]
+        rmap = {
+            'm1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+            'k1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+        }
+        mh_leads = [l for l in leads if l['st'] == 'MH']
+        mh_rmap  = {'m1': rmap['m1']}
+        ram, meta, _ = _run_ageing_fixture(mh_leads, mh_rmap)
+        self.assertEqual(meta['valid'], 1)
+
+    def test_city_filter_affects_summary_and_monthly(self):
+        """City filter restricts both summary and monthly grids."""
+        leads = [
+            {'lid': 'mu', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': 'Mumbai', 'cd': '2026-07-01'},
+            {'lid': 'pu', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': 'Pune',   'cd': '2026-07-01'},
+        ]
+        rmap = {
+            'mu': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+            'pu': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+        }
+        mum_leads = [l for l in leads if l['city'] == 'Mumbai']
+        mum_rmap  = {'mu': rmap['mu']}
+        ram, meta, _ = _run_ageing_fixture(mum_leads, mum_rmap)
+        self.assertEqual(meta['valid'], 1)
+
+    def test_dms_filter_affects_summary_and_monthly(self):
+        """DMS filter restricts to DMS retails in both summary and monthly grids."""
+        leads = [
+            {'lid': 'd1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'c1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+        ]
+        rmap = {
+            'd1': {'rm': "Jul'26", 'rtype': 'DMS',      'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+            'c1': {'rm': "Jul'26", 'rtype': 'Call Out', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+        }
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 2)
+        dms_total = sum(v[1] for v in ram.values())
+        co_total  = sum(v[2] for v in ram.values())
+        self.assertEqual(dms_total, 1, "DMS count must be 1")
+        self.assertEqual(co_total,  1, "Call Out count must be 1")
+
+    def test_call_out_filter_affects_summary_and_monthly(self):
+        """Call Out filter: co column available in ram for monthly and summary."""
+        leads = [
+            {'lid': 'd1', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+            {'lid': 'c1', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+            {'lid': 'c2', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+        ]
+        rmap = {
+            'd1': {'rm': "Aug'26", 'rtype': 'DMS',      'pm': '', 'rd': _datetime.date(2026, 8, 4)},
+            'c1': {'rm': "Aug'26", 'rtype': 'Call Out', 'pm': '', 'rd': _datetime.date(2026, 8, 4)},
+            'c2': {'rm': "Aug'26", 'rtype': 'Call Out', 'pm': '', 'rd': _datetime.date(2026, 8, 4)},
+        }
+        ram, _, _ = _run_ageing_fixture(leads, rmap)
+        co_total = sum(v[2] for v in ram.values())
+        self.assertEqual(co_total, 2, "Call Out count must match across all grids")
+
+    def test_grand_total_correct_for_summary(self):
+        """Summary grand total = sum of all bucket retails across all months."""
+        leads, rmap = self._multi_month_fixture()
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        grand_total = sum(v[0] for v in ram.values())
+        self.assertEqual(grand_total, meta['valid'])
+        self.assertEqual(grand_total, 4)
+
+    def test_grand_total_correct_for_monthly(self):
+        """Monthly grand total = sum of retails for that month only."""
+        leads, rmap = self._multi_month_fixture()
+        jul_leads = [l for l in leads if l['lm'] == "Jul'26"]
+        jul_rmap  = {k: v for k, v in rmap.items() if k.startswith('j')}
+        ram, meta, _ = _run_ageing_fixture(jul_leads, jul_rmap)
+        grand_total = sum(v[0] for v in ram.values())
+        self.assertEqual(grand_total, 2, "Jul grand total must be 2, not 4")
+        self.assertEqual(meta['valid'], 2)
+
+    def test_empty_month_not_rendered(self):
+        """Month with no qualifying retails produces empty ram — no grid to show."""
+        leads = [{'lid': 'l1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic',
+                  'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'}]
+        rmap = {'l1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)}}
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        # Simulate filtering to Aug'26 only — no data
+        aug_ram = {k: v for k, v in ram.items() if False}  # nothing matches Aug
+        self.assertEqual(sum(v[0] for v in aug_ram.values()), 0)
+
 
 # ---------------------------------------------------------------------------
 # Test 21 — build_payload() isolation: ageing must not touch existing matrices

@@ -3011,6 +3011,7 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
   const AB         = (maps && maps.ab) || ['0-7 days', '8-14 days', '15-30 days', '30+ days'];
   const AB_COLORS  = ['#16a34a', '#d97706', '#ea580c', '#dc2626'];
   const AB_BG      = ['#f0fdf4', '#fffbeb', '#fff7ed', '#fef2f2'];
+  const PCT_HDR_BG = ['#bbf7d0', '#fde68a', '#fed7aa', '#fecaca'];
 
   // Format detection: new format has 10 elements per row
   const isNew = ram.length > 0 && ram[0].length >= 10;
@@ -3034,77 +3035,70 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
     );
   }
 
-  // All months present in RAM, sorted chronologically
-  const allMonths = useMemo(() => {
-    const s = new Set();
-    for (const row of ram) { const lm = maps.lm[row[F.li]]; if (lm) s.add(lm); }
-    return [...s].sort((a, b) => monthOrder(a) - monthOrder(b));
-  }, [ram, maps, F.li]);
+  const pctStr = (part, tot) => tot > 0 ? (part * 100 / tot).toFixed(1) + '%' : '';
 
-  // Local month selection (null = all)
-  const [selMonths, setSelMonths] = useState(null);
-  const toggleMonth = useCallback(m => {
-    setSelMonths(prev => {
-      const cur = prev ? new Set(prev) : new Set(allMonths);
-      cur.has(m) ? cur.delete(m) : cur.add(m);
-      if (cur.size === allMonths.length) return null;
-      return cur.size === 0 ? null : cur;
-    });
-  }, [allMonths]);
-  const clearMonths = useCallback(() => setSelMonths(null), []);
-  const effectiveMonths = selMonths || new Set(allMonths);
-
-  // Aggregation: model → [b0,b1,b2,b3] — all dashboard filters applied
-  const { sortedMdls, grandBuckets } = useMemo(() => {
+  // All aggregation in one memo: summary (all months) + per-month grids
+  const { summaryData, monthlyData } = useMemo(() => {
     const allSrcF  = !filters.sources   || filters.sources.size   === 0;
     const allMdlF  = !filters.models    || filters.models.size    === 0;
     const allLtF   = !filters.leadTypes || filters.leadTypes.size === 0;
     const allStF   = !filters.states    || filters.states.size    === 0;
     const allCityF = !filters.cities    || filters.cities.size    === 0;
 
-    const mdlBuckets  = new Map();
-    const grandBuckets = [0, 0, 0, 0];
+    // Collect all months present in RAM
+    const mSet = new Set();
+    for (const row of ram) { const lm = maps.lm[row[F.li]]; if (lm) mSet.add(lm); }
+    const allMonths = [...mSet].sort((a, b) => monthOrder(a) - monthOrder(b));
 
-    for (const row of ram) {
-      const val = row[rtIdx];
-      if (!val) continue;
+    // Global Month filter controls which monthly grids are displayed
+    const displayMonths = months && months.length > 0
+      ? allMonths.filter(m => new Set(months).has(m))
+      : allMonths;
 
-      const abi = row[F.abi];
-      const m   = maps.lm[row[F.li]];
-      if (!effectiveMonths.has(m)) continue;
-
-      const mdl = maps.mdl[row[0]];
-      const src = maps.src[row[1]];
-      if (!allMdlF && !filters.models.has(mdl))   continue;
-      if (!allSrcF && !filters.sources.has(src))   continue;
-
-      if (isNew) {
-        const lt   = maps.lt   ? maps.lt[row[2]]   : '';
-        const st   = maps.st   ? maps.st[row[3]]   : '';
-        const city = maps.city ? maps.city[row[4]] : '';
-        if (!allLtF   && !filters.leadTypes.has(lt))   continue;
-        if (!allStF   && !filters.states.has(st))      continue;
-        if (!allCityF && !filters.cities.has(city))    continue;
+    // Core aggregation: monthSet=null → all months; monthSet=Set → only those months
+    function agg(monthSet) {
+      const mdlBuckets   = new Map();
+      const grandBuckets = [0, 0, 0, 0];
+      for (const row of ram) {
+        const val = row[rtIdx];
+        if (!val) continue;
+        const abi = row[F.abi];
+        const m   = maps.lm[row[F.li]];
+        if (monthSet && !monthSet.has(m)) continue;
+        const mdl = maps.mdl[row[0]];
+        const src = maps.src[row[1]];
+        if (!allMdlF && !filters.models.has(mdl))   continue;
+        if (!allSrcF && !filters.sources.has(src))   continue;
+        if (isNew) {
+          const lt   = maps.lt   ? maps.lt[row[2]]   : '';
+          const st   = maps.st   ? maps.st[row[3]]   : '';
+          const city = maps.city ? maps.city[row[4]] : '';
+          if (!allLtF   && !filters.leadTypes.has(lt))   continue;
+          if (!allStF   && !filters.states.has(st))      continue;
+          if (!allCityF && !filters.cities.has(city))    continue;
+        }
+        if (!mdlBuckets.has(mdl)) mdlBuckets.set(mdl, [0, 0, 0, 0]);
+        mdlBuckets.get(mdl)[abi] += val;
+        grandBuckets[abi] += val;
       }
-
-      if (!mdlBuckets.has(mdl)) mdlBuckets.set(mdl, [0, 0, 0, 0]);
-      mdlBuckets.get(mdl)[abi] += val;
-      grandBuckets[abi] += val;
+      const sortedMdls = [...mdlBuckets.entries()].sort(
+        (a, b) => b[1].reduce((s,v)=>s+v,0) - a[1].reduce((s,v)=>s+v,0)
+      );
+      const grandTotal = grandBuckets.reduce((s,v)=>s+v,0);
+      return { sortedMdls, grandBuckets, grandTotal };
     }
 
-    const sortedMdls = [...mdlBuckets.entries()].sort(
-      (a, b) => b[1].reduce((s,v)=>s+v,0) - a[1].reduce((s,v)=>s+v,0)
-    );
-    return { sortedMdls, grandBuckets };
-  }, [ram, maps, filters, effectiveMonths, rtIdx, isNew, F]);
+    // Summary always uses all months (ignores global month filter for the summary grid)
+    const summaryData = agg(null);
+    // Monthly grids: one per displayMonths, skipping empty ones
+    const monthlyData = displayMonths
+      .map(m => ({ month: m, ...agg(new Set([m])) }))
+      .filter(d => d.grandTotal > 0);
 
-  const grandTotal = grandBuckets.reduce((s,v)=>s+v,0);
-  const pctStr = (part, tot) => tot > 0 ? (part * 100 / tot).toFixed(1) + '%' : '';
+    return { summaryData, monthlyData };
+  }, [ram, maps, filters, months, rtIdx, isNew, F]);
 
-  // Lighter complement colors for the % CONTRIBUTION header columns
-  const PCT_HDR_BG = ['#bbf7d0', '#fde68a', '#fed7aa', '#fecaca'];
-
-  // Count-only bucket cell
+  // Shared cell renderers
   const CountCell = (val, bg) => ce('td', { style: {
     textAlign: 'center', padding: '7px 8px', background: bg,
     border: '1px solid #E2E8F0', fontFamily: "'DM Mono',monospace",
@@ -3112,7 +3106,6 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
     color: val ? '#0f172a' : '#CBD5E1', minWidth: 60
   }}, val || '—');
 
-  // Separate contribution % cell
   const PctCell = (val, tot, bg) => ce('td', { style: {
     textAlign: 'center', padding: '7px 6px', background: bg,
     border: '1px solid #E2E8F0', fontFamily: "'DM Mono',monospace",
@@ -3120,14 +3113,12 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
     color: val > 0 && tot > 0 ? '#475569' : '#CBD5E1', minWidth: 52
   }}, val > 0 && tot > 0 ? pctStr(val, tot) : '—');
 
-  // Grand total: count cell (colored bg)
   const GrandCountCell = (val, bg) => ce('td', { style: {
     textAlign: 'center', padding: '8px 8px', background: bg,
     border: '1px solid rgba(0,0,0,.12)', fontFamily: "'DM Mono',monospace",
     fontWeight: 700, color: '#fff', fontSize: 'calc(12px * var(--tvs-font-scale))', minWidth: 60
   }}, val || '—');
 
-  // Grand total: % cell (slightly muted bg)
   const GrandPctCell = (val, tot, bg) => ce('td', { style: {
     textAlign: 'center', padding: '8px 6px', background: bg,
     border: '1px solid rgba(0,0,0,.1)', fontFamily: "'DM Mono',monospace",
@@ -3135,49 +3126,13 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
     fontSize: 'calc(10px * var(--tvs-font-scale))', minWidth: 52
   }}, val > 0 && tot > 0 ? pctStr(val, tot) : '—');
 
-  return ce('div', { className: 'fade-up' },
-    // Coverage strip
-    ram_meta && ce('div', { className: 'card fs-115', style: {
-        padding: '10px 16px', marginBottom: 12,
-        display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' } },
-      ce('span', { style: { fontWeight: 700, color: '#334155' } }, 'Coverage:'),
-      ce('span', { style: { color: '#059669' } }, `✓ ${(ram_meta.valid||0).toLocaleString()} valid`),
-      ce('span', { style: { color: '#94A3B8' } }, `· no Retail_Date: ${(ram_meta.no_rd||0).toLocaleString()}`),
-      ce('span', { style: { color: '#94A3B8' } }, `· no CreateDate: ${(ram_meta.no_cd||0).toLocaleString()}`),
-      ram_meta.neg > 0 && ce('span', { style: { color: '#DC2626' } }, `· negative age: ${ram_meta.neg.toLocaleString()}`),
-      ce('span', { className: 'fs-105', style: { color: '#94A3B8' } }, `(total: ${(ram_meta.total||0).toLocaleString()})`)
-    ),
-    // Main card
-    ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14, borderTop: '3px solid #003087' } },
-      // Title + month chips
-      ce('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 14 } },
-        ce('div', { className: 'section-title' }, 'Retail Ageing — Model × Bucket'),
-        allMonths.length > 0 && ce('div', { style: { display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' } },
-          ce('span', { className: 'fs-10', style: { color: '#64748B', fontWeight: 600, marginRight: 2 } }, 'Month:'),
-          allMonths.map(m => {
-            const active = effectiveMonths.has(m);
-            return ce('button', { key: m, onClick: () => toggleMonth(m), style: {
-              padding: '3px 9px', borderRadius: 12, border: 'none', cursor: 'pointer',
-              fontSize: 'calc(10px * var(--tvs-font-scale))', fontWeight: active ? 700 : 400,
-              background: active ? '#001F5B' : '#E2E8F0',
-              color: active ? '#fff' : '#475569', transition: 'all .15s'
-            }}, m);
-          }),
-          !selMonths && ce('span', { className: 'fs-10', style: { color: '#94A3B8', marginLeft: 2 } }, 'All'),
-          selMonths && ce('button', { onClick: clearMonths, style: {
-            padding: '3px 8px', borderRadius: 12, border: 'none', cursor: 'pointer',
-            fontSize: 'calc(10px * var(--tvs-font-scale))', background: '#FEF2F2', color: '#DC2626'
-          }}, 'Clear')
-        )
-      ),
-      // No data
-      !grandTotal && ce('div', { className: 'fs-13', style: { textAlign: 'center', color: '#94A3B8', padding: '24px 0' } },
-        "No ageing data for the selected filters. (Coverage starts from Jul'26.)"
-      ),
-      grandTotal > 0 && ce('div', { style: { overflowX: 'auto' } },
+  function renderGrid(title, sortedMdls, grandBuckets, grandTotal) {
+    if (!grandTotal) return null;
+    return ce('div', { key: title, className: 'card', style: { padding: '16px 18px', marginBottom: 14, borderTop: '3px solid #003087' } },
+      ce('div', { className: 'section-title', style: { marginBottom: 12 } }, title),
+      ce('div', { style: { overflowX: 'auto' } },
         ce('table', { style: { borderCollapse: 'collapse', width: '100%' } },
           ce('thead', null,
-            // Row 1: MODEL | bucket group headers (colspan=2 each) | TOTAL
             ce('tr', null,
               ce('th', { rowSpan: 2, style: {
                 background: '#001F5B', color: '#fff', textAlign: 'left',
@@ -3199,7 +3154,6 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
                 border: '1px solid rgba(255,255,255,.15)', minWidth: 70, verticalAlign: 'middle'
               }}, 'TOTAL')
             ),
-            // Row 2: RETAIL | % CONTRIBUTION sub-headers under each bucket
             ce('tr', null,
               ...AB.flatMap((_, abi) => [
                 ce('th', { key: `r${abi}`, style: {
@@ -3241,7 +3195,6 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
                 }}, mdlTotal || '—')
               );
             }),
-            // Grand Total row
             ce('tr', { key: '__grand', style: { borderTop: '2px solid #334155' } },
               ce('td', { style: {
                 padding: '8px 12px', fontWeight: 700, color: '#fff',
@@ -3262,7 +3215,29 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
           )
         )
       )
-    )
+    );
+  }
+
+  return ce('div', { className: 'fade-up' },
+    // Coverage strip
+    ram_meta && ce('div', { className: 'card fs-115', style: {
+        padding: '10px 16px', marginBottom: 12,
+        display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' } },
+      ce('span', { style: { fontWeight: 700, color: '#334155' } }, 'Coverage:'),
+      ce('span', { style: { color: '#059669' } }, `✓ ${(ram_meta.valid||0).toLocaleString()} valid`),
+      ce('span', { style: { color: '#94A3B8' } }, `· no Retail_Date: ${(ram_meta.no_rd||0).toLocaleString()}`),
+      ce('span', { style: { color: '#94A3B8' } }, `· no CreateDate: ${(ram_meta.no_cd||0).toLocaleString()}`),
+      ram_meta.neg > 0 && ce('span', { style: { color: '#DC2626' } }, `· negative age: ${ram_meta.neg.toLocaleString()}`),
+      ce('span', { className: 'fs-105', style: { color: '#94A3B8' } }, `(total: ${(ram_meta.total||0).toLocaleString()})`)
+    ),
+    // No data at all
+    summaryData.grandTotal === 0 && ce('div', { className: 'card fs-13', style: { padding: '24px', textAlign: 'center', color: '#94A3B8' } },
+      "No ageing data for the selected filters. (Coverage starts from Jul'26.)"
+    ),
+    // Summary grid — all months combined, all non-month filters applied
+    renderGrid('Retail Ageing — Summary', summaryData.sortedMdls, summaryData.grandBuckets, summaryData.grandTotal),
+    // Monthly grids — one per month, controlled by global Month filter
+    ...monthlyData.map(d => renderGrid(`Retail Ageing — ${d.month}`, d.sortedMdls, d.grandBuckets, d.grandTotal))
   );
 });
 
