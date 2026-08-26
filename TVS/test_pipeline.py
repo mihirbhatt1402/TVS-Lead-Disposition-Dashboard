@@ -1093,16 +1093,19 @@ _AGE_BUCKET_LABELS_TEST = ['0-7 days', '8-14 days', '15-30 days', '30+ days']
 def _run_ageing_fixture(leads, retail_map):
     """Minimal inline of the ageing aggregation from build_payload's is_ret block.
 
-    leads: list of dicts with keys: lid, lm, src, mdl, cd  (cd=CreateDate string)
+    leads: list of dicts with keys: lid, lm, src, mdl, cd, lt, st, city
+           (cd=CreateDate string; lt/st/city default to '' if missing)
     retail_map: {lid: {rm, rtype, pm, rd}}
 
     Returns:
-        ram: {(mi,si,abi,li): [rets,dms,co]}
+        ram: {(mi,si,tti,sti,cti,abi,li): [rets,dms,co]}
         meta: {total, valid, no_rd, no_cd, neg}
-        maps: {mdl:[], src:[], lm:[]}
+        maps: {mdl:[], src:[], lm:[], lt:[], st:[], city:[]}
     """
     mdl_idx,  src_idx,  lm_idx  = {}, {}, {}
     mdl_arr,  src_arr,  lm_arr  = [], [], []
+    lt_idx,   st_idx,   city_idx = {}, {}, {}
+    lt_arr,   st_arr,   city_arr = [], [], []
 
     def ix(d, arr, v):
         if v not in d:
@@ -1116,9 +1119,12 @@ def _run_ageing_fixture(leads, retail_map):
         lid = lead['lid']
         if lid not in retail_map:
             continue
-        mi  = ix(mdl_idx, mdl_arr, lead['mdl'])
-        si  = ix(src_idx, src_arr, lead['src'])
-        li  = ix(lm_idx,  lm_arr,  lead['lm'])
+        mi  = ix(mdl_idx,  mdl_arr,  lead['mdl'])
+        si  = ix(src_idx,  src_arr,  lead['src'])
+        li  = ix(lm_idx,   lm_arr,   lead['lm'])
+        tti = ix(lt_idx,   lt_arr,   lead.get('lt', ''))
+        sti = ix(st_idx,   st_arr,   lead.get('st', ''))
+        cti = ix(city_idx, city_arr, lead.get('city', ''))
         rtype = retail_map[lid].get('rtype', 'DMS')
 
         total += 1
@@ -1134,7 +1140,7 @@ def _run_ageing_fixture(leads, retail_map):
                 neg += 1
             else:
                 abi = _age_bucket(age_days)
-                k = (mi, si, abi, li)
+                k = (mi, si, tti, sti, cti, abi, li)
                 if k not in ram: ram[k] = [0, 0, 0]
                 ram[k][0] += 1
                 rt_u = rtype.upper()
@@ -1143,7 +1149,7 @@ def _run_ageing_fixture(leads, retail_map):
                 valid += 1
 
     meta = {'total': total, 'valid': valid, 'no_rd': no_rd, 'no_cd': no_cd, 'neg': neg}
-    maps = {'mdl': mdl_arr, 'src': src_arr, 'lm': lm_arr}
+    maps = {'mdl': mdl_arr, 'src': src_arr, 'lm': lm_arr, 'lt': lt_arr, 'st': st_arr, 'city': city_arr}
     return ram, meta, maps
 
 
@@ -1245,7 +1251,7 @@ class TestRetailAgeing(unittest.TestCase):
         ram, meta, maps = _run_ageing_fixture(leads, rmap)
         self.assertEqual(meta['valid'], 1)
         # The model in the ram key must be the lead model index
-        (mi, si, abi, li), _ = list(ram.items())[0]
+        (mi, si, tti, sti, cti, abi, li), _ = list(ram.items())[0]
         self.assertEqual(maps['mdl'][mi], 'TVS Raider')  # lead master model, not retail pm
 
     def test_source_comes_from_lead_master(self):
@@ -1256,7 +1262,7 @@ class TestRetailAgeing(unittest.TestCase):
                   'src': 'Facebook', 'cd': '2026-08-01'}]  # lead source
         ram, meta, maps = _run_ageing_fixture(leads, rmap)
         self.assertEqual(meta['valid'], 1)
-        (mi, si, abi, li) = list(ram.keys())[0]
+        (mi, si, tti, sti, cti, abi, li) = list(ram.keys())[0]
         self.assertEqual(maps['src'][si], 'Facebook')
 
     # ── 15: bucket reconciliation ─────────────────────────────────────────────

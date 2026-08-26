@@ -2059,7 +2059,7 @@ def build_payload(all_leads, retail_map):
                     _ram_neg += 1
                 else:
                     _abi = age_bucket(_age_days)
-                    _rk  = f"{mi}|{si}|{_abi}|{li}"
+                    _rk  = f"{mi}|{si}|{tti}|{sti}|{cti}|{_abi}|{li}"
                     if _rk not in ram: ram[_rk] = [0, 0, 0]
                     ram[_rk][0] += 1
                     _rt_u = rtype.upper()

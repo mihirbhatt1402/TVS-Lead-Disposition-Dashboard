@@ -3008,7 +3008,16 @@ function App() {
 const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, months, RT, leadsMode }) {
   const { maps, ram: ramRaw, ram_meta } = data;
   const ram = ramRaw || [];
-  const AB = (maps && maps.ab) || ['0-7 days', '8-14 days', '15-30 days', '30+ days'];
+  const AB         = (maps && maps.ab) || ['0-7 days', '8-14 days', '15-30 days', '30+ days'];
+  const AB_COLORS  = ['#16a34a', '#d97706', '#ea580c', '#dc2626'];
+  const AB_BG      = ['#f0fdf4', '#fffbeb', '#fff7ed', '#fef2f2'];
+
+  // Format detection: new format has 10 elements per row
+  const isNew = ram.length > 0 && ram[0].length >= 10;
+  const F = isNew
+    ? { abi: 5, li: 6, rets: 7, dms: 8, co: 9 }
+    : { abi: 2, li: 3, rets: 4, dms: 5, co: 6 };
+  const rtIdx = RT === 'dms' ? F.dms : RT === 'co' ? F.co : F.rets;
 
   // On Update mode: ageing is On Create only
   if (leadsMode !== 'create') {
@@ -3025,110 +3034,90 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
     );
   }
 
-  // RT index in ram row [mi, si, abi, li, rets, dms, co]
-  const rtIdx = RT === 'dms' ? 5 : RT === 'co' ? 6 : 4;
+  // All months present in RAM, sorted chronologically
+  const allMonths = useMemo(() => {
+    const s = new Set();
+    for (const row of ram) { const lm = maps.lm[row[F.li]]; if (lm) s.add(lm); }
+    return [...s].sort((a, b) => monthOrder(a) - monthOrder(b));
+  }, [ram, maps, F.li]);
 
-  const allSrcs   = useMemo(() => [...new Set(maps.src)], [maps]);
-  const srcGroups = useMemo(() => buildSrcGroups(allSrcs), [allSrcs]);
-  const [expandedGrps, setExpandedGrps] = useState(new Set());
-  const [expandedMdls, setExpandedMdls] = useState(new Set());
+  // Local month selection (null = all)
+  const [selMonths, setSelMonths] = useState(null);
+  const toggleMonth = useCallback(m => {
+    setSelMonths(prev => {
+      const cur = prev ? new Set(prev) : new Set(allMonths);
+      cur.has(m) ? cur.delete(m) : cur.add(m);
+      if (cur.size === allMonths.length) return null;
+      return cur.size === 0 ? null : cur;
+    });
+  }, [allMonths]);
+  const clearMonths = useCallback(() => setSelMonths(null), []);
+  const effectiveMonths = selMonths || new Set(allMonths);
 
-  const onToggleGrp = useCallback(id => setExpandedGrps(prev => {
-    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
-  }), []);
-  const onToggleMdl = useCallback(mdl => setExpandedMdls(prev => {
-    const n = new Set(prev); n.has(mdl) ? n.delete(mdl) : n.add(mdl); return n;
-  }), []);
+  // Aggregation: model → [b0,b1,b2,b3] — all dashboard filters applied
+  const { sortedMdls, grandBuckets } = useMemo(() => {
+    const allSrcF  = !filters.sources   || filters.sources.size   === 0;
+    const allMdlF  = !filters.models    || filters.models.size    === 0;
+    const allLtF   = !filters.leadTypes || filters.leadTypes.size === 0;
+    const allStF   = !filters.states    || filters.states.size    === 0;
+    const allCityF = !filters.cities    || filters.cities.size    === 0;
 
-  const { sortedMdls, grandBuckets, grandBySrc } = useMemo(() => {
-    const allSrcF  = !filters.sources || filters.sources.size === 0;
-    const allMdlF  = !filters.models  || filters.models.size  === 0;
-    const monthSet = new Set(months);
-
-    const mdlAgg      = new Map();
+    const mdlBuckets  = new Map();
     const grandBuckets = [0, 0, 0, 0];
-    const grandBySrc  = new Map();
 
     for (const row of ram) {
-      const [mi, si, abi, li] = row;
       const val = row[rtIdx];
       if (!val) continue;
-      const m   = maps.lm[li];
-      const mdl = maps.mdl[mi];
-      const src = maps.src[si];
-      if (months.length > 0 && !monthSet.has(m)) continue;
-      if (!allSrcF && !filters.sources.has(src)) continue;
-      if (!allMdlF && !filters.models.has(mdl))  continue;
 
-      if (!mdlAgg.has(mdl)) mdlAgg.set(mdl, { buckets: [0,0,0,0], bySrc: new Map() });
-      const e = mdlAgg.get(mdl);
-      e.buckets[abi] += val;
-      if (!e.bySrc.has(src)) e.bySrc.set(src, [0,0,0,0]);
-      e.bySrc.get(src)[abi] += val;
+      const abi = row[F.abi];
+      const m   = maps.lm[row[F.li]];
+      if (!effectiveMonths.has(m)) continue;
+
+      const mdl = maps.mdl[row[0]];
+      const src = maps.src[row[1]];
+      if (!allMdlF && !filters.models.has(mdl))   continue;
+      if (!allSrcF && !filters.sources.has(src))   continue;
+
+      if (isNew) {
+        const lt   = maps.lt   ? maps.lt[row[2]]   : '';
+        const st   = maps.st   ? maps.st[row[3]]   : '';
+        const city = maps.city ? maps.city[row[4]] : '';
+        if (!allLtF   && !filters.leadTypes.has(lt))   continue;
+        if (!allStF   && !filters.states.has(st))      continue;
+        if (!allCityF && !filters.cities.has(city))    continue;
+      }
+
+      if (!mdlBuckets.has(mdl)) mdlBuckets.set(mdl, [0, 0, 0, 0]);
+      mdlBuckets.get(mdl)[abi] += val;
       grandBuckets[abi] += val;
-      if (!grandBySrc.has(src)) grandBySrc.set(src, [0,0,0,0]);
-      grandBySrc.get(src)[abi] += val;
     }
 
-    const sortedMdls = [...mdlAgg.entries()].sort(
-      (a, b) => b[1].buckets.reduce((s,v)=>s+v,0) - a[1].buckets.reduce((s,v)=>s+v,0)
+    const sortedMdls = [...mdlBuckets.entries()].sort(
+      (a, b) => b[1].reduce((s,v)=>s+v,0) - a[1].reduce((s,v)=>s+v,0)
     );
-    return { sortedMdls, grandBuckets, grandBySrc };
-  }, [ram, maps, filters, months, rtIdx]);
+    return { sortedMdls, grandBuckets };
+  }, [ram, maps, filters, effectiveMonths, rtIdx, isNew, F]);
 
   const grandTotal = grandBuckets.reduce((s,v)=>s+v,0);
+  const pctStr = (part, tot) => tot > 0 ? Math.round(part * 100 / tot) + '%' : '';
 
-  if (!grandTotal) {
-    return ce('div', { className: 'fade-up' },
-      ce('div', { className: 'card fs-13', style: { padding: '24px', textAlign: 'center', color: '#94A3B8' } },
-        'No ageing data for the selected filters. (Coverage starts from Jul\'26.)'
-      )
-    );
-  }
+  const DataCell = (val, mdlTotal, bg) => ce('td', { style: {
+    textAlign: 'center', padding: '7px 8px', background: bg,
+    border: '1px solid #E2E8F0', verticalAlign: 'middle', minWidth: 76,
+    fontFamily: "'DM Mono',monospace"
+  }},
+    ce('div', { style: { fontWeight: 700, fontSize: 'calc(12px * var(--tvs-font-scale))', color: val ? '#0f172a' : '#CBD5E1' } }, val || '—'),
+    val > 0 && ce('div', { style: { fontSize: 'calc(10px * var(--tvs-font-scale))', color: '#64748B', marginTop: 1 } }, pctStr(val, mdlTotal))
+  );
 
-  // Column list: groups + expanded sub-groups + expanded individual sources + total
-  const visibleCols = useMemo(() => {
-    const cols = [];
-    for (const grp of srcGroups) {
-      const grpExp = expandedGrps.has(grp.id);
-      cols.push({ type: 'group', id: grp.id, label: grp.label, color: grp.color, srcs: grp.srcs, exp: grpExp });
-      if (grpExp) {
-        for (const sg of (grp.subGroups || [])) {
-          const sgExp = expandedGrps.has(sg.id);
-          cols.push({ type: 'subgroup', id: sg.id, label: sg.label, color: sg.color, srcs: sg.srcs, exp: sgExp });
-          if (sgExp) {
-            for (const src of sg.srcs) {
-              cols.push({ type: 'src', id: src, label: src, color: sg.color, srcs: [src] });
-            }
-          }
-        }
-      }
-    }
-    cols.push({ type: 'total', id: '_total', label: 'TOTAL', color: '#001F5B', srcs: allSrcs });
-    return cols;
-  }, [srcGroups, expandedGrps, allSrcs]);
-
-  function grpVal(srcs, bySrc, abi) {
-    let t = 0;
-    for (const s of srcs) { const v = bySrc.get(s); if (v) t += (abi == null ? v.reduce((a,b)=>a+b,0) : v[abi]); }
-    return t;
-  }
-
-  const pct = (part, tot) => tot ? Math.round(part*100/tot) + '%' : '';
-
-  const TH = (label, bg, extra={}) => ce('th', {
-    style: { background: bg, color: '#fff', padding: '6px 10px', fontWeight: 700,
-      textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'center',
-      border: '1px solid rgba(255,255,255,.15)', whiteSpace: 'nowrap',
-      position: 'sticky', top: 0, zIndex: 2, ...extra.style },
-    ...extra
-  }, label);
-
-  const NC = (v, bg='#fff', bold=false) => ce('td', {
-    style: { textAlign: 'center', fontFamily: "'DM Mono',monospace", fontWeight: bold?700:400,
-      color: v ? '#0f172a' : '#CBD5E1', border: '1px solid #E2E8F0',
-      padding: '6px 10px', background: bg }
-  }, v || '—');
+  const GrandCell = (val, tot, bg, color) => ce('td', { style: {
+    textAlign: 'center', padding: '8px 8px', background: bg,
+    border: '1px solid rgba(0,0,0,.12)', fontFamily: "'DM Mono',monospace",
+    fontWeight: 700, color, minWidth: 76
+  }},
+    ce('div', { style: { fontSize: 'calc(12px * var(--tvs-font-scale))' } }, val || '—'),
+    val > 0 && ce('div', { style: { fontSize: 'calc(10px * var(--tvs-font-scale))', opacity: 0.85 } }, pctStr(val, tot))
+  );
 
   return ce('div', { className: 'fade-up' },
     // Coverage strip
@@ -3142,77 +3131,88 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
       ram_meta.neg > 0 && ce('span', { style: { color: '#DC2626' } }, `· negative age: ${ram_meta.neg.toLocaleString()}`),
       ce('span', { className: 'fs-105', style: { color: '#94A3B8' } }, `(total: ${(ram_meta.total||0).toLocaleString()})`)
     ),
-    // Table card
+    // Main card
     ce('div', { className: 'card', style: { padding: '16px 18px', marginBottom: 14, borderTop: '3px solid #003087' } },
-      ce('div', { className: 'section-title', style: { marginBottom: 12 } }, 'Retail Ageing — Model × Source'),
-      ce('div', { style: { overflowX: 'auto' } },
-        ce('table', { style: { borderCollapse: 'collapse', width: '100%', minWidth: 400 } },
+      // Title + month chips
+      ce('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 14 } },
+        ce('div', { className: 'section-title' }, 'Retail Ageing — Model × Bucket'),
+        allMonths.length > 0 && ce('div', { style: { display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' } },
+          ce('span', { className: 'fs-10', style: { color: '#64748B', fontWeight: 600, marginRight: 2 } }, 'Month:'),
+          allMonths.map(m => {
+            const active = effectiveMonths.has(m);
+            return ce('button', { key: m, onClick: () => toggleMonth(m), style: {
+              padding: '3px 9px', borderRadius: 12, border: 'none', cursor: 'pointer',
+              fontSize: 'calc(10px * var(--tvs-font-scale))', fontWeight: active ? 700 : 400,
+              background: active ? '#001F5B' : '#E2E8F0',
+              color: active ? '#fff' : '#475569', transition: 'all .15s'
+            }}, m);
+          }),
+          !selMonths && ce('span', { className: 'fs-10', style: { color: '#94A3B8', marginLeft: 2 } }, 'All'),
+          selMonths && ce('button', { onClick: clearMonths, style: {
+            padding: '3px 8px', borderRadius: 12, border: 'none', cursor: 'pointer',
+            fontSize: 'calc(10px * var(--tvs-font-scale))', background: '#FEF2F2', color: '#DC2626'
+          }}, 'Clear')
+        )
+      ),
+      // No data
+      !grandTotal && ce('div', { className: 'fs-13', style: { textAlign: 'center', color: '#94A3B8', padding: '24px 0' } },
+        "No ageing data for the selected filters. (Coverage starts from Jul'26.)"
+      ),
+      grandTotal > 0 && ce('div', { style: { overflowX: 'auto' } },
+        ce('table', { style: { borderCollapse: 'collapse', width: '100%' } },
           ce('thead', null,
             ce('tr', null,
-              TH('Model / Bucket', '#001F5B', { style: { textAlign: 'left', position: 'sticky', left: 0, zIndex: 3, minWidth: 150 } }),
-              ...visibleCols.map(col => {
-                const tog = col.type === 'group' || col.type === 'subgroup';
-                return TH(
-                  col.label + (tog ? (col.exp ? ' ▴' : ' ▾') : ''),
-                  col.color,
-                  { style: { minWidth: 60, cursor: tog ? 'pointer' : 'default' },
-                    onClick: tog ? () => onToggleGrp(col.id) : undefined,
-                    title: tog ? (col.exp ? 'Collapse' : 'Expand sources') : undefined }
-                );
-              })
+              ce('th', { style: {
+                background: '#001F5B', color: '#fff', textAlign: 'left',
+                padding: '8px 12px', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '0.04em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
+                position: 'sticky', left: 0, zIndex: 3, minWidth: 160,
+                border: '1px solid rgba(255,255,255,.15)'
+              }}, 'Model'),
+              ...AB.map((label, abi) => ce('th', { key: abi, style: {
+                background: AB_COLORS[abi], color: '#fff', textAlign: 'center',
+                padding: '8px 12px', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '0.03em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
+                border: '1px solid rgba(255,255,255,.15)', minWidth: 80
+              }}, label)),
+              ce('th', { style: {
+                background: '#334155', color: '#fff', textAlign: 'center',
+                padding: '8px 12px', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '0.04em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
+                border: '1px solid rgba(255,255,255,.15)', minWidth: 80
+              }}, 'TOTAL')
             )
           ),
           ce('tbody', null,
-            // Model rows
-            ...sortedMdls.flatMap(([mdl, { buckets, bySrc }]) => {
+            ...sortedMdls.map(([mdl, buckets]) => {
               const mdlTotal = buckets.reduce((s,v)=>s+v,0);
-              const exp = expandedMdls.has(mdl);
-              const rows = [
-                ce('tr', { key: mdl, style: { cursor: 'pointer' }, onClick: () => onToggleMdl(mdl) },
-                  ce('td', { className: 'label', style: {
-                      background: exp ? '#EFF6FF' : '#fff', borderRight: '2px solid #E2E8F0', paddingLeft: 10 } },
-                    (exp ? '▾ ' : '▸ ') + mdl
-                  ),
-                  ...visibleCols.map(col => NC(grpVal(col.srcs, bySrc, null) || 0, exp ? '#EFF6FF' : '#fff'))
-                )
-              ];
-              if (exp) {
-                for (let abi = 0; abi < 4; abi++) {
-                  const abT = buckets[abi];
-                  rows.push(ce('tr', { key: `${mdl}-${abi}` },
-                    ce('td', { className: 'sub-label', style: {
-                        background: '#FAFAFA', color: abi === 3 ? '#B91C1C' : '#475569' } },
-                      AB[abi] + (abT && mdlTotal ? `  ${pct(abT, mdlTotal)}` : '')
-                    ),
-                    ...visibleCols.map(col => NC(grpVal(col.srcs, bySrc, abi) || 0, '#FAFAFA'))
-                  ));
-                }
-              }
-              return rows;
-            }),
-            // Grand total
-            ce('tr', { key: '__grand' },
-              ce('td', { className: 'label', style: {
-                  background: '#001F5B', color: '#fff', fontWeight: 700,
-                  borderRight: '2px solid #334155', paddingLeft: 10 } }, 'Grand Total'
-              ),
-              ...visibleCols.map(col => ce('td', { key: col.id, className: 'fs-12', style: {
-                  textAlign: 'center', fontFamily: "'DM Mono',monospace", fontWeight: 700,
-                  color: '#fff', background: '#001F5B', border: '1px solid #334155', padding: '6px 10px' } },
-                grpVal(col.srcs, grandBySrc, null) || '—'
-              ))
-            ),
-            // Grand bucket breakdown
-            ...AB.map((label, abi) => {
-              const abT = grandBuckets[abi];
-              return ce('tr', { key: `__grand-${abi}` },
-                ce('td', { className: 'sub-label', style: {
-                    background: '#F1F5F9', color: abi === 3 ? '#B91C1C' : '#475569' } },
-                  label + (abT ? `  ${pct(abT, grandTotal)}` : '')
-                ),
-                ...visibleCols.map(col => NC(grpVal(col.srcs, grandBySrc, abi) || 0, '#F1F5F9'))
+              return ce('tr', { key: mdl },
+                ce('td', { style: {
+                  padding: '6px 12px', fontWeight: 600, color: '#0f172a',
+                  background: '#fff', border: '1px solid #E2E8F0',
+                  position: 'sticky', left: 0, zIndex: 1,
+                  fontSize: 'calc(12px * var(--tvs-font-scale))'
+                }}, mdl),
+                ...buckets.map((val, abi) => DataCell(val, mdlTotal, AB_BG[abi])),
+                ce('td', { style: {
+                  textAlign: 'center', padding: '7px 8px', background: '#F8FAFC',
+                  border: '1px solid #E2E8F0', fontFamily: "'DM Mono',monospace",
+                  fontWeight: 700, color: mdlTotal ? '#0f172a' : '#CBD5E1',
+                  fontSize: 'calc(12px * var(--tvs-font-scale))', minWidth: 76
+                }}, mdlTotal || '—')
               );
-            })
+            }),
+            // Grand Total row
+            ce('tr', { key: '__grand', style: { borderTop: '2px solid #334155' } },
+              ce('td', { style: {
+                padding: '8px 12px', fontWeight: 700, color: '#fff',
+                background: '#001F5B', border: '1px solid #334155',
+                position: 'sticky', left: 0, zIndex: 1,
+                fontSize: 'calc(12px * var(--tvs-font-scale))'
+              }}, 'Grand Total'),
+              ...grandBuckets.map((val, abi) => GrandCell(val, grandTotal, AB_COLORS[abi], '#fff')),
+              GrandCell(grandTotal, grandTotal, '#334155', '#fff')
+            )
           )
         )
       )
