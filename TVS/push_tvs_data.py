@@ -1095,12 +1095,13 @@ def proxy_get(action, extra_params=None, timeout=120):
 # Only these columns are needed from each lead sheet — reduces payload ~70%
 LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medium,Retail By,DMS_Retail_Month'
 
-# Per-page timeouts (4 attempts: 60 s → 90 s → 180 s → 180 s).
-# Backoff between attempts: 30 s → 60 s → 120 s.
-# A 4th attempt absorbs the rare sustained 404 bursts that exhaust 3 attempts
-# and would otherwise trigger a full sheet restart.
-_LEAD_TIMEOUTS = [60, 90, 180, 180]
-_LEAD_BACKOFFS  = [5, 15, 30]          # len == len(_LEAD_TIMEOUTS) - 1; short because 404s are transient redirect-URL expiry, not rate-limits
+# Page size: 3000 rows/page keeps each Apps Script execution under ~30 s,
+# narrowing the transient echo-URL window (302 bounce-back race condition).
+# 6 per-page attempts with escalating ceilings; 5 backoff gaps.
+# Short sleeps: 404s are transient redirect-URL expiry, not rate-limit cooldowns.
+_LEAD_PAGE_SIZE = 3000
+_LEAD_TIMEOUTS  = [30, 60, 90, 120, 180, 180]
+_LEAD_BACKOFFS  = [5, 10, 15, 20, 30]       # len == len(_LEAD_TIMEOUTS) - 1
 
 class _PageFetchFailed(Exception):
     """Raised when a page exhausts all retry attempts.
@@ -1112,49 +1113,97 @@ class _PageFetchFailed(Exception):
         self.accumulated_rows = accumulated_rows
         self.headers          = headers
 
+class _RetailPageFailed(Exception):
+    """Raised by _fetch_retails_inner when a page exhausts all per-page retry attempts.
+    The outer fetch_retails() catches this, resumes from e.page preserving
+    e.accumulated_rows, then waits before the next sheet-level attempt.
+    Every attempt calls proxy_get() fresh — stale echo URLs are never reused."""
+    def __init__(self, page, accumulated_rows, headers, expected_total, cause):
+        super().__init__(str(cause))
+        self.page             = page
+        self.accumulated_rows = accumulated_rows
+        self.headers          = headers
+        self.expected_total   = expected_total
+
+class _RetailDatePageFailed(Exception):
+    """Raised by _fetch_retail_date_inner when a page exhausts all per-page retry attempts."""
+    def __init__(self, page, partial_map, populated_ct, blank_ct, invalid_ct, cause):
+        super().__init__(str(cause))
+        self.page         = page
+        self.partial_map  = partial_map
+        self.populated_ct = populated_ct
+        self.blank_ct     = blank_ct
+        self.invalid_ct   = invalid_ct
+
 def fetch_sheet_via_proxy(file_id, label, tab_name=None,
                           _start_page=0, _prev_rows=None, _prev_headers=None):
     """Read any Google Sheet via Apps Script proxy. Returns raw DataFrame.
 
     _start_page / _prev_rows / _prev_headers let the sheet-level retry loop
     resume from a failed page instead of restarting from page 0.
+
+    Every attempt issues a FRESH request to APPS_SCRIPT_URL via proxy_get()
+    — stale echo URLs (302 bounce-back race condition) are never retried.
     """
     page      = _start_page
     all_rows  = list(_prev_rows) if _prev_rows else []
     headers   = _prev_headers
-    extra = {'fileId': file_id, 'pageSize': 10000, 'cols': LEAD_COLS}
+    extra = {'fileId': file_id, 'pageSize': _LEAD_PAGE_SIZE, 'cols': LEAD_COLS}
     if tab_name:
         extra['tabName'] = tab_name
     while True:
         extra['page'] = page
-        data = None
+        data       = None
+        last_exc   = None
+        http_codes = []
         for attempt, _timeout in enumerate(_LEAD_TIMEOUTS):
+            t0 = time.monotonic()
             try:
                 data = proxy_get('getSheetData', extra, timeout=_timeout)
+                elapsed = time.monotonic() - t0
+                http_codes.append(200)
                 if 'error' in data:
                     raise RuntimeError(f"Apps Script error: {data['error']}")
-                break  # success
+                rows_ct = len(data.get('rows', []))
+                print(
+                    f"[FETCH] Dataset:{label} Page:{page} "
+                    f"Offset:{page*_LEAD_PAGE_SIZE:,} "
+                    f"Attempt:{attempt+1}/{len(_LEAD_TIMEOUTS)} "
+                    f"Rows:{rows_ct:,} Cumulative:{len(all_rows)+rows_ct:,} "
+                    f"Expected:{data.get('total','?')} "
+                    f"Elapsed:{elapsed:.1f}s HTTP:200 Fresh:YES", flush=True)
+                last_exc = None
+                break
             except Exception as e:
+                elapsed = time.monotonic() - t0
+                http_codes.append('ERR')
+                last_exc = e
                 if attempt < len(_LEAD_TIMEOUTS) - 1:
                     _sleep = _LEAD_BACKOFFS[attempt]
-                    print(f"  {label} page {page} attempt {attempt+1} failed ({e}); "
-                          f"retrying in {_sleep}s with {_LEAD_TIMEOUTS[attempt+1]}s timeout…", flush=True)
+                    print(
+                        f"[FETCH] Dataset:{label} Page:{page} "
+                        f"Attempt:{attempt+1}/{len(_LEAD_TIMEOUTS)} "
+                        f"FAILED ({type(e).__name__}: {e}) "
+                        f"Elapsed:{elapsed:.1f}s Retry:{_sleep}s Fresh:YES", flush=True)
                     time.sleep(_sleep)
                 else:
+                    print(
+                        f"[FAILED PAGE] Dataset:{label} Page:{page} "
+                        f"Offset:{page*_LEAD_PAGE_SIZE:,} "
+                        f"Attempts:{len(_LEAD_TIMEOUTS)} "
+                        f"HTTP_statuses:{http_codes} Final_error:{e}", flush=True)
                     traceback.print_exc()
                     raise _PageFetchFailed(
                         page, all_rows, headers,
                         RuntimeError(f"getSheetData {label} page {page} failed after "
                                      f"{len(_LEAD_TIMEOUTS)} attempts: {e}"))
-        if data is None:
+        if data is None or last_exc is not None:
             raise _PageFetchFailed(page, all_rows, headers,
                 RuntimeError(f"getSheetData {label} page {page}: no data returned"))
         if headers is None:
             headers = data['headers']
         rows = data.get('rows', [])
         all_rows.extend(rows)
-        total = data.get('total', '?')
-        print(f"  {label} page {page}: +{len(rows):,} rows (total {len(all_rows):,}/{total})", flush=True)
         if data.get('done', True):
             break
         page += 1
@@ -1224,96 +1273,163 @@ def standardize_leads(raw_df):
     return df[[c for c in keep if c in df.columns]].copy()
 
 # ─── Retail master ─────────────────────────────────────────────────────────────
-# Page size kept small so each Apps Script call finishes well within the HTTP read
-# timeout. 5 000 rows / page is safe for the current sheet size (≈70-90 k rows).
-_RETAIL_PAGE_SIZE = 5000
-# Per-attempt read timeouts (escalating). Between attempts: 5 s → 15 s → 30 s backoff.
-# Short backoffs: 404s are transient temp-URL expiry (resolves in seconds), not rate-limits.
-_RETAIL_TIMEOUTS  = [60, 90, 180, 180]
-_RETAIL_BACKOFFS  = [5, 15, 30]       # len == len(_RETAIL_TIMEOUTS) - 1
+# Page size: 2000 rows/page for a narrow echo-URL window (same rationale as leads).
+# 6 per-page attempts; 5 backoff gaps. Short sleeps: 404s are transient, not rate-limits.
+_RETAIL_PAGE_SIZE = 2000
+_RETAIL_TIMEOUTS  = [30, 60, 90, 120, 180, 180]
+_RETAIL_BACKOFFS  = [5, 10, 15, 20, 30]       # len == len(_RETAIL_TIMEOUTS) - 1
 
-def fetch_retails():
-    """Fetch TVS retail master via Apps Script (paginated; exponential backoff per page).
-
-    Never returns partial data — raises RuntimeError on any unrecoverable failure so
-    the caller's sys.exit(1) guard prevents a partial payload from reaching Firebase.
-    """
-    print("Fetching retail master via Apps Script…", flush=True)
-    page, all_rows, headers, expected_total = 0, [], None, None
-    done_received = False
+def _fetch_retails_inner(start_page, prev_rows, prev_headers, prev_expected_total):
+    """Paginate through the retail master from start_page.
+    Raises _RetailPageFailed with accumulated state on page-level retry exhaustion.
+    Every attempt issues a FRESH request to APPS_SCRIPT_URL via proxy_get() —
+    stale echo URLs (302 bounce-back race condition) are never retried."""
+    page           = start_page
+    all_rows       = list(prev_rows)  if prev_rows       else []
+    headers        = prev_headers
+    expected_total = prev_expected_total
+    done_received  = False
+    pages_fetched  = 0
     while True:
-        last_exc = None
+        last_exc   = None
+        http_codes = []
         for attempt, _timeout in enumerate(_RETAIL_TIMEOUTS):
+            t0 = time.monotonic()
             try:
                 data = proxy_get('getCurrentRetails',
                                  {'page': page, 'pageSize': _RETAIL_PAGE_SIZE},
                                  timeout=_timeout)
+                elapsed = time.monotonic() - t0
+                http_codes.append(200)
+                if 'error' in data:
+                    raise RuntimeError(f"Apps Script error: {data['error']}")
+                rows_ct = len(data.get('rows', []))
+                print(
+                    f"[FETCH] Dataset:Retail Page:{page} "
+                    f"Offset:{page*_RETAIL_PAGE_SIZE:,} "
+                    f"Attempt:{attempt+1}/{len(_RETAIL_TIMEOUTS)} "
+                    f"Rows:{rows_ct:,} Cumulative:{len(all_rows)+rows_ct:,} "
+                    f"Expected:{data.get('total','?')} "
+                    f"Elapsed:{elapsed:.1f}s HTTP:200 Fresh:YES", flush=True)
                 last_exc = None
                 break
             except Exception as e:
+                elapsed = time.monotonic() - t0
+                http_codes.append('ERR')
                 last_exc = e
                 if attempt < len(_RETAIL_TIMEOUTS) - 1:
                     _sleep = _RETAIL_BACKOFFS[attempt]
-                    print(f"  Page {page} attempt {attempt+1} failed ({e}); "
-                          f"retrying in {_sleep}s with {_RETAIL_TIMEOUTS[attempt+1]}s timeout…",
-                          flush=True)
+                    print(
+                        f"[FETCH] Dataset:Retail Page:{page} "
+                        f"Attempt:{attempt+1}/{len(_RETAIL_TIMEOUTS)} "
+                        f"FAILED ({type(e).__name__}: {e}) "
+                        f"Elapsed:{elapsed:.1f}s Retry:{_sleep}s Fresh:YES", flush=True)
                     time.sleep(_sleep)
+                else:
+                    print(
+                        f"[FAILED PAGE] Dataset:Retail Page:{page} "
+                        f"Offset:{page*_RETAIL_PAGE_SIZE:,} "
+                        f"Attempts:{len(_RETAIL_TIMEOUTS)} "
+                        f"HTTP_statuses:{http_codes} Final_error:{e}", flush=True)
         if last_exc is not None:
-            traceback.print_exc()
-            raise RuntimeError(
-                f"getCurrentRetails page {page} failed after {len(_RETAIL_TIMEOUTS)} "
-                f"attempts: {last_exc}")
-        if 'error' in data:
-            raise RuntimeError(f"getCurrentRetails error: {data['error']}")
+            raise _RetailPageFailed(page, all_rows, headers, expected_total, last_exc)
         if headers is None:
             headers = data['headers']
         if expected_total is None and isinstance(data.get('total'), int):
             expected_total = data['total']
         rows = data.get('rows', [])
         all_rows.extend(rows)
-        total_label = data.get('total', '?')
-        print(f"  Page {page}: +{len(rows):,} rows  (running {len(all_rows):,}/{total_label})",
-              flush=True)
+        pages_fetched += 1
         if data.get('done', True):
             done_received = True
             break
         page += 1
-
-    # 'done: true' is the authoritative end-of-pagination signal from Apps Script.
-    # The 'total' field reflects the raw sheet row count (getLastRow), which may include
-    # blank/filtered rows that the paginator skips — so fetched != total is expected and
-    # is NOT an error when done was received. Only fail if done was never signalled.
-    if not done_received:
-        raise RuntimeError(
-            f"Retail pagination ended without a 'done' signal after {page+1} pages "
-            f"({len(all_rows):,} rows). Possible truncation — aborting.")
-    if expected_total is not None and len(all_rows) != expected_total:
-        print(f"  NOTE: Apps Script total={expected_total:,}, fetched={len(all_rows):,} — "
-              f"gap likely due to blank/non-TVS rows in sheet (normal). "
-              f"'done' received; proceeding.", flush=True)
-
-    df = pd.DataFrame(all_rows, columns=headers)
-    print(f"  Retail master: {len(df):,} TVS rows  (pages={page+1})", flush=True)
-    return df
+    return all_rows, headers, expected_total, done_received, pages_fetched
 
 
-_RETAIL_DATE_PAGE_SIZE = 10000
-_RETAIL_DATE_TIMEOUTS  = [60, 120, 180, 180]
-_RETAIL_DATE_BACKOFFS  = [5, 15, 30]  # transient 404s resolve in seconds
+def fetch_retails():
+    """Fetch TVS retail master with page-resume on sustained page failures.
 
-def fetch_retail_date_map():
-    """Fetch {lid: datetime.date} from OEM CPS Retail Raw via getSheetData.
+    Architecture: every retry — at both the page level and the sheet level —
+    issues a FRESH request to APPS_SCRIPT_URL via proxy_get().  Stale echo URLs
+    are never reused.  Page-resume preserves all rows fetched before the failed
+    page so no rows are lost or duplicated across a resume.
 
-    Retail_Date is a separate column not returned by getCurrentRetails.
-    Never aborts the pipeline — returns an empty dict on total failure so the
-    caller can continue without ageing data rather than losing the production run.
+    'done: true' is the authoritative end-of-pagination signal from Apps Script.
+    The 'total' field reflects raw sheet row count (getLastRow) and may include
+    blank/filtered rows the paginator skips — fetched != total is normal when
+    'done' was received.
+
+    Never returns partial data — raises RuntimeError on unrecoverable failure so
+    the caller's _fail_exit() guard prevents a partial payload reaching Firebase.
     """
-    print("Fetching Retail_Date map from OEM CPS Retail Raw…", flush=True)
-    page, rd_map = 0, {}
-    populated_ct = blank_ct = invalid_ct = 0
+    t_start = time.monotonic()
+    print("Fetching retail master via Apps Script…", flush=True)
+    resume = dict(start_page=0, prev_rows=[], prev_headers=None, prev_expected_total=None)
+    for sheet_attempt in range(3):
+        try:
+            all_rows, headers, expected_total, done_received, pages_fetched = \
+                _fetch_retails_inner(**resume)
+            elapsed = time.monotonic() - t_start
+            status  = 'OK' if done_received else 'WARN:no-done-signal'
+            print(
+                f"[COMPLETE] Dataset:Retail "
+                f"Expected:{expected_total if expected_total is not None else '?'} "
+                f"Raw_rows:{len(all_rows):,} Pages:{pages_fetched} "
+                f"Sheet_attempts:{sheet_attempt+1} Duration:{elapsed:.1f}s Status:{status}",
+                flush=True)
+            if not done_received:
+                raise RuntimeError(
+                    f"Retail pagination ended without 'done' signal after {pages_fetched} pages "
+                    f"({len(all_rows):,} rows fetched). Possible truncation — aborting.")
+            if expected_total is not None and len(all_rows) != expected_total:
+                print(f"  NOTE: Apps Script total={expected_total:,}, fetched={len(all_rows):,} — "
+                      f"gap likely due to blank/non-TVS rows in sheet (normal). "
+                      f"'done' received; proceeding.", flush=True)
+            df = pd.DataFrame(all_rows, columns=headers)
+            print(f"  Retail master: {len(df):,} TVS rows  (pages={pages_fetched})", flush=True)
+            return df
+        except _RetailPageFailed as e:
+            resume = dict(
+                start_page=e.page,
+                prev_rows=e.accumulated_rows,
+                prev_headers=e.headers,
+                prev_expected_total=e.expected_total)
+            if sheet_attempt < 2:
+                print(
+                    f"  WARNING: Retail page {e.page} exhausted all {len(_RETAIL_TIMEOUTS)} "
+                    f"per-page retries (sheet attempt {sheet_attempt+1}/3). "
+                    f"Resuming from page {e.page} in 30s "
+                    f"({len(e.accumulated_rows):,} rows preserved, NOT discarded)…",
+                    flush=True)
+                time.sleep(30)
+            else:
+                raise RuntimeError(
+                    f"Retail fetch: page {e.page} exhausted all retries across "
+                    f"3 sheet-level attempts: {e}") from e
+
+
+# 2000 rows/page keeps echo-URL windows narrow (same rationale as retail).
+_RETAIL_DATE_PAGE_SIZE = 2000
+_RETAIL_DATE_TIMEOUTS  = [30, 60, 90, 120, 180, 180]
+_RETAIL_DATE_BACKOFFS  = [5, 10, 15, 20, 30]  # transient 404s resolve in seconds
+
+def _fetch_retail_date_inner(start_page, prev_map, prev_populated, prev_blank, prev_invalid):
+    """Paginate through Retail_Date from start_page.
+    Raises _RetailDatePageFailed with accumulated map on page-level retry exhaustion.
+    Every attempt issues a FRESH request to APPS_SCRIPT_URL via proxy_get()."""
+    page         = start_page
+    rd_map       = dict(prev_map)  if prev_map       else {}
+    populated_ct = prev_populated  if prev_populated  else 0
+    blank_ct     = prev_blank      if prev_blank      else 0
+    invalid_ct   = prev_invalid    if prev_invalid     else 0
+    done_received = False
+    pages_fetched = 0
     while True:
-        last_exc = None
+        last_exc   = None
+        http_codes = []
         for attempt, _timeout in enumerate(_RETAIL_DATE_TIMEOUTS):
+            t0 = time.monotonic()
             try:
                 data = proxy_get('getSheetData', {
                     'fileId':   RETAILS_FILE_ID,
@@ -1322,24 +1438,43 @@ def fetch_retail_date_map():
                     'pageSize': _RETAIL_DATE_PAGE_SIZE,
                     'page':     page,
                 }, timeout=_timeout)
+                elapsed = time.monotonic() - t0
+                http_codes.append(200)
                 last_exc = None
+                rows_ct  = len(data.get('rows', []))
+                print(
+                    f"[FETCH] Dataset:Retail_Date Page:{page} "
+                    f"Offset:{page*_RETAIL_DATE_PAGE_SIZE:,} "
+                    f"Attempt:{attempt+1}/{len(_RETAIL_DATE_TIMEOUTS)} "
+                    f"Rows:{rows_ct:,} Map:{len(rd_map):,} "
+                    f"Elapsed:{elapsed:.1f}s HTTP:200 Fresh:YES", flush=True)
                 break
             except Exception as e:
+                elapsed = time.monotonic() - t0
+                http_codes.append('ERR')
                 last_exc = e
                 if attempt < len(_RETAIL_DATE_TIMEOUTS) - 1:
                     _sleep = _RETAIL_DATE_BACKOFFS[attempt]
-                    print(f"  Retail_Date page {page} attempt {attempt+1} failed ({e}); "
-                          f"retrying in {_sleep}s…", flush=True)
+                    print(
+                        f"[FETCH] Dataset:Retail_Date Page:{page} "
+                        f"Attempt:{attempt+1}/{len(_RETAIL_DATE_TIMEOUTS)} "
+                        f"FAILED ({type(e).__name__}: {e}) "
+                        f"Elapsed:{elapsed:.1f}s Retry:{_sleep}s Fresh:YES", flush=True)
                     time.sleep(_sleep)
+                else:
+                    print(
+                        f"[FAILED PAGE] Dataset:Retail_Date Page:{page} "
+                        f"Offset:{page*_RETAIL_DATE_PAGE_SIZE:,} "
+                        f"Attempts:{len(_RETAIL_DATE_TIMEOUTS)} "
+                        f"HTTP_statuses:{http_codes} Final_error:{e}", flush=True)
         if last_exc is not None:
-            raise RuntimeError(
-                f"fetch_retail_date_map page {page} failed after {len(_RETAIL_DATE_TIMEOUTS)} "
-                f"attempts: {last_exc}")
+            raise _RetailDatePageFailed(
+                page, rd_map, populated_ct, blank_ct, invalid_ct, last_exc)
         if 'error' in data:
             raise RuntimeError(f"fetch_retail_date_map: Apps Script error: {data['error']}")
         headers = data.get('headers', [])
-        rows    = data.get('rows', [])
-        done    = data.get('done', True)
+        rows    = data.get('rows',    [])
+        done    = data.get('done',    True)
         lid_col = next((i for i, h in enumerate(headers)
                         if h.lower() in ('sourceleadid', 'enquiryid', 'opty_id')), 0)
         rd_col  = next((i for i, h in enumerate(headers)
@@ -1361,17 +1496,78 @@ def fetch_retail_date_map():
                 continue
             rd_map[lid] = rd
             populated_ct += 1
-        print(f"  Retail_Date page {page}: +{len(rows):,} rows "
-              f"(map={len(rd_map):,}  blank={blank_ct}  invalid={invalid_ct})", flush=True)
+        pages_fetched += 1
+        print(
+            f"  Retail_Date page {page}: +{len(rows):,} rows "
+            f"(map={len(rd_map):,}  blank={blank_ct}  invalid={invalid_ct})", flush=True)
         if done:
+            done_received = True
             break
         page += 1
-    total_fetched = populated_ct + blank_ct + invalid_ct
-    pct = f"{100*populated_ct/total_fetched:.1f}%" if total_fetched else "0%"
-    print(f"  Retail_Date map done: {len(rd_map):,} entries | "
-          f"populated={populated_ct:,} ({pct}) | blank={blank_ct:,} | invalid={invalid_ct:,}",
-          flush=True)
-    return rd_map
+    return rd_map, populated_ct, blank_ct, invalid_ct, done_received, pages_fetched
+
+
+def fetch_retail_date_map():
+    """Fetch {lid: datetime.date} from OEM CPS Retail Raw via getSheetData.
+
+    Retail_Date is a separate column not returned by getCurrentRetails.
+    Uses page-resume: if a page fails all per-page retries, resumes from that
+    page after 30s, preserving accumulated map entries.
+    Every attempt issues a FRESH request to APPS_SCRIPT_URL via proxy_get() —
+    stale echo URLs are never retried.
+    Returns an empty dict on total failure so the pipeline continues without
+    ageing data rather than aborting the production run.
+    """
+    t_start = time.monotonic()
+    print("Fetching Retail_Date map from OEM CPS Retail Raw…", flush=True)
+    resume = dict(start_page=0, prev_map={}, prev_populated=0, prev_blank=0, prev_invalid=0)
+    for sheet_attempt in range(3):
+        try:
+            rd_map, populated_ct, blank_ct, invalid_ct, done_received, pages_fetched = \
+                _fetch_retail_date_inner(**resume)
+            elapsed = time.monotonic() - t_start
+            if not done_received:
+                print(
+                    f"  WARNING: Retail_Date pagination ended without 'done' signal "
+                    f"after {pages_fetched} pages. Retail Ageing may be incomplete.",
+                    flush=True)
+            total_fetched = populated_ct + blank_ct + invalid_ct
+            pct = f"{100*populated_ct/total_fetched:.1f}%" if total_fetched else "0%"
+            print(
+                f"[COMPLETE] Dataset:Retail_Date "
+                f"Map_entries:{len(rd_map):,} "
+                f"populated={populated_ct:,}({pct}) "
+                f"blank={blank_ct:,} invalid={invalid_ct:,} "
+                f"Pages:{pages_fetched} Duration:{elapsed:.1f}s",
+                flush=True)
+            return rd_map
+        except _RetailDatePageFailed as e:
+            resume = dict(
+                start_page=e.page,
+                prev_map=e.partial_map,
+                prev_populated=e.populated_ct,
+                prev_blank=e.blank_ct,
+                prev_invalid=e.invalid_ct)
+            if sheet_attempt < 2:
+                print(
+                    f"  WARNING: Retail_Date page {e.page} exhausted all per-page retries "
+                    f"(sheet attempt {sheet_attempt+1}/3). "
+                    f"Resuming from page {e.page} in 30s "
+                    f"({len(e.partial_map):,} map entries preserved, NOT discarded)…",
+                    flush=True)
+                time.sleep(30)
+            else:
+                print(
+                    f"  ERROR: Retail_Date fetch failed after 3 sheet-level attempts. "
+                    f"Continuing without Retail_Date — Retail Ageing will be empty.",
+                    flush=True)
+                return {}
+        except RuntimeError as e:
+            print(
+                f"  ERROR: Retail_Date fetch error: {e}. "
+                f"Continuing without Retail_Date — Retail Ageing will be empty.",
+                flush=True)
+            return {}
 
 
 def _validate_retail_fetch(df, prev_metrics=None):

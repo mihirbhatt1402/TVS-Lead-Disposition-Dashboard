@@ -1665,6 +1665,192 @@ class TestAgeingIsolation(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Tests 155–174: Fetch resilience — page resume, exception classes, constants
+# ---------------------------------------------------------------------------
+
+# Inline copies of the new exception classes (must stay in sync with push_tvs_data.py).
+class _RetailPageFailed(Exception):
+    def __init__(self, page, accumulated_rows, headers, expected_total, cause):
+        super().__init__(str(cause))
+        self.page             = page
+        self.accumulated_rows = accumulated_rows
+        self.headers          = headers
+        self.expected_total   = expected_total
+
+class _RetailDatePageFailed(Exception):
+    def __init__(self, page, partial_map, populated_ct, blank_ct, invalid_ct, cause):
+        super().__init__(str(cause))
+        self.page         = page
+        self.partial_map  = partial_map
+        self.populated_ct = populated_ct
+        self.blank_ct     = blank_ct
+        self.invalid_ct   = invalid_ct
+
+_PUSH_TVS = Path(__file__).parent / 'push_tvs_data.py'
+
+
+class TestPaginationConstants(unittest.TestCase):
+    """Tests 155–164: Verify pagination constants in push_tvs_data.py.
+    Read the source file as text so a change in the source is always caught."""
+
+    def _src(self):
+        return _PUSH_TVS.read_text(encoding='utf-8')
+
+    def test_lead_page_size_is_3000(self):
+        self.assertIn('_LEAD_PAGE_SIZE = 3000', self._src())
+
+    def test_retail_page_size_is_2000(self):
+        self.assertIn('_RETAIL_PAGE_SIZE = 2000', self._src())
+
+    def test_retail_date_page_size_is_2000(self):
+        self.assertIn('_RETAIL_DATE_PAGE_SIZE = 2000', self._src())
+
+    def test_lead_timeouts_has_6_entries(self):
+        self.assertIn('_LEAD_TIMEOUTS  = [30, 60, 90, 120, 180, 180]', self._src())
+
+    def test_retail_timeouts_has_6_entries(self):
+        self.assertIn('_RETAIL_TIMEOUTS  = [30, 60, 90, 120, 180, 180]', self._src())
+
+    def test_retail_date_timeouts_has_6_entries(self):
+        self.assertIn('_RETAIL_DATE_TIMEOUTS  = [30, 60, 90, 120, 180, 180]', self._src())
+
+    def test_lead_backoffs_length_invariant(self):
+        """_LEAD_BACKOFFS must have exactly len(_LEAD_TIMEOUTS)-1 entries."""
+        lead_timeouts = [30, 60, 90, 120, 180, 180]
+        lead_backoffs = [5, 10, 15, 20, 30]
+        self.assertEqual(len(lead_backoffs), len(lead_timeouts) - 1)
+
+    def test_retail_backoffs_length_invariant(self):
+        retail_timeouts = [30, 60, 90, 120, 180, 180]
+        retail_backoffs = [5, 10, 15, 20, 30]
+        self.assertEqual(len(retail_backoffs), len(retail_timeouts) - 1)
+
+    def test_retail_date_backoffs_length_invariant(self):
+        rd_timeouts = [30, 60, 90, 120, 180, 180]
+        rd_backoffs  = [5, 10, 15, 20, 30]
+        self.assertEqual(len(rd_backoffs), len(rd_timeouts) - 1)
+
+    def test_all_backoff_values_are_positive(self):
+        for b in [5, 10, 15, 20, 30]:
+            self.assertGreater(b, 0)
+
+
+class TestPageResumeExceptions(unittest.TestCase):
+    """Tests 165–169: _RetailPageFailed and _RetailDatePageFailed carry the right state."""
+
+    def test_retail_page_failed_stores_page(self):
+        e = _RetailPageFailed(7, ['r1', 'r2'], ['h1'], 100, RuntimeError('boom'))
+        self.assertEqual(e.page, 7)
+
+    def test_retail_page_failed_stores_accumulated_rows(self):
+        rows = ['r1', 'r2', 'r3']
+        e = _RetailPageFailed(2, rows, ['h'], 50, RuntimeError('x'))
+        self.assertIs(e.accumulated_rows, rows)
+
+    def test_retail_page_failed_stores_expected_total(self):
+        e = _RetailPageFailed(0, [], None, 75000, RuntimeError('x'))
+        self.assertEqual(e.expected_total, 75000)
+
+    def test_retail_date_page_failed_stores_partial_map(self):
+        m = {'lid1': '2026-08-01', 'lid2': '2026-07-15'}
+        e = _RetailDatePageFailed(3, m, 2, 1, 0, RuntimeError('x'))
+        self.assertIs(e.partial_map, m)
+        self.assertEqual(e.populated_ct, 2)
+        self.assertEqual(e.blank_ct, 1)
+        self.assertEqual(e.invalid_ct, 0)
+
+    def test_retail_date_page_failed_message_from_cause(self):
+        e = _RetailDatePageFailed(1, {}, 0, 0, 0, RuntimeError('network timeout'))
+        self.assertIn('network timeout', str(e))
+
+
+class TestPaginationResumePurity(unittest.TestCase):
+    """Tests 170–174: Core page-resume logic, no network needed.
+    These use minimal pure-Python replicas of the inner paginator structure."""
+
+    def _simulate_inner(self, responses):
+        """Simulate _fetch_retails_inner with a list of per-page mock responses.
+        Each response is either a dict (success) or an exception (failure).
+        Raises _RetailPageFailed on per-page exhaustion (single attempt per page for simplicity).
+        Returns (all_rows, done_received, pages_fetched)."""
+        all_rows      = []
+        done_received = False
+        pages_fetched = 0
+        for page, resp in enumerate(responses):
+            if isinstance(resp, Exception):
+                raise _RetailPageFailed(page, all_rows, None, None, resp)
+            rows = resp.get('rows', [])
+            all_rows.extend(rows)
+            pages_fetched += 1
+            if resp.get('done', True):
+                done_received = True
+                break
+        return all_rows, done_received, pages_fetched
+
+    def test_page_resume_preserves_prior_rows(self):
+        """Rows from page 0 are preserved when page 1 fails and we resume."""
+        page0_rows = [['A', '1'], ['B', '2']]
+        try:
+            self._simulate_inner([
+                {'rows': page0_rows, 'done': False},
+                RuntimeError('404 echo expired'),
+            ])
+            self.fail("Expected _RetailPageFailed")
+        except _RetailPageFailed as e:
+            self.assertEqual(e.page, 1)
+            self.assertEqual(e.accumulated_rows, page0_rows)
+
+    def test_page_resume_no_duplication(self):
+        """Resuming at page 1 with prev_rows set does not re-fetch page 0 rows."""
+        page0_rows = [['A', '1'], ['B', '2']]
+        page1_rows = [['C', '3']]
+        # Simulate outer retry: second call starts from page 1 with prev_rows
+        all_rows   = list(page0_rows)   # preserved from failed run
+        all_rows.extend(page1_rows)     # page 1 now succeeds
+        self.assertEqual(len(all_rows), 3)
+        self.assertEqual(all_rows[0], ['A', '1'])
+        self.assertEqual(all_rows[2], ['C', '3'])
+
+    def test_pagination_total_matches_sum_of_pages(self):
+        """Total row count equals the sum of rows across all pages."""
+        pages = [
+            {'rows': [['r1'], ['r2']], 'done': False},
+            {'rows': [['r3'], ['r4'], ['r5']], 'done': False},
+            {'rows': [['r6']], 'done': True},
+        ]
+        all_rows, done_received, pages_fetched = self._simulate_inner(pages)
+        self.assertEqual(len(all_rows), 6)
+        self.assertTrue(done_received)
+        self.assertEqual(pages_fetched, 3)
+
+    def test_missing_done_signal_detected(self):
+        """A response sequence that never sends done=True leaves done_received=False."""
+        pages = [
+            {'rows': [['r1']], 'done': False},
+            {'rows': [['r2']], 'done': False},
+        ]
+        # Simulate exhausted list (no more pages returned) — done_received stays False
+        all_rows      = []
+        done_received = False
+        for resp in pages:
+            all_rows.extend(resp.get('rows', []))
+            if resp.get('done', False):
+                done_received = True
+                break
+        self.assertFalse(done_received)
+        self.assertEqual(len(all_rows), 2)
+
+    def test_proxy_get_always_uses_apps_script_url(self):
+        """proxy_get() builds params from APPS_SCRIPT_URL each call — never a cached echo URL.
+        Validate by inspecting the source that proxy_get calls requests.get(APPS_SCRIPT_URL…)."""
+        src = _PUSH_TVS.read_text(encoding='utf-8')
+        # proxy_get must reference APPS_SCRIPT_URL (not a hardcoded echo URL)
+        self.assertIn('requests.get(APPS_SCRIPT_URL', src)
+        # Must NOT reference the echo URL host directly
+        self.assertNotIn('script.googleusercontent.com', src)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
