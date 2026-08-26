@@ -3099,25 +3099,41 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
   }, [ram, maps, filters, effectiveMonths, rtIdx, isNew, F]);
 
   const grandTotal = grandBuckets.reduce((s,v)=>s+v,0);
-  const pctStr = (part, tot) => tot > 0 ? Math.round(part * 100 / tot) + '%' : '';
+  const pctStr = (part, tot) => tot > 0 ? (part * 100 / tot).toFixed(1) + '%' : '';
 
-  const DataCell = (val, mdlTotal, bg) => ce('td', { style: {
+  // Lighter complement colors for the % CONTRIBUTION header columns
+  const PCT_HDR_BG = ['#bbf7d0', '#fde68a', '#fed7aa', '#fecaca'];
+
+  // Count-only bucket cell
+  const CountCell = (val, bg) => ce('td', { style: {
     textAlign: 'center', padding: '7px 8px', background: bg,
-    border: '1px solid #E2E8F0', verticalAlign: 'middle', minWidth: 76,
-    fontFamily: "'DM Mono',monospace"
-  }},
-    ce('div', { style: { fontWeight: 700, fontSize: 'calc(12px * var(--tvs-font-scale))', color: val ? '#0f172a' : '#CBD5E1' } }, val || '—'),
-    val > 0 && ce('div', { style: { fontSize: 'calc(10px * var(--tvs-font-scale))', color: '#64748B', marginTop: 1 } }, pctStr(val, mdlTotal))
-  );
+    border: '1px solid #E2E8F0', fontFamily: "'DM Mono',monospace",
+    fontWeight: 700, fontSize: 'calc(12px * var(--tvs-font-scale))',
+    color: val ? '#0f172a' : '#CBD5E1', minWidth: 60
+  }}, val || '—');
 
-  const GrandCell = (val, tot, bg, color) => ce('td', { style: {
+  // Separate contribution % cell
+  const PctCell = (val, tot, bg) => ce('td', { style: {
+    textAlign: 'center', padding: '7px 6px', background: bg,
+    border: '1px solid #E2E8F0', fontFamily: "'DM Mono',monospace",
+    fontSize: 'calc(10px * var(--tvs-font-scale))',
+    color: val > 0 && tot > 0 ? '#475569' : '#CBD5E1', minWidth: 52
+  }}, val > 0 && tot > 0 ? pctStr(val, tot) : '—');
+
+  // Grand total: count cell (colored bg)
+  const GrandCountCell = (val, bg) => ce('td', { style: {
     textAlign: 'center', padding: '8px 8px', background: bg,
     border: '1px solid rgba(0,0,0,.12)', fontFamily: "'DM Mono',monospace",
-    fontWeight: 700, color, minWidth: 76
-  }},
-    ce('div', { style: { fontSize: 'calc(12px * var(--tvs-font-scale))' } }, val || '—'),
-    val > 0 && ce('div', { style: { fontSize: 'calc(10px * var(--tvs-font-scale))', opacity: 0.85 } }, pctStr(val, tot))
-  );
+    fontWeight: 700, color: '#fff', fontSize: 'calc(12px * var(--tvs-font-scale))', minWidth: 60
+  }}, val || '—');
+
+  // Grand total: % cell (slightly muted bg)
+  const GrandPctCell = (val, tot, bg) => ce('td', { style: {
+    textAlign: 'center', padding: '8px 6px', background: bg,
+    border: '1px solid rgba(0,0,0,.1)', fontFamily: "'DM Mono',monospace",
+    fontWeight: 600, color: val > 0 && tot > 0 ? '#1e293b' : '#94A3B8',
+    fontSize: 'calc(10px * var(--tvs-font-scale))', minWidth: 52
+  }}, val > 0 && tot > 0 ? pctStr(val, tot) : '—');
 
   return ce('div', { className: 'fade-up' },
     // Coverage strip
@@ -3169,17 +3185,26 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
                 position: 'sticky', left: 0, zIndex: 3, minWidth: 160,
                 border: '1px solid rgba(255,255,255,.15)'
               }}, 'Model'),
-              ...AB.map((label, abi) => ce('th', { key: abi, style: {
-                background: AB_COLORS[abi], color: '#fff', textAlign: 'center',
-                padding: '8px 12px', fontWeight: 700, textTransform: 'uppercase',
-                letterSpacing: '0.03em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
-                border: '1px solid rgba(255,255,255,.15)', minWidth: 80
-              }}, label)),
+              // Interleaved bucket + % contribution headers
+              ...AB.flatMap((label, abi) => [
+                ce('th', { key: `b${abi}`, style: {
+                  background: AB_COLORS[abi], color: '#fff', textAlign: 'center',
+                  padding: '8px 10px', fontWeight: 700, textTransform: 'uppercase',
+                  letterSpacing: '0.03em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
+                  border: '1px solid rgba(255,255,255,.15)', minWidth: 60
+                }}, label),
+                ce('th', { key: `p${abi}`, style: {
+                  background: PCT_HDR_BG[abi], color: '#374151', textAlign: 'center',
+                  padding: '8px 6px', fontWeight: 600, textTransform: 'uppercase',
+                  letterSpacing: '0.03em', fontSize: 'calc(8.5px * var(--tvs-font-scale))',
+                  border: '1px solid rgba(0,0,0,.08)', minWidth: 52
+                }}, '% Contrib.')
+              ]),
               ce('th', { style: {
                 background: '#334155', color: '#fff', textAlign: 'center',
-                padding: '8px 12px', fontWeight: 700, textTransform: 'uppercase',
+                padding: '8px 10px', fontWeight: 700, textTransform: 'uppercase',
                 letterSpacing: '0.04em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
-                border: '1px solid rgba(255,255,255,.15)', minWidth: 80
+                border: '1px solid rgba(255,255,255,.15)', minWidth: 70
               }}, 'TOTAL')
             )
           ),
@@ -3193,12 +3218,15 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
                   position: 'sticky', left: 0, zIndex: 1,
                   fontSize: 'calc(12px * var(--tvs-font-scale))'
                 }}, mdl),
-                ...buckets.map((val, abi) => DataCell(val, mdlTotal, AB_BG[abi])),
+                ...buckets.flatMap((val, abi) => [
+                  CountCell(val, AB_BG[abi]),
+                  PctCell(val, mdlTotal, '#fff')
+                ]),
                 ce('td', { style: {
                   textAlign: 'center', padding: '7px 8px', background: '#F8FAFC',
                   border: '1px solid #E2E8F0', fontFamily: "'DM Mono',monospace",
                   fontWeight: 700, color: mdlTotal ? '#0f172a' : '#CBD5E1',
-                  fontSize: 'calc(12px * var(--tvs-font-scale))', minWidth: 76
+                  fontSize: 'calc(12px * var(--tvs-font-scale))', minWidth: 70
                 }}, mdlTotal || '—')
               );
             }),
@@ -3210,8 +3238,15 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
                 position: 'sticky', left: 0, zIndex: 1,
                 fontSize: 'calc(12px * var(--tvs-font-scale))'
               }}, 'Grand Total'),
-              ...grandBuckets.map((val, abi) => GrandCell(val, grandTotal, AB_COLORS[abi], '#fff')),
-              GrandCell(grandTotal, grandTotal, '#334155', '#fff')
+              ...grandBuckets.flatMap((val, abi) => [
+                GrandCountCell(val, AB_COLORS[abi]),
+                GrandPctCell(val, grandTotal, PCT_HDR_BG[abi])
+              ]),
+              ce('td', { style: {
+                textAlign: 'center', padding: '8px 8px', background: '#334155',
+                border: '1px solid rgba(0,0,0,.12)', fontFamily: "'DM Mono',monospace",
+                fontWeight: 700, color: '#fff', fontSize: 'calc(12px * var(--tvs-font-scale))', minWidth: 70
+              }}, grandTotal || '—')
             )
           )
         )

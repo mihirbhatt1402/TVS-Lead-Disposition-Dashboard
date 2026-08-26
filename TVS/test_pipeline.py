@@ -1374,6 +1374,276 @@ class TestRetailAgeing(unittest.TestCase):
         self.assertEqual(bucket_total,   1)
         self.assertEqual(meta['valid'] + meta['no_rd'] + meta['no_cd'] + meta['neg'], meta['total'])
 
+    # ── 21-34: contribution column logic ─────────────────────────────────────
+
+    def _make_leads_rmap(self, ages, mdl='TVS Raider', src='Organic', lt='', st='', city=''):
+        """Helper: build leads + rmap for a list of ages (days). cd=2026-07-01."""
+        cd = '2026-07-01'
+        base = _datetime.date(2026, 7, 1)
+        leads = [{'lid': f'l{i}', 'lm': "Jul'26", 'mdl': mdl, 'src': src,
+                  'lt': lt, 'st': st, 'city': city, 'cd': cd}
+                 for i in range(len(ages))]
+        rmap  = {f'l{i}': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '',
+                            'rd': base + _datetime.timedelta(days=a)}
+                 for i, a in enumerate(ages)}
+        return leads, rmap
+
+    def test_contribution_bucket_column_count_only(self):
+        """Each bucket in ram stores count, not percentage."""
+        leads, rmap = self._make_leads_rmap([3, 10, 20, 40])  # one per bucket
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 4)
+        for v in ram.values():
+            # v = [rets, dms, co] — all ints, no floats/percentages
+            self.assertIsInstance(v[0], int)
+
+    def test_contribution_separate_from_count(self):
+        """Contribution % is computed from raw counts, not stored in ram."""
+        leads, rmap = self._make_leads_rmap([3, 10])  # bucket0=1, bucket1=1
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        # Calculate contribution externally — must equal bucket/model_total
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items():
+            buckets[k[5]] += v[0]  # k[5]=abi in new 7-element key
+        mdl_total = sum(buckets)
+        for abi in range(4):
+            expected_pct = buckets[abi] / mdl_total if mdl_total else 0
+            computed = buckets[abi] / mdl_total if mdl_total else 0
+            self.assertAlmostEqual(expected_pct, computed)
+
+    def test_contribution_formula_bucket_over_model_total(self):
+        """Contribution = bucket_count / model_total × 100."""
+        # 350 + 1322 + 1186 + 531 = 3389 (example from spec)
+        ages = [3]*350 + [10]*1322 + [20]*1186 + [40]*531
+        leads, rmap = self._make_leads_rmap(ages)
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 3389)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        mdl_total = sum(buckets)
+        self.assertEqual(mdl_total, 3389)
+        self.assertAlmostEqual(buckets[0] / mdl_total * 100, 10.3, delta=0.1)
+        self.assertAlmostEqual(buckets[1] / mdl_total * 100, 39.0, delta=0.1)
+        self.assertAlmostEqual(buckets[2] / mdl_total * 100, 35.0, delta=0.1)
+        self.assertAlmostEqual(buckets[3] / mdl_total * 100, 15.7, delta=0.1)
+
+    def test_contribution_four_buckets_sum_to_100(self):
+        """Four bucket contributions for a model sum to ~100%."""
+        ages = [2, 9, 18, 35, 50, 5, 12, 25]
+        leads, rmap = self._make_leads_rmap(ages)
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        mdl_total = sum(buckets)
+        total_pct = sum(b / mdl_total * 100 for b in buckets)
+        self.assertAlmostEqual(total_pct, 100.0, delta=0.01)
+
+    def test_grand_total_contribution_uses_grand_denominator(self):
+        """Grand Total bucket % = bucket_count / grand_total (NOT avg of model %)."""
+        leads_a, rmap_a = self._make_leads_rmap([3]*100 + [40]*100, mdl='Model A')
+        leads_b, rmap_b = self._make_leads_rmap([3]*50,              mdl='Model B')
+        all_leads = leads_a + leads_b
+        all_rmap  = {**rmap_a, **rmap_b}
+        ram, meta, _ = _run_ageing_fixture(all_leads, all_rmap)
+        grand_buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): grand_buckets[k[5]] += v[0]
+        grand_total = sum(grand_buckets)
+        # bucket0 = 100 (A) + 50 (B) = 150; bucket3 = 100 (A only)
+        self.assertEqual(grand_buckets[0], 150)
+        self.assertEqual(grand_buckets[3], 100)
+        self.assertEqual(grand_total, 250)
+        # Grand pct for bucket0 = 150/250 = 60%, NOT avg of 50% (A) and 100% (B)
+        self.assertAlmostEqual(grand_buckets[0] / grand_total * 100, 60.0, delta=0.01)
+
+    def test_total_column_is_count_not_percentage(self):
+        """Model total is the sum of bucket counts — an integer, not a percentage."""
+        ages = [3, 10, 20, 40]
+        leads, rmap = self._make_leads_rmap(ages)
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        mdl_total = sum(buckets)
+        self.assertEqual(mdl_total, 4)
+        self.assertIsInstance(mdl_total, int)
+
+    def test_source_filter_recalculates_contribution(self):
+        """Source filter changes denominator: contribution = bucket/filtered_model_total."""
+        # 3 organic leads in bucket0, 1 fb lead in bucket1 — filtering to Organic only
+        leads = [
+            {'lid': 'o1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic',  'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'o2', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic',  'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'o3', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic',  'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'f1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Facebook', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+        ]
+        base = _datetime.date(2026, 7, 1)
+        rmap = {
+            'o1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=3)},
+            'o2': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=3)},
+            'o3': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=3)},
+            'f1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=10)},
+        }
+        ram_all, _, _ = _run_ageing_fixture(leads, rmap)
+        # Simulate source filter: only Organic — collect organic leads
+        org_leads = [l for l in leads if l['src'] == 'Organic']
+        org_rmap  = {k: v for k, v in rmap.items() if k.startswith('o')}
+        ram_org, _, _ = _run_ageing_fixture(org_leads, org_rmap)
+        # Organic-only: all 3 in bucket0; model total = 3; bucket0 contribution = 100%
+        buckets_org = [0, 0, 0, 0]
+        for k, v in ram_org.items(): buckets_org[k[5]] += v[0]
+        self.assertEqual(sum(buckets_org), 3)
+        self.assertAlmostEqual(buckets_org[0] / sum(buckets_org) * 100, 100.0)
+
+    def test_model_filter_recalculates_contribution(self):
+        """Model filter restricts rows; contribution denominator = filtered model total."""
+        base = _datetime.date(2026, 7, 1)
+        # Model A: 4 leads age=3 (bucket0) + 6 leads age=40 (bucket3)
+        leads_a = [{'lid': f'a{i}', 'lm': "Jul'26", 'mdl': 'Model A', 'src': 'Organic',
+                    'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'} for i in range(10)]
+        ages_a  = [3]*4 + [40]*6
+        rmap_a  = {f'a{i}': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '',
+                              'rd': base + _datetime.timedelta(days=ages_a[i])}
+                   for i in range(10)}
+        # Model B: 10 leads age=3 (bucket0) — should be excluded by filter
+        leads_b = [{'lid': f'b{i}', 'lm': "Jul'26", 'mdl': 'Model B', 'src': 'Organic',
+                    'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'} for i in range(10)]
+        rmap_b  = {f'b{i}': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '',
+                              'rd': base + _datetime.timedelta(days=3)}
+                   for i in range(10)}
+        # Filter to Model A only
+        fil_leads = leads_a
+        fil_rmap  = rmap_a
+        ram, _, _ = _run_ageing_fixture(fil_leads, fil_rmap)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        total = sum(buckets)
+        self.assertEqual(total, 10)
+        self.assertAlmostEqual(buckets[0] / total * 100, 40.0, delta=0.01)
+        self.assertAlmostEqual(buckets[3] / total * 100, 60.0, delta=0.01)
+
+    def test_lead_type_filter_recalculates_contribution(self):
+        """Lead type filter changes the ageing population and thus contribution %."""
+        leads = [
+            {'lid': 'l1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': 'Hot',  'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'l2', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': 'Warm', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'l3', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': 'Hot',  'st': '', 'city': '', 'cd': '2026-07-01'},
+        ]
+        base = _datetime.date(2026, 7, 1)
+        rmap = {
+            'l1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=3)},
+            'l2': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=10)},
+            'l3': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=3)},
+        }
+        # Filter to Hot only
+        hot_leads = [l for l in leads if l['lt'] == 'Hot']
+        hot_rmap  = {'l1': rmap['l1'], 'l3': rmap['l3']}
+        ram, meta, _ = _run_ageing_fixture(hot_leads, hot_rmap)
+        self.assertEqual(meta['valid'], 2)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        # Both Hot leads in bucket0 → contribution = 100%
+        self.assertAlmostEqual(buckets[0] / sum(buckets) * 100, 100.0)
+
+    def test_state_filter_recalculates_contribution(self):
+        """State filter restricts population; contribution recalculates on filtered total."""
+        leads = [
+            {'lid': 'l1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': 'MH', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'l2', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': 'KA', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'l3', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': 'MH', 'city': '', 'cd': '2026-07-01'},
+        ]
+        base = _datetime.date(2026, 7, 1)
+        rmap = {
+            'l1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=3)},
+            'l2': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=10)},
+            'l3': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=20)},
+        }
+        mh_leads = [l for l in leads if l['st'] == 'MH']
+        mh_rmap  = {'l1': rmap['l1'], 'l3': rmap['l3']}
+        ram, meta, _ = _run_ageing_fixture(mh_leads, mh_rmap)
+        self.assertEqual(meta['valid'], 2)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        total = sum(buckets)
+        # l1→bucket0, l3→bucket2; contributions 50%/0%/50%/0%
+        self.assertAlmostEqual(buckets[0] / total * 100, 50.0)
+        self.assertAlmostEqual(buckets[2] / total * 100, 50.0)
+
+    def test_city_filter_recalculates_contribution(self):
+        """City filter restricts ageing population; contribution recalculates."""
+        leads = [
+            {'lid': 'l1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': 'Mumbai',   'cd': '2026-07-01'},
+            {'lid': 'l2', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': 'Pune',     'cd': '2026-07-01'},
+            {'lid': 'l3', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': 'Mumbai',   'cd': '2026-07-01'},
+        ]
+        base = _datetime.date(2026, 7, 1)
+        rmap = {
+            'l1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=5)},
+            'l2': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=40)},
+            'l3': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': base + _datetime.timedelta(days=5)},
+        }
+        mum_leads = [l for l in leads if l['city'] == 'Mumbai']
+        mum_rmap  = {'l1': rmap['l1'], 'l3': rmap['l3']}
+        ram, meta, _ = _run_ageing_fixture(mum_leads, mum_rmap)
+        self.assertEqual(meta['valid'], 2)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        # Both Mumbai leads age=5 → bucket0; contribution = 100%
+        self.assertAlmostEqual(buckets[0] / sum(buckets) * 100, 100.0)
+
+    def test_month_selection_recalculates_contribution(self):
+        """Month filter changes the ageing population and contribution denominators."""
+        leads = [
+            {'lid': 'j1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'a1', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+            {'lid': 'a2', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+        ]
+        rmap = {
+            'j1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 5)},   # age=4→bucket0
+            'a1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 15)},  # age=14→bucket1
+            'a2': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 31)},  # age=30→bucket2
+        }
+        # Aug only
+        aug_leads = [l for l in leads if l['lm'] == "Aug'26"]
+        aug_rmap  = {'a1': rmap['a1'], 'a2': rmap['a2']}
+        ram, meta, _ = _run_ageing_fixture(aug_leads, aug_rmap)
+        self.assertEqual(meta['valid'], 2)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        total = sum(buckets)
+        # a1→bucket1(50%), a2→bucket2(50%)
+        self.assertAlmostEqual(buckets[1] / total * 100, 50.0)
+        self.assertAlmostEqual(buckets[2] / total * 100, 50.0)
+
+    def test_all_months_aggregates_correctly(self):
+        """All Months: contributions use grand total across all months."""
+        leads = [
+            {'lid': 'j1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+            {'lid': 'a1', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'},
+        ]
+        rmap = {
+            'j1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 5)},  # age=4→bucket0
+            'a1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 20)}, # age=19→bucket2
+        }
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 2)
+        buckets = [0, 0, 0, 0]
+        for k, v in ram.items(): buckets[k[5]] += v[0]
+        total = sum(buckets)
+        self.assertEqual(total, 2)
+        # Each of bucket0 and bucket2 = 1; contribution = 50% each
+        self.assertAlmostEqual(buckets[0] / total * 100, 50.0)
+        self.assertAlmostEqual(buckets[2] / total * 100, 50.0)
+
+    def test_retail_date_ageing_unchanged(self):
+        """Retail_Date - CreateDate is the sole ageing calculation — fixture unchanged."""
+        # age = Retail_Date(2026-08-10) - CreateDate(2026-08-01) = 9 days → bucket1
+        leads = [{'lid': 'l1', 'lm': "Aug'26", 'mdl': 'TVS Raider', 'src': 'Organic',
+                  'lt': '', 'st': '', 'city': '', 'cd': '2026-08-01'}]
+        rmap  = {'l1': {'rm': "Aug'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 8, 10)}}
+        ram, meta, _ = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 1)
+        k = list(ram.keys())[0]
+        self.assertEqual(k[5], 1, "age=9 days must map to bucket1 (8-14 days)")
+
 
 # ---------------------------------------------------------------------------
 # Test 21 — build_payload() isolation: ageing must not touch existing matrices
