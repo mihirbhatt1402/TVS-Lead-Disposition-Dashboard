@@ -174,9 +174,30 @@ const ADMIN_EMAILS     = ['mihir.bhatt@girnarsoft.com', 'aditya.kumar@girnarsoft
 const ALLOWED_DOMAINS  = ['girnarsoft.com', 'girnarcare.com'];
 const AUTH_SESSION_KEY = 'tvs_ldr_auth';
 
-async function apiFetchRole(email) {
-  const r = await fetch(APPS_SCRIPT_URL + '?action=checkRole&email=' + encodeURIComponent(email));
+// Guards against Apps Script returning HTML (error page, login redirect) instead of JSON.
+// Gives a user-friendly error rather than crashing with "Unexpected token '<'".
+async function _safeJson(r, label) {
+  if (!r.ok) throw new Error(`${label}: server returned ${r.status}`);
+  const ct = r.headers.get('content-type') || '';
+  if (!ct.includes('json') && !ct.includes('plain')) {
+    const text = await r.text();
+    if (text.trim().startsWith('<'))
+      throw new Error('Access service temporarily unavailable — please try again in a few seconds.');
+    throw new Error(`Unexpected response from server: ${text.slice(0, 80)}`);
+  }
   return r.json();
+}
+// apiFetchRole retries up to 3 times — it is the login gate and must survive transient 404s.
+async function apiFetchRole(email) {
+  let lastErr;
+  for (let a = 0; a < 3; a++) {
+    if (a > 0) await new Promise(res => setTimeout(res, 2000 * a));
+    try {
+      const r = await fetch(APPS_SCRIPT_URL + '?action=checkRole&email=' + encodeURIComponent(email));
+      return await _safeJson(r, 'checkRole');
+    } catch(e) { lastErr = e; }
+  }
+  throw lastErr;
 }
 async function apiRequestAccess(email, name) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=requestAccess', {
@@ -184,11 +205,11 @@ async function apiRequestAccess(email, name) {
     headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ email, name }),
   });
-  return r.json();
+  return _safeJson(r, 'requestAccess');
 }
 async function apiGetPending(adminEmail) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=getPending&email=' + encodeURIComponent(adminEmail));
-  return r.json();
+  return _safeJson(r, 'getPending');
 }
 async function apiReview(adminEmail, targetEmail, decision, role) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=reviewRequest', {
@@ -196,11 +217,11 @@ async function apiReview(adminEmail, targetEmail, decision, role) {
     headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ adminEmail, targetEmail, decision, role }),
   });
-  return r.json();
+  return _safeJson(r, 'reviewRequest');
 }
 async function apiGetUsers(adminEmail) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=getUsers&email=' + encodeURIComponent(adminEmail));
-  return r.json();
+  return _safeJson(r, 'getUsers');
 }
 async function apiUpdateRole(adminEmail, targetEmail, newRole) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=updateRole', {
@@ -208,7 +229,7 @@ async function apiUpdateRole(adminEmail, targetEmail, newRole) {
     headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify({ adminEmail, targetEmail, role: newRole }),
   });
-  return r.json();
+  return _safeJson(r, 'updateRole');
 }
 
 /* ════════════════════════════════════════════════════════════════════

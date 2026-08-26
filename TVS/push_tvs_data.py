@@ -1100,7 +1100,7 @@ LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medi
 # A 4th attempt absorbs the rare sustained 404 bursts that exhaust 3 attempts
 # and would otherwise trigger a full sheet restart.
 _LEAD_TIMEOUTS = [60, 90, 180, 180]
-_LEAD_BACKOFFS  = [30, 60, 120]        # len == len(_LEAD_TIMEOUTS) - 1
+_LEAD_BACKOFFS  = [5, 15, 30]          # len == len(_LEAD_TIMEOUTS) - 1; short because 404s are transient redirect-URL expiry, not rate-limits
 
 class _PageFetchFailed(Exception):
     """Raised when a page exhausts all retry attempts.
@@ -1227,8 +1227,10 @@ def standardize_leads(raw_df):
 # Page size kept small so each Apps Script call finishes well within the HTTP read
 # timeout. 5 000 rows / page is safe for the current sheet size (≈70-90 k rows).
 _RETAIL_PAGE_SIZE = 5000
-# Per-attempt read timeouts (escalating). Between attempts: 30 s → 60 s backoff.
+# Per-attempt read timeouts (escalating). Between attempts: 5 s → 15 s → 30 s backoff.
+# Short backoffs: 404s are transient temp-URL expiry (resolves in seconds), not rate-limits.
 _RETAIL_TIMEOUTS  = [60, 90, 180, 180]
+_RETAIL_BACKOFFS  = [5, 15, 30]       # len == len(_RETAIL_TIMEOUTS) - 1
 
 def fetch_retails():
     """Fetch TVS retail master via Apps Script (paginated; exponential backoff per page).
@@ -1251,7 +1253,7 @@ def fetch_retails():
             except Exception as e:
                 last_exc = e
                 if attempt < len(_RETAIL_TIMEOUTS) - 1:
-                    _sleep = 30 * (2 ** attempt)   # 30 s, 60 s
+                    _sleep = _RETAIL_BACKOFFS[attempt]
                     print(f"  Page {page} attempt {attempt+1} failed ({e}); "
                           f"retrying in {_sleep}s with {_RETAIL_TIMEOUTS[attempt+1]}s timeout…",
                           flush=True)
@@ -1297,6 +1299,7 @@ def fetch_retails():
 
 _RETAIL_DATE_PAGE_SIZE = 10000
 _RETAIL_DATE_TIMEOUTS  = [60, 120, 180, 180]
+_RETAIL_DATE_BACKOFFS  = [5, 15, 30]  # transient 404s resolve in seconds
 
 def fetch_retail_date_map():
     """Fetch {lid: datetime.date} from OEM CPS Retail Raw via getSheetData.
@@ -1324,7 +1327,7 @@ def fetch_retail_date_map():
             except Exception as e:
                 last_exc = e
                 if attempt < len(_RETAIL_DATE_TIMEOUTS) - 1:
-                    _sleep = 30 * (2 ** attempt)
+                    _sleep = _RETAIL_DATE_BACKOFFS[attempt]
                     print(f"  Retail_Date page {page} attempt {attempt+1} failed ({e}); "
                           f"retrying in {_sleep}s…", flush=True)
                     time.sleep(_sleep)
