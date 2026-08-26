@@ -3090,8 +3090,8 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
 
     // Summary always uses all months (ignores global month filter for the summary grid)
     const summaryData = agg(null);
-    // Monthly grids: one per displayMonths, skipping empty ones
-    const monthlyData = displayMonths
+    // Monthly grids: latest month first (descending), skipping empty ones
+    const monthlyData = [...displayMonths].reverse()
       .map(m => ({ month: m, ...agg(new Set([m])) }))
       .filter(d => d.grandTotal > 0);
 

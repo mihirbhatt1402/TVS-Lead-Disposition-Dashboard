@@ -1778,6 +1778,48 @@ class TestRetailAgeing(unittest.TestCase):
         lm_indices = set(k[6] for k in ram.keys())
         self.assertEqual(len(lm_indices), 2, "should have entries for 2 distinct months")
 
+    def test_monthly_grids_descending_order(self):
+        """Monthly grids must be ordered latest-first (descending chronologically)."""
+        # Month ordering helper (mirrors the JS monthOrder logic used in the frontend)
+        _MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        def _month_order(m):
+            if not m: return -1
+            parts = m.replace("'", " ").split()
+            if len(parts) != 2: return -1
+            name, yr = parts[0], parts[1]
+            yr_int = int(yr) if yr.isdigit() else (2000 + int(yr)) if len(yr) == 2 else -1
+            return yr_int * 12 + (_MONTH_NAMES.index(name) if name in _MONTH_NAMES else -1)
+
+        leads = [
+            {'lid': 'may1', 'lm': "May'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-05-01'},
+            {'lid': 'jun1', 'lm': "Jun'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-06-01'},
+            {'lid': 'jul1', 'lm': "Jul'26", 'mdl': 'TVS Raider', 'src': 'Organic', 'lt': '', 'st': '', 'city': '', 'cd': '2026-07-01'},
+        ]
+        rmap = {
+            'may1': {'rm': "May'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 5, 4)},
+            'jun1': {'rm': "Jun'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 6, 4)},
+            'jul1': {'rm': "Jul'26", 'rtype': 'DMS', 'pm': '', 'rd': _datetime.date(2026, 7, 4)},
+        }
+        ram, meta, maps = _run_ageing_fixture(leads, rmap)
+        self.assertEqual(meta['valid'], 3)
+
+        # allMonths ascending (as built in the frontend)
+        month_indices = sorted(set(k[6] for k in ram.keys()))
+        months_asc  = [maps['lm'][i] for i in month_indices]
+        # Frontend reverses allMonths to get displayMonths descending
+        months_desc = list(reversed(months_asc))
+
+        # Each consecutive pair must be descending (later month first)
+        for i in range(len(months_desc) - 1):
+            self.assertGreater(
+                _month_order(months_desc[i]), _month_order(months_desc[i + 1]),
+                f"{months_desc[i]} must appear before {months_desc[i+1]} in descending order"
+            )
+        self.assertEqual(months_desc[0], "Jul'26")
+        self.assertEqual(months_desc[1], "Jun'26")
+        self.assertEqual(months_desc[2], "May'26")
+
     def test_source_filter_affects_summary_and_monthly(self):
         """Source filter restricts both summary and monthly aggregation."""
         leads = [
