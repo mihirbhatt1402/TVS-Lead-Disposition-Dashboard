@@ -3177,35 +3177,46 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
       grandTotal > 0 && ce('div', { style: { overflowX: 'auto' } },
         ce('table', { style: { borderCollapse: 'collapse', width: '100%' } },
           ce('thead', null,
+            // Row 1: MODEL | bucket group headers (colspan=2 each) | TOTAL
             ce('tr', null,
-              ce('th', { style: {
+              ce('th', { rowSpan: 2, style: {
                 background: '#001F5B', color: '#fff', textAlign: 'left',
                 padding: '8px 12px', fontWeight: 700, textTransform: 'uppercase',
                 letterSpacing: '0.04em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
                 position: 'sticky', left: 0, zIndex: 3, minWidth: 160,
-                border: '1px solid rgba(255,255,255,.15)'
+                border: '1px solid rgba(255,255,255,.15)', verticalAlign: 'middle'
               }}, 'Model'),
-              // Interleaved bucket + % contribution headers
-              ...AB.flatMap((label, abi) => [
-                ce('th', { key: `b${abi}`, style: {
-                  background: AB_COLORS[abi], color: '#fff', textAlign: 'center',
-                  padding: '8px 10px', fontWeight: 700, textTransform: 'uppercase',
-                  letterSpacing: '0.03em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
-                  border: '1px solid rgba(255,255,255,.15)', minWidth: 60
-                }}, label),
-                ce('th', { key: `p${abi}`, style: {
-                  background: PCT_HDR_BG[abi], color: '#374151', textAlign: 'center',
-                  padding: '8px 6px', fontWeight: 600, textTransform: 'uppercase',
-                  letterSpacing: '0.03em', fontSize: 'calc(8.5px * var(--tvs-font-scale))',
-                  border: '1px solid rgba(0,0,0,.08)', minWidth: 52
-                }}, '% Contrib.')
-              ]),
-              ce('th', { style: {
+              ...AB.map((label, abi) => ce('th', { key: `g${abi}`, colSpan: 2, style: {
+                background: AB_COLORS[abi], color: '#fff', textAlign: 'center',
+                padding: '6px 10px', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '0.03em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
+                border: '1px solid rgba(255,255,255,.15)'
+              }}, label)),
+              ce('th', { rowSpan: 2, style: {
                 background: '#334155', color: '#fff', textAlign: 'center',
                 padding: '8px 10px', fontWeight: 700, textTransform: 'uppercase',
                 letterSpacing: '0.04em', fontSize: 'calc(9.5px * var(--tvs-font-scale))',
-                border: '1px solid rgba(255,255,255,.15)', minWidth: 70
+                border: '1px solid rgba(255,255,255,.15)', minWidth: 70, verticalAlign: 'middle'
               }}, 'TOTAL')
+            ),
+            // Row 2: RETAIL | % CONTRIBUTION sub-headers under each bucket
+            ce('tr', null,
+              ...AB.flatMap((_, abi) => [
+                ce('th', { key: `r${abi}`, style: {
+                  background: AB_COLORS[abi], color: 'rgba(255,255,255,0.85)', textAlign: 'center',
+                  padding: '5px 8px', fontWeight: 600, textTransform: 'uppercase',
+                  letterSpacing: '0.03em', fontSize: 'calc(8px * var(--tvs-font-scale))',
+                  border: '1px solid rgba(255,255,255,.15)', minWidth: 60,
+                  borderTop: '1px solid rgba(255,255,255,.3)'
+                }}, 'Retail'),
+                ce('th', { key: `p${abi}`, style: {
+                  background: PCT_HDR_BG[abi], color: '#374151', textAlign: 'center',
+                  padding: '5px 6px', fontWeight: 600, textTransform: 'uppercase',
+                  letterSpacing: '0.02em', fontSize: 'calc(8px * var(--tvs-font-scale))',
+                  border: '1px solid rgba(0,0,0,.08)', minWidth: 52,
+                  borderTop: '1px solid rgba(0,0,0,.1)'
+                }}, '% Contrib.')
+              ])
             )
           ),
           ce('tbody', null,
