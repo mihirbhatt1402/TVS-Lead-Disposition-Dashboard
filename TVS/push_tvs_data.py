@@ -1095,10 +1095,33 @@ def proxy_get(action, extra_params=None, timeout=120):
 # Only these columns are needed from each lead sheet — reduces payload ~70%
 LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medium,Retail By,DMS_Retail_Month'
 
-def fetch_sheet_via_proxy(file_id, label, tab_name=None):
-    """Read any Google Sheet via Apps Script proxy. Returns raw DataFrame."""
-    page, all_rows, headers = 0, [], None
-    _LEAD_TIMEOUTS = [60, 90, 180]   # escalating per attempt (matches retail fetch pattern)
+# Per-page timeouts (4 attempts: 60 s → 90 s → 180 s → 180 s).
+# Backoff between attempts: 30 s → 60 s → 120 s.
+# A 4th attempt absorbs the rare sustained 404 bursts that exhaust 3 attempts
+# and would otherwise trigger a full sheet restart.
+_LEAD_TIMEOUTS = [60, 90, 180, 180]
+_LEAD_BACKOFFS  = [30, 60, 120]        # len == len(_LEAD_TIMEOUTS) - 1
+
+class _PageFetchFailed(Exception):
+    """Raised when a page exhausts all retry attempts.
+    Carries accumulated rows/headers so the sheet-level caller can resume
+    from this page rather than restarting the whole fetch from page 0."""
+    def __init__(self, page, accumulated_rows, headers, cause):
+        super().__init__(str(cause))
+        self.page             = page
+        self.accumulated_rows = accumulated_rows
+        self.headers          = headers
+
+def fetch_sheet_via_proxy(file_id, label, tab_name=None,
+                          _start_page=0, _prev_rows=None, _prev_headers=None):
+    """Read any Google Sheet via Apps Script proxy. Returns raw DataFrame.
+
+    _start_page / _prev_rows / _prev_headers let the sheet-level retry loop
+    resume from a failed page instead of restarting from page 0.
+    """
+    page      = _start_page
+    all_rows  = list(_prev_rows) if _prev_rows else []
+    headers   = _prev_headers
     extra = {'fileId': file_id, 'pageSize': 10000, 'cols': LEAD_COLS}
     if tab_name:
         extra['tabName'] = tab_name
@@ -1113,15 +1136,19 @@ def fetch_sheet_via_proxy(file_id, label, tab_name=None):
                 break  # success
             except Exception as e:
                 if attempt < len(_LEAD_TIMEOUTS) - 1:
-                    _sleep = 30 * (2 ** attempt)   # 30 s, 60 s
+                    _sleep = _LEAD_BACKOFFS[attempt]
                     print(f"  {label} page {page} attempt {attempt+1} failed ({e}); "
                           f"retrying in {_sleep}s with {_LEAD_TIMEOUTS[attempt+1]}s timeout…", flush=True)
                     time.sleep(_sleep)
                 else:
                     traceback.print_exc()
-                    raise RuntimeError(f"getSheetData {label} page {page} failed after {len(_LEAD_TIMEOUTS)} attempts: {e}")
+                    raise _PageFetchFailed(
+                        page, all_rows, headers,
+                        RuntimeError(f"getSheetData {label} page {page} failed after "
+                                     f"{len(_LEAD_TIMEOUTS)} attempts: {e}"))
         if data is None:
-            raise RuntimeError(f"getSheetData {label} page {page}: no data returned")
+            raise _PageFetchFailed(page, all_rows, headers,
+                RuntimeError(f"getSheetData {label} page {page}: no data returned"))
         if headers is None:
             headers = data['headers']
         rows = data.get('rows', [])
@@ -1201,7 +1228,7 @@ def standardize_leads(raw_df):
 # timeout. 5 000 rows / page is safe for the current sheet size (≈70-90 k rows).
 _RETAIL_PAGE_SIZE = 5000
 # Per-attempt read timeouts (escalating). Between attempts: 30 s → 60 s backoff.
-_RETAIL_TIMEOUTS  = [60, 90, 180]
+_RETAIL_TIMEOUTS  = [60, 90, 180, 180]
 
 def fetch_retails():
     """Fetch TVS retail master via Apps Script (paginated; exponential backoff per page).
@@ -1269,7 +1296,7 @@ def fetch_retails():
 
 
 _RETAIL_DATE_PAGE_SIZE = 10000
-_RETAIL_DATE_TIMEOUTS  = [60, 120, 180]
+_RETAIL_DATE_TIMEOUTS  = [60, 120, 180, 180]
 
 def fetch_retail_date_map():
     """Fetch {lid: datetime.date} from OEM CPS Retail Raw via getSheetData.
@@ -2164,6 +2191,21 @@ retail_map  = {lid: info for lid, info in retail_map.items()
 print(f"  Combined total after {LEAD_MASTER_START} filter: {len(retail_map):,}"
       f"  (removed {_pre_filter - len(retail_map):,} pre-{LEAD_MASTER_START} entries)", flush=True)
 
+# ── Jun'26 source correction: Facebook (non-LT1105) → Whatsapp ───────────────
+# Business rule: Jun'26 leads from Facebook that are NOT LeadType 1105 are
+# misclassified — they should be Whatsapp. LT 1105 Facebook rows are correct.
+# Applied here once, after all hist_leads loading paths, before any aggregation.
+if len(hist_leads) > 0 and 'Source' in hist_leads.columns and 'LeadType' in hist_leads.columns:
+    _jun26_correct_mask = (
+        (hist_leads['LeadMonth'] == "Jun'26") &
+        (hist_leads['Source'] == 'Facebook') &
+        (hist_leads['LeadType'].astype(str) != '1105')
+    )
+    _jun26_corrected = int(_jun26_correct_mask.sum())
+    if _jun26_corrected:
+        hist_leads.loc[_jun26_correct_mask, 'Source'] = 'Whatsapp'
+        print(f"  Jun'26 source correction: {_jun26_corrected:,} Facebook (non-LT1105) → Whatsapp", flush=True)
+
 # ── Step 3: Historical leads (already loaded in step 1) ───────────────────────
 print(f"\n[3/5] Historical leads: {len(hist_leads):,} rows", flush=True)
 
@@ -2172,9 +2214,14 @@ print(f"\n[4/5] Loading live lead sheets ({ONLINE_START}+)…", flush=True)
 lead_dfs  = []
 rtype_map = {}
 for sheet in LEAD_SHEETS:
+    _resume = {'page': 0, 'rows': [], 'headers': None}
     for _sheet_attempt in range(3):
         try:
-            raw = fetch_sheet_via_proxy(sheet['id'], sheet['label'], tab_name=sheet.get('tab'))
+            raw = fetch_sheet_via_proxy(
+                sheet['id'], sheet['label'], tab_name=sheet.get('tab'),
+                _start_page=_resume['page'],
+                _prev_rows=_resume['rows'],
+                _prev_headers=_resume['headers'])
             raw.columns = [c.strip() for c in raw.columns]
             _lbl = sheet['label']
 
@@ -2272,7 +2319,24 @@ for sheet in LEAD_SHEETS:
             break  # success
         except SystemExit:
             raise   # let _fail_exit propagate
+        except _PageFetchFailed as e:
+            # Page exhausted all retries — resume from this page on the next attempt
+            # rather than restarting the entire sheet from page 0.
+            _resume = {'page': e.page, 'rows': e.accumulated_rows, 'headers': e.headers}
+            if _sheet_attempt < 2:
+                print(f"  WARNING: {sheet['label']} page {e.page} failed on attempt "
+                      f"{_sheet_attempt+1}; resuming from page {e.page} in 60s "
+                      f"({len(e.accumulated_rows):,} rows preserved)…", flush=True)
+                time.sleep(60)
+            else:
+                traceback.print_exc()
+                _fail_exit(
+                    f'Lead sheet fetch — {sheet["label"]}',
+                    f'All 3 sheet-level attempts failed at page {e.page}: {e}'
+                )
         except Exception as e:
+            # Non-page failure (schema error, empty result, etc.) — restart from scratch.
+            _resume = {'page': 0, 'rows': [], 'headers': None}
             if _sheet_attempt < 2:
                 print(f"  WARNING: {sheet['label']} attempt {_sheet_attempt+1} failed: {e}; retrying in 30s…",
                       flush=True)
