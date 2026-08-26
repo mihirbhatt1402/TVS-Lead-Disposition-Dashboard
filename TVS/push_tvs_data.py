@@ -28,6 +28,7 @@ MERGE: hist leads + live leads deduped by SorceLeadId (keep='last'; live wins on
 """
 
 import json, sys, re, time, os, gzip, base64, traceback, shutil, argparse
+import threading, concurrent.futures
 import pandas as pd
 import requests
 from pathlib import Path
@@ -1082,7 +1083,17 @@ _RUN_START = datetime.now(timezone.utc)
 if DRY_RUN:
     print("*** DRY RUN MODE — production payload will NOT be updated ***", flush=True)
 
+# ── Per-run telemetry ──────────────────────────────────────────────────────────
+_as_calls_total  = 0               # total Apps Script proxy_get() calls this run
+_as_calls_lock   = threading.Lock()
+_fetch_perf      = {}              # {label: {duration_s, rows}} — populated by fetch workers
+_fetch_perf_lock = threading.Lock()
+
+
 def proxy_get(action, extra_params=None, timeout=120):
+    global _as_calls_total
+    with _as_calls_lock:
+        _as_calls_total += 1
     params = {'action': action, 'secret': SECRET}
     if extra_params:
         params.update(extra_params)
@@ -2215,6 +2226,143 @@ def _save_source_metrics(metrics_dict, run_start):
         print(f"  WARNING: Could not save source_metrics.json: {_me}", flush=True)
 
 
+# ─── Parallel-fetch helper ────────────────────────────────────────────────────
+def _fetch_and_process_lead_sheet(sheet, prev_metrics):
+    """Fetch one lead sheet and run STAGE 1–6 (fetch → validate → standardize → filter).
+
+    Designed to run in a daemon thread alongside retail and Retail_Date fetches.
+    Returns a dict on success; raises SystemExit on unrecoverable error so the
+    daemon-thread wrapper can capture and re-raise it on the main thread.
+    """
+    t0   = time.monotonic()
+    _lbl = sheet['label']
+    _resume = {'page': 0, 'rows': [], 'headers': None}
+
+    for _sheet_attempt in range(3):
+        try:
+            raw = fetch_sheet_via_proxy(
+                sheet['id'], _lbl, tab_name=sheet.get('tab'),
+                _start_page=_resume['page'],
+                _prev_rows=_resume['rows'],
+                _prev_headers=_resume['headers'])
+            raw.columns = [c.strip() for c in raw.columns]
+
+            print(f"\n  [{_lbl}] STAGE 1 — fetched from sheet: {len(raw):,} rows", flush=True)
+            print(f"  [{_lbl}] columns: {list(raw.columns)}", flush=True)
+
+            print(f"  [{_lbl}] STAGE 2 — DataFrame rows: {len(raw):,}", flush=True)
+            _missing_cols = _LEAD_REQUIRED_COLS - set(raw.columns)
+            if _missing_cols:
+                _fail_exit(
+                    f'Lead schema — {_lbl}',
+                    f'Required columns missing: {sorted(_missing_cols)}. '
+                    f'Available columns: {list(raw.columns)}')
+            if len(raw) == 0:
+                _fail_exit(
+                    f'Lead sheet empty — {_lbl}',
+                    'Sheet returned 0 rows. This is almost certainly an incomplete fetch '
+                    'or a sheet access error.')
+
+            if 'Lead_Month' in raw.columns:
+                _raw_lm_full = raw['Lead_Month'].astype(str).str.strip().value_counts(dropna=False).to_dict()
+                print(f"  [{_lbl}] STAGE 3 — raw Lead_Month full distribution:", flush=True)
+                for _lm_v, _lm_c in sorted(_raw_lm_full.items(), key=lambda x: -x[1]):
+                    print(f"    {_lm_v!r:25s}: {_lm_c:,}", flush=True)
+            else:
+                print(f"  [{_lbl}] STAGE 3 — Lead_Month column NOT FOUND in raw sheet", flush=True)
+
+            _rtype_entries = extract_rtype_map(raw)
+            std_all = standardize_leads(raw)
+
+            print(f"  [{_lbl}] STAGE 4 — after standardize_leads: {len(std_all):,} rows", flush=True)
+            if len(std_all) != len(raw):
+                print(f"  [{_lbl}] WARNING: standardize_leads changed row count "
+                      f"({len(raw):,} → {len(std_all):,})", flush=True)
+
+            if 'LeadMonth' in std_all.columns:
+                _std_lm_full = std_all['LeadMonth'].value_counts(dropna=False).to_dict()
+                print(f"  [{_lbl}] STAGE 5 — post-standardize LeadMonth full distribution:", flush=True)
+                for _lm_v, _lm_c in sorted(_std_lm_full.items(), key=lambda x: -x[1]):
+                    _mo = month_order(_lm_v)
+                    print(f"    {_lm_v!r:25s}: {_lm_c:,}  (month_order={_mo})", flush=True)
+            else:
+                print(f"  [{_lbl}] STAGE 5 — LeadMonth column NOT present after standardize", flush=True)
+
+            _min = sheet.get('min_mo', ONLINE_START_ORDER)
+            _max = sheet.get('max_mo')
+
+            std = std_all[std_all['LeadMonth'].apply(month_order) >= _min]
+            if _max is not None:
+                std = std[std['LeadMonth'].apply(month_order) <= _max]
+
+            _n_dropped = len(std_all) - len(std)
+            print(f"  [{_lbl}] STAGE 6 — after month filter (min_mo={_min}, max_mo={_max}): "
+                  f"{len(std):,} rows  ({_n_dropped:,} dropped)", flush=True)
+
+            if _n_dropped > 0:
+                _dropped_df = std_all[std_all['LeadMonth'].apply(month_order) < _min]
+                if _max is not None:
+                    _over_max = std_all[std_all['LeadMonth'].apply(month_order) > _max]
+                    _dropped_df = pd.concat([_dropped_df, _over_max], ignore_index=True)
+                _drop_by_month = _dropped_df['LeadMonth'].value_counts(dropna=False).to_dict()
+                print(f"  [{_lbl}] STAGE 6 — dropped rows by LeadMonth:", flush=True)
+                for _lm_v, _lm_c in sorted(_drop_by_month.items(), key=lambda x: -x[1]):
+                    _mo = month_order(_lm_v)
+                    _reason = 'blank/unresolved' if _mo == 0 else f'month_order={_mo} < min_mo={_min}'
+                    print(f"    {_lm_v!r:25s}: {_lm_c:,}  ({_reason})", flush=True)
+
+                _samp_cols = [c for c in ['LeadMonth', 'Date', 'CreateDate', 'SorceLeadId',
+                                           'Source', 'ModelName', 'State'] if c in _dropped_df.columns]
+                _sample100 = _dropped_df[_samp_cols].head(100)
+                print(f"  [{_lbl}] STAGE 6 — sample of dropped rows (up to 100):", flush=True)
+                print(_sample100.to_string(index=False), flush=True)
+
+            _range_str = f"{MONTH_NAMES[(_min % 100) - 1]}'{_min // 100:02d}" + (
+                f" only" if _max == _min else f"+ ({len(std):,} rows)")
+            _duration = time.monotonic() - t0
+            print(f"  [{_lbl}] STAGE 6 FINAL: {len(std):,} rows kept [{_range_str}]", flush=True)
+            print(f"  [{_lbl}] [COMPLETE] Dataset:{_lbl} Raw:{len(raw):,} "
+                  f"Filtered:{len(std):,} Duration:{_duration:.1f}s", flush=True)
+
+            with _fetch_perf_lock:
+                _fetch_perf[_lbl] = {'duration_s': _duration, 'rows': len(raw)}
+
+            return {
+                'label':         _lbl,
+                'rtype_entries': _rtype_entries,
+                'std':           std,
+                'raw_len':       len(raw),
+                'filtered_len':  len(std),
+                'duration_s':    _duration,
+            }
+
+        except SystemExit:
+            raise
+        except _PageFetchFailed as e:
+            _resume = {'page': e.page, 'rows': e.accumulated_rows, 'headers': e.headers}
+            if _sheet_attempt < 2:
+                print(f"  WARNING: {_lbl} page {e.page} failed on attempt "
+                      f"{_sheet_attempt + 1}; resuming from page {e.page} in 60s "
+                      f"({len(e.accumulated_rows):,} rows preserved)…", flush=True)
+                time.sleep(60)
+            else:
+                traceback.print_exc()
+                _fail_exit(
+                    f'Lead sheet fetch — {_lbl}',
+                    f'All 3 sheet-level attempts failed at page {e.page}: {e}')
+        except Exception as e:
+            _resume = {'page': 0, 'rows': [], 'headers': None}
+            if _sheet_attempt < 2:
+                print(f"  WARNING: {_lbl} attempt {_sheet_attempt + 1} failed: {e}; retrying in 30s…",
+                      flush=True)
+                time.sleep(30)
+            else:
+                traceback.print_exc()
+                _fail_exit(
+                    f'Lead sheet fetch — {_lbl}',
+                    f'All 3 attempts failed: {e}')
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 print("=" * 60, flush=True)
@@ -2282,44 +2430,101 @@ else:
     retail_map = {}   # unreachable — satisfies type checker
     hist_leads  = pd.DataFrame()
 
-# ── Step 2: Live retail master (overwrites hist for ONLINE_START+ months only) ─
+# ── Steps 2+4: Parallel fetch — retail master, Retail_Date, and all lead sheets ─
+# All four data sources are fetched concurrently using daemon threads.
+# Retail and lead sheets are independent at the network level — neither depends on
+# the other's data during fetch.  Merging, validation, and aggregation happen
+# sequentially after ALL threads complete.
+#
 # hist_cache is the authoritative source for Apr'25–Jun'26. Live retail must NOT
 # overwrite those entries — doing so replaces the accurate hist DMS/Call Out value
-# (from the Excel "DMS/Call Out" column) with the live classification (Purchased From
-# logic), which incorrectly reclassifies many historical DMS entries as Call Out.
+# (from the Excel "DMS/Call Out" column) with the live classification, which
+# incorrectly reclassifies many historical DMS entries as Call Out.
 # Only Jul'26+ entries are the true "online" period; those freely overwrite hist.
-print("\n[2/5] Loading live retail master from Google Sheet…", flush=True)
-try:
-    retail_df = fetch_retails()
-    # Schema validation — required columns must be present
-    _missing_ret_cols = _RETAIL_REQUIRED_COLS - set(retail_df.columns)
-    if _missing_ret_cols:
-        _fail_exit(
-            'Retail schema validation',
-            f'Required columns missing from retail sheet: {sorted(_missing_ret_cols)}. '
-            f'Available: {list(retail_df.columns)}'
-        )
-    _validate_retail_fetch(retail_df, _prev_metrics)
-except SystemExit:
-    raise
-except Exception as _retail_err:
-    traceback.print_exc()
+
+print(f"\n[2+4/5] Parallel fetch: retail master + Retail_Date + "
+      f"{len(LEAD_SHEETS)} lead sheet(s)…", flush=True)
+print("  (All threads running concurrently — fetch output may be interleaved)", flush=True)
+
+_par_results: dict = {}
+_par_errors:  dict = {}
+_par_lock             = threading.Lock()
+
+
+def _par_run(key, fn, *args, **kwargs):
+    def _worker():
+        try:
+            _par_results[key] = fn(*args, **kwargs)
+        except SystemExit as _e:
+            with _par_lock:
+                _par_errors[key] = _e
+        except Exception as _e:
+            traceback.print_exc()
+            with _par_lock:
+                _par_errors[key] = _e
+    t = threading.Thread(target=_worker, daemon=True, name=f'fetch-{key}')
+    t.start()
+    return t
+
+
+def _retail_with_perf():
+    t0 = time.monotonic()
+    df = fetch_retails()
+    with _fetch_perf_lock:
+        _fetch_perf['retail_raw'] = {'duration_s': time.monotonic() - t0, 'rows': len(df)}
+    return df
+
+
+def _rd_with_perf():
+    t0 = time.monotonic()
+    m  = fetch_retail_date_map()
+    with _fetch_perf_lock:
+        _fetch_perf['retail_date'] = {'duration_s': time.monotonic() - t0, 'rows': len(m)}
+    return m
+
+
+_parallel_start = time.monotonic()
+
+_threads = [
+    _par_run('retail_raw',  _retail_with_perf),
+    _par_run('retail_date', _rd_with_perf),
+] + [_par_run(s['label'], _fetch_and_process_lead_sheet, s, _prev_metrics)
+     for s in LEAD_SHEETS]
+
+for _t in _threads:
+    _t.join()
+
+_parallel_elapsed = time.monotonic() - _parallel_start
+print(f"\n  All parallel fetches complete: {_parallel_elapsed:.1f}s wall-clock", flush=True)
+
+# ── [2/5] Retail validation ────────────────────────────────────────────────────
+print(f"\n[2/5] Live retail master validation…", flush=True)
+if 'retail_raw' in _par_errors:
+    _retail_err = _par_errors['retail_raw']
+    if isinstance(_retail_err, SystemExit):
+        raise _retail_err
     _fail_exit('Live retail fetch', str(_retail_err))
 
-# Source metrics comparison
+retail_df = _par_results['retail_raw']
+_missing_ret_cols = _RETAIL_REQUIRED_COLS - set(retail_df.columns)
+if _missing_ret_cols:
+    _fail_exit(
+        'Retail schema validation',
+        f'Required columns missing from retail sheet: {sorted(_missing_ret_cols)}. '
+        f'Available: {list(retail_df.columns)}')
+_validate_retail_fetch(retail_df, _prev_metrics)
+
 _current_metrics['retail_raw'] = {'rows': len(retail_df)}
 _check_source_drop('retail_raw', len(retail_df), _prev_metrics)
 
-# Fetch Retail_Date separately — not exposed by getCurrentRetails.
-# Wrapped in try/except so a failure here never aborts the production run;
-# ageing data will simply be empty for that run.
-try:
-    _rd_map = fetch_retail_date_map()
-except Exception as _rd_err:
-    traceback.print_exc()
+# Retail_Date — non-fatal; empty dict means Retail Ageing is skipped for this run.
+if 'retail_date' in _par_errors:
+    _rd_err = _par_errors['retail_date']
     print(f"  WARNING: Retail_Date fetch failed ({_rd_err}); "
           f"Retail Ageing will be empty this run.", flush=True)
     _rd_map = {}
+else:
+    _rd_map = _par_results.get('retail_date', {})
 
 online_rmap, unexpected_call_types = build_retail_map(retail_df, rd_map=_rd_map)
 
@@ -2405,150 +2610,31 @@ if len(hist_leads) > 0 and 'Source' in hist_leads.columns and 'LeadType' in hist
         hist_leads.loc[_jun26_correct_mask, 'Source'] = 'Whatsapp'
         print(f"  Jun'26 source correction: {_jun26_corrected:,} Facebook (non-LT1105) → Whatsapp", flush=True)
 
-# ── Step 3: Historical leads (already loaded in step 1) ───────────────────────
+# ── [3/5] Historical leads ────────────────────────────────────────────────────
 print(f"\n[3/5] Historical leads: {len(hist_leads):,} rows", flush=True)
 
-# ── Step 4: Live leads (ONLINE_START onwards; dedup wins over hist) ───────────
-print(f"\n[4/5] Loading live lead sheets ({ONLINE_START}+)…", flush=True)
+# ── [4/5] Live lead results — merge from parallel threads ─────────────────────
+print(f"\n[4/5] Live lead sheets fetched in parallel — merging results…", flush=True)
 lead_dfs  = []
 rtype_map = {}
-for sheet in LEAD_SHEETS:
-    _resume = {'page': 0, 'rows': [], 'headers': None}
-    for _sheet_attempt in range(3):
-        try:
-            raw = fetch_sheet_via_proxy(
-                sheet['id'], sheet['label'], tab_name=sheet.get('tab'),
-                _start_page=_resume['page'],
-                _prev_rows=_resume['rows'],
-                _prev_headers=_resume['headers'])
-            raw.columns = [c.strip() for c in raw.columns]
-            _lbl = sheet['label']
 
-            # ── STAGE 1: rows fetched from Google Sheet ────────────────────────
-            print(f"\n  [{_lbl}] STAGE 1 — fetched from sheet: {len(raw):,} rows", flush=True)
-            print(f"  [{_lbl}] columns: {list(raw.columns)}", flush=True)
+for _sheet in LEAD_SHEETS:
+    _lbl = _sheet['label']
+    if _lbl in _par_errors:
+        _lead_err = _par_errors[_lbl]
+        if isinstance(_lead_err, SystemExit):
+            raise _lead_err
+        _fail_exit(f'Lead sheet fetch — {_lbl}', str(_lead_err))
 
-            # ── STAGE 2: Schema validation — fail if required columns are missing ─
-            print(f"  [{_lbl}] STAGE 2 — DataFrame rows: {len(raw):,}", flush=True)
-            _missing_cols = _LEAD_REQUIRED_COLS - set(raw.columns)
-            if _missing_cols:
-                _fail_exit(
-                    f'Lead schema — {_lbl}',
-                    f'Required columns missing: {sorted(_missing_cols)}. '
-                    f'Available columns: {list(raw.columns)}'
-                )
-            if len(raw) == 0:
-                _fail_exit(
-                    f'Lead sheet empty — {_lbl}',
-                    f'Sheet returned 0 rows. This is almost certainly an incomplete fetch '
-                    f'or a sheet access error.'
-                )
-
-            # ── STAGE 3: raw Lead_Month distribution BEFORE standardize_leads ──
-            if 'Lead_Month' in raw.columns:
-                _raw_lm_vals = raw['Lead_Month'].astype(str).str.strip()
-                _raw_lm_full = _raw_lm_vals.value_counts(dropna=False).to_dict()
-                print(f"  [{_lbl}] STAGE 3 — raw Lead_Month full distribution:", flush=True)
-                for _lm_v, _lm_c in sorted(_raw_lm_full.items(), key=lambda x: -x[1]):
-                    print(f"    {_lm_v!r:25s}: {_lm_c:,}", flush=True)
-            else:
-                print(f"  [{_lbl}] STAGE 3 — Lead_Month column NOT FOUND in raw sheet", flush=True)
-
-            rtype_map.update(extract_rtype_map(raw))
-            std_all = standardize_leads(raw)
-
-            # ── STAGE 4: after standardize_leads (no rows dropped here) ────────
-            print(f"  [{_lbl}] STAGE 4 — after standardize_leads: {len(std_all):,} rows", flush=True)
-            if len(std_all) != len(raw):
-                print(f"  [{_lbl}] WARNING: standardize_leads changed row count "
-                      f"({len(raw):,} → {len(std_all):,})", flush=True)
-
-            # ── STAGE 5: LeadMonth distribution after standardize_leads ────────
-            if 'LeadMonth' in std_all.columns:
-                _std_lm_full = std_all['LeadMonth'].value_counts(dropna=False).to_dict()
-                print(f"  [{_lbl}] STAGE 5 — post-standardize LeadMonth full distribution:", flush=True)
-                for _lm_v, _lm_c in sorted(_std_lm_full.items(), key=lambda x: -x[1]):
-                    _mo = month_order(_lm_v)
-                    print(f"    {_lm_v!r:25s}: {_lm_c:,}  (month_order={_mo})", flush=True)
-            else:
-                print(f"  [{_lbl}] STAGE 5 — LeadMonth column NOT present after standardize", flush=True)
-
-            _min = sheet.get('min_mo', ONLINE_START_ORDER)
-            _max = sheet.get('max_mo')
-
-            # ── STAGE 6: month filter (min_mo / max_mo) ─────────────────────────
-            std = std_all[std_all['LeadMonth'].apply(month_order) >= _min]
-            if _max is not None:
-                std = std[std['LeadMonth'].apply(month_order) <= _max]
-
-            _n_dropped = len(std_all) - len(std)
-            print(f"  [{_lbl}] STAGE 6 — after month filter (min_mo={_min}, max_mo={_max}): "
-                  f"{len(std):,} rows  ({_n_dropped:,} dropped)", flush=True)
-
-            if _n_dropped > 0:
-                # Full breakdown of every dropped month
-                _dropped_df = std_all[std_all['LeadMonth'].apply(month_order) < _min]
-                if _max is not None:
-                    _over_max = std_all[std_all['LeadMonth'].apply(month_order) > _max]
-                    _dropped_df = pd.concat([_dropped_df, _over_max], ignore_index=True)
-                _drop_by_month = _dropped_df['LeadMonth'].value_counts(dropna=False).to_dict()
-                print(f"  [{_lbl}] STAGE 6 — dropped rows by LeadMonth:", flush=True)
-                for _lm_v, _lm_c in sorted(_drop_by_month.items(), key=lambda x: -x[1]):
-                    _mo = month_order(_lm_v)
-                    _reason = 'blank/unresolved' if _mo == 0 else f'month_order={_mo} < min_mo={_min}'
-                    print(f"    {_lm_v!r:25s}: {_lm_c:,}  ({_reason})", flush=True)
-
-                # Sample of up to 100 dropped rows with full key columns
-                _samp_cols = [c for c in ['LeadMonth','Date','CreateDate','SorceLeadId',
-                                           'Source','ModelName','State'] if c in _dropped_df.columns]
-                _sample100 = _dropped_df[_samp_cols].head(100)
-                print(f"  [{_lbl}] STAGE 6 — sample of dropped rows (up to 100):", flush=True)
-                print(_sample100.to_string(index=False), flush=True)
-
-            lead_dfs.append(std)
-            _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
-            print(f"  [{_lbl}] STAGE 6 FINAL: {len(std):,} rows kept [{_range}]", flush=True)
-
-            # Source metrics: compare RAW fetched count (len(raw)) to baseline.
-            # Blank Lead_Month rows filtered out in STAGE 6 are empty sheet rows
-            # that Apps Script includes via getLastRow() — they are NOT real data
-            # loss. Comparing filtered rows causes false failures whenever the sheet
-            # gains/loses blank rows between runs. Raw count confirms the fetch was
-            # complete; filtered count is stored for informational reference only.
-            _current_metrics[_lbl] = {'rows': len(raw), 'filtered_rows': len(std)}
-            _check_source_drop(_lbl, len(raw), _prev_metrics)
-            print(f"", flush=True)
-            break  # success
-        except SystemExit:
-            raise   # let _fail_exit propagate
-        except _PageFetchFailed as e:
-            # Page exhausted all retries — resume from this page on the next attempt
-            # rather than restarting the entire sheet from page 0.
-            _resume = {'page': e.page, 'rows': e.accumulated_rows, 'headers': e.headers}
-            if _sheet_attempt < 2:
-                print(f"  WARNING: {sheet['label']} page {e.page} failed on attempt "
-                      f"{_sheet_attempt+1}; resuming from page {e.page} in 60s "
-                      f"({len(e.accumulated_rows):,} rows preserved)…", flush=True)
-                time.sleep(60)
-            else:
-                traceback.print_exc()
-                _fail_exit(
-                    f'Lead sheet fetch — {sheet["label"]}',
-                    f'All 3 sheet-level attempts failed at page {e.page}: {e}'
-                )
-        except Exception as e:
-            # Non-page failure (schema error, empty result, etc.) — restart from scratch.
-            _resume = {'page': 0, 'rows': [], 'headers': None}
-            if _sheet_attempt < 2:
-                print(f"  WARNING: {sheet['label']} attempt {_sheet_attempt+1} failed: {e}; retrying in 30s…",
-                      flush=True)
-                time.sleep(30)
-            else:
-                traceback.print_exc()
-                _fail_exit(
-                    f'Lead sheet fetch — {sheet["label"]}',
-                    f'All 3 attempts failed: {e}'
-                )
+    _lr = _par_results[_lbl]
+    rtype_map.update(_lr['rtype_entries'])
+    lead_dfs.append(_lr['std'])
+    # Source metrics: compare RAW fetched count to baseline.
+    # Blank Lead_Month rows filtered in STAGE 6 are empty sheet rows that Apps Script
+    # includes via getLastRow() — NOT real data loss. Raw count confirms completeness.
+    _current_metrics[_lbl] = {'rows': _lr['raw_len'], 'filtered_rows': _lr['filtered_len']}
+    _check_source_drop(_lbl, _lr['raw_len'], _prev_metrics)
+    print(f"", flush=True)
 
 # Override rtype from embedded sheet columns (DMS_Retail_Month / Retail By).
 # Only override when Retail By is non-empty AND retail month is Jul'26+ (ONLINE_START).
@@ -2934,6 +3020,18 @@ if DRY_RUN:
 
     print(f"\nPRODUCTION: UNCHANGED  (dry run — Firebase not called)", flush=True)
 
+    # ── Fetch telemetry (Phase 13) ───────────────────────────────────────────
+    print(f"\nFETCH TELEMETRY", flush=True)
+    _seq_total_s_dr = 0.0
+    for _flbl, _fp in sorted(_fetch_perf.items()):
+        _fd = _fp['duration_s']
+        _fr = _fp['rows']
+        _seq_total_s_dr += _fd
+        print(f"  {_flbl:30s}: {_fd:6.1f}s  {_fr:>10,} rows", flush=True)
+    print(f"  {'Parallel wall-clock':30s}: {_parallel_elapsed:6.1f}s  "
+          f"(saved {max(0.0, _seq_total_s_dr - _parallel_elapsed):.1f}s vs sequential)", flush=True)
+    print(f"  {'Apps Script calls (total)':30s}: {_as_calls_total:>6,}", flush=True)
+
     # ── UNKNOWN MODEL DIAGNOSTIC ─────────────────────────────────────────────
     # Payload baseline: Unknown model totals as of the last production push (2026-08-24).
     # 1,886 = Aug'26 Unknown leads visible in dashboard (on-create view for Aug only).
@@ -3127,6 +3225,18 @@ print(f"  Firebase:  CONFIRMED (ok:true)", flush=True)
 print(f"  Payload:   {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)", flush=True)
 if _prev_existed:
     print(f"  Previous:  backed up to {_prev_path.name}", flush=True)
+
+# ── Phase 13: Per-source fetch telemetry ─────────────────────────────────────
+print(f"\nFETCH TELEMETRY", flush=True)
+_seq_total_s  = 0.0
+for _flbl, _fp in sorted(_fetch_perf.items()):
+    _fd = _fp['duration_s']
+    _fr = _fp['rows']
+    _seq_total_s += _fd
+    print(f"  {_flbl:30s}: {_fd:6.1f}s  {_fr:>10,} rows", flush=True)
+print(f"  {'Parallel wall-clock':30s}: {_parallel_elapsed:6.1f}s  "
+      f"(saved {max(0.0, _seq_total_s - _parallel_elapsed):.1f}s vs sequential)", flush=True)
+print(f"  {'Apps Script calls (total)':30s}: {_as_calls_total:>6,}", flush=True)
 
 print(f"\nSTATUS: PRODUCTION UPDATED", flush=True)
 print(f"{'=' * 60}", flush=True)

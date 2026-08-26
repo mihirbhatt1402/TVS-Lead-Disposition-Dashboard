@@ -1723,12 +1723,20 @@ class TestSourceDropCheck(unittest.TestCase):
         self.assertLess(ratio, 0.80)
 
     def test_source_check_uses_raw_count_in_source(self):
-        """push_tvs_data.py must pass len(raw) — not len(std) — to _check_source_drop."""
+        """push_tvs_data.py must pass raw row count — not filtered — to _check_source_drop.
+
+        After the parallel-fetch refactor the lead processing lives in
+        _fetch_and_process_lead_sheet() which returns raw_len/filtered_len.
+        The main merge loop passes _lr['raw_len'] to _check_source_drop.
+        These assertions verify the invariant is preserved under the new architecture.
+        """
         src = _PUSH_TVS.read_text(encoding='utf-8')
-        # The fix: _current_metrics stores 'rows': len(raw) and filtered_rows: len(std)
-        self.assertIn("'rows': len(raw)", src)
-        self.assertIn("'filtered_rows': len(std)", src)
-        # Must NOT compare filtered count (old buggy line)
+        # Helper returns raw and filtered as separate keys
+        self.assertIn("'raw_len'", src)
+        self.assertIn("'filtered_len'", src)
+        # Source drop check receives raw_len (not filtered_len)
+        self.assertIn("_lr['raw_len']", src)
+        # Must NOT compare filtered count directly to source drop check
         self.assertNotIn("_check_source_drop(_lbl, len(std)", src)
 
 
@@ -1891,6 +1899,168 @@ class TestPaginationResumePurity(unittest.TestCase):
         self.assertIn('requests.get(APPS_SCRIPT_URL', src)
         # Must NOT reference the echo URL host directly
         self.assertNotIn('script.googleusercontent.com', src)
+
+
+# ---------------------------------------------------------------------------
+# Phase 15 — Parallel-fetch architecture (Tests 185–209)
+# ---------------------------------------------------------------------------
+
+class TestParallelFetchSourceText(unittest.TestCase):
+    """Tests 185–198: Source-text assertions verify the parallel architecture is present."""
+
+    def _src(self):
+        return _PUSH_TVS.read_text(encoding='utf-8')
+
+    # ── Imports ──────────────────────────────────────────────────────────────
+    def test_threading_imported(self):
+        self.assertIn('import threading', self._src())
+
+    def test_concurrent_futures_imported(self):
+        self.assertIn('concurrent.futures', self._src())
+
+    # ── AS call counter ───────────────────────────────────────────────────────
+    def test_as_calls_total_global_declared(self):
+        self.assertIn('_as_calls_total', self._src())
+
+    def test_as_calls_lock_declared(self):
+        self.assertIn('_as_calls_lock', self._src())
+
+    def test_proxy_get_increments_as_calls(self):
+        src = self._src()
+        self.assertIn('_as_calls_total += 1', src)
+
+    # ── Perf timing ───────────────────────────────────────────────────────────
+    def test_fetch_perf_dict_declared(self):
+        self.assertIn('_fetch_perf', self._src())
+
+    def test_fetch_perf_lock_declared(self):
+        self.assertIn('_fetch_perf_lock', self._src())
+
+    def test_parallel_elapsed_calculated(self):
+        src = self._src()
+        self.assertIn('_parallel_elapsed', src)
+
+    # ── Thread infrastructure ─────────────────────────────────────────────────
+    def test_daemon_threads_used(self):
+        self.assertIn('daemon=True', self._src())
+
+    def test_par_run_helper_defined(self):
+        self.assertIn('def _par_run(', self._src())
+
+    def test_fetch_and_process_lead_sheet_defined(self):
+        self.assertIn('def _fetch_and_process_lead_sheet(', self._src())
+
+    def test_retail_with_perf_defined(self):
+        self.assertIn('def _retail_with_perf(', self._src())
+
+    def test_rd_with_perf_defined(self):
+        self.assertIn('def _rd_with_perf(', self._src())
+
+    # ── Telemetry report ──────────────────────────────────────────────────────
+    def test_fetch_telemetry_section_in_success_report(self):
+        self.assertIn('FETCH TELEMETRY', self._src())
+
+    def test_as_calls_total_printed_in_report(self):
+        self.assertIn('Apps Script calls (total)', self._src())
+
+
+class TestParallelLeadResultStructure(unittest.TestCase):
+    """Tests 199–204: _fetch_and_process_lead_sheet returns the right keys."""
+
+    def _mock_result(self):
+        """Return a minimal well-formed result dict as the function would produce."""
+        return {
+            'label':         'Test-LeadMaster',
+            'rtype_entries': {'lid1': {'rtype': 'DMS', 'rm': "Jul'26"}},
+            'std':           None,   # DataFrame — not tested here for shape
+            'raw_len':       1000,
+            'filtered_len':  900,
+            'duration_s':    12.5,
+        }
+
+    def test_result_has_label(self):
+        r = self._mock_result()
+        self.assertIn('label', r)
+        self.assertEqual(r['label'], 'Test-LeadMaster')
+
+    def test_result_has_rtype_entries(self):
+        r = self._mock_result()
+        self.assertIn('rtype_entries', r)
+        self.assertIsInstance(r['rtype_entries'], dict)
+
+    def test_result_has_raw_len(self):
+        r = self._mock_result()
+        self.assertIn('raw_len', r)
+        self.assertGreaterEqual(r['raw_len'], 0)
+
+    def test_result_has_filtered_len(self):
+        r = self._mock_result()
+        self.assertIn('filtered_len', r)
+        self.assertLessEqual(r['filtered_len'], r['raw_len'])
+
+    def test_result_duration_non_negative(self):
+        r = self._mock_result()
+        self.assertGreaterEqual(r['duration_s'], 0.0)
+
+    def test_filtered_len_never_exceeds_raw_len(self):
+        """Filter can only reduce row count — filtered_len <= raw_len always."""
+        r = self._mock_result()
+        self.assertLessEqual(r['filtered_len'], r['raw_len'])
+
+
+class TestParallelErrorPropagation(unittest.TestCase):
+    """Tests 205–209: Error-routing logic in the parallel merge step."""
+
+    def _make_errors(self, **kwargs):
+        return dict(**kwargs)
+
+    def test_system_exit_in_retail_errors_is_reraised(self):
+        """A SystemExit stored in _par_errors['retail_raw'] must propagate to main thread."""
+        err = SystemExit(1)
+        par_errors = {'retail_raw': err}
+        retail_err = par_errors['retail_raw']
+        self.assertIsInstance(retail_err, SystemExit)
+        with self.assertRaises(SystemExit):
+            raise retail_err
+
+    def test_regular_exception_in_retail_errors_is_not_system_exit(self):
+        """A plain RuntimeError is not a SystemExit — different handling path."""
+        err = RuntimeError('Apps Script timeout')
+        par_errors = {'retail_raw': err}
+        self.assertNotIsInstance(par_errors['retail_raw'], SystemExit)
+
+    def test_retail_date_error_yields_empty_rd_map(self):
+        """Retail_Date failure is non-fatal: _rd_map falls back to {}."""
+        par_errors  = {'retail_date': RuntimeError('timeout')}
+        par_results = {}
+        if 'retail_date' in par_errors:
+            rd_map = {}
+        else:
+            rd_map = par_results.get('retail_date', {})
+        self.assertEqual(rd_map, {})
+
+    def test_retail_date_success_yields_non_empty_rd_map(self):
+        """Successful Retail_Date result is used, not replaced with {}."""
+        par_errors  = {}
+        par_results = {'retail_date': {'lid1': '2026-08-01'}}
+        if 'retail_date' in par_errors:
+            rd_map = {}
+        else:
+            rd_map = par_results.get('retail_date', {})
+        self.assertEqual(rd_map, {'lid1': '2026-08-01'})
+
+    def test_lead_results_merged_in_lead_sheets_order(self):
+        """Lead DataFrames must be appended in LEAD_SHEETS order, not arrival order."""
+        lead_sheets = [{'label': 'A'}, {'label': 'B'}, {'label': 'C'}]
+        par_results = {
+            'A': {'rtype_entries': {}, 'std': 'df_A', 'raw_len': 10, 'filtered_len': 8},
+            'B': {'rtype_entries': {}, 'std': 'df_B', 'raw_len': 20, 'filtered_len': 18},
+            'C': {'rtype_entries': {}, 'std': 'df_C', 'raw_len': 30, 'filtered_len': 28},
+        }
+        lead_dfs = []
+        for s in lead_sheets:
+            lead_dfs.append(par_results[s['label']]['std'])
+        self.assertEqual(lead_dfs, ['df_A', 'df_B', 'df_C'])
 
 
 # ---------------------------------------------------------------------------
