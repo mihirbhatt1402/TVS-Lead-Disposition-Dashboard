@@ -2652,6 +2652,227 @@ class TestParallelErrorPropagation(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Inline copy of _validate_post_response from push_tvs_data.py
+# Must stay in sync — update here whenever the function changes there.
+# ---------------------------------------------------------------------------
+
+def _validate_post_response(body):
+    """
+    Parse and validate the Apps Script POST response.
+    Returns (ok: bool, detail: str, parsed: dict|None).
+    Accepted success formats:
+      • Old contract  — {"ok": true, ...}
+      • Structural echo — {"t": "<iso>", "rt_cols": <int>, "maps": {"lm": [...], ...}}
+    """
+    if not body:
+        return False, 'EMPTY_BODY: response was empty', None
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        return False, f'INVALID_JSON: {exc}', None
+
+    if not isinstance(parsed, dict):
+        return False, f'NOT_A_DICT: type={type(parsed).__name__}', parsed
+
+    if parsed.get('ok') is False:
+        err = parsed.get('error') or parsed.get('message') or 'no detail'
+        return False, f'EXPLICIT_FAIL: ok=false, error={err!r}', parsed
+    if 'error' in parsed and parsed.get('ok') is not True:
+        return False, f'ERROR_KEY: {parsed["error"]!r}', parsed
+
+    if parsed.get('ok') is True:
+        return True, 'OK_TRUE', parsed
+
+    t_val    = parsed.get('t', '')
+    maps_val = parsed.get('maps')
+    rt_cols  = parsed.get('rt_cols')
+    if (isinstance(t_val, str) and len(t_val) >= 10
+            and isinstance(maps_val, dict)
+            and isinstance(maps_val.get('lm'), list)
+            and len(maps_val['lm']) >= 1
+            and rt_cols is not None):
+        n_months = len(maps_val['lm'])
+        return True, f'STRUCTURAL_OK: t={t_val[:19]}, lm_months={n_months}', parsed
+
+    keys = list(parsed.keys())
+    return False, f'AMBIGUOUS_RESPONSE: keys={keys}', parsed
+
+
+class TestPostResponseValidation(unittest.TestCase):
+    """Regression tests for _validate_post_response.
+
+    Covers:
+      1.  Empty body
+      2.  Non-JSON body
+      3.  Old-contract success: {"ok": true}
+      4.  Old-contract success with extra fields
+      5.  Structural-echo success (new/current contract — exact replica of failing run)
+      6.  Structural-echo success with many months
+      7.  Explicit failure: ok=false
+      8.  Explicit failure: ok=false with error message
+      9.  Error key present without ok
+      10. Error key present but ok=true overrides
+      11. Ambiguous JSON object (no success or failure markers)
+      12. JSON array (not a dict)
+      13. Production unchanged: _validate_post_response never touches filesystem
+      14. Structural echo missing maps.lm
+      15. Structural echo with empty maps.lm
+      16. Structural echo short timestamp
+    """
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+    _STRUCTURAL_RESPONSE = json.dumps({
+        "t": "2026-08-26T11:48:34.438772",
+        "rt_cols": 1,
+        "maps": {
+            "lm": ["Apr'25", "Jun'25", "Jul'25", "Aug'25", "Sep'25",
+                   "Oct'25", "Nov'25", "Dec'25", "Jan'26", "Feb'26",
+                   "Mar'26", "Apr'26", "May'26", "Jun'26", "Jul'26", "Aug'26"],
+            "src": ["Facebook", "Organic", "Google", "Non CPS", "Whatsapp"],
+            "mdl": ["TVS Jupiter", "TVS iQube"],
+        }
+    })
+
+    # 1
+    def test_empty_body_rejected(self):
+        ok, detail, parsed = _validate_post_response('')
+        self.assertFalse(ok)
+        self.assertIn('EMPTY_BODY', detail)
+        self.assertIsNone(parsed)
+
+    # 2
+    def test_non_json_body_rejected(self):
+        ok, detail, parsed = _validate_post_response('not json {{{')
+        self.assertFalse(ok)
+        self.assertIn('INVALID_JSON', detail)
+        self.assertIsNone(parsed)
+
+    # 3
+    def test_old_contract_ok_true_accepted(self):
+        body = json.dumps({"ok": True, "t": "2026-08-25T09:00:00"})
+        ok, detail, parsed = _validate_post_response(body)
+        self.assertTrue(ok)
+        self.assertEqual(detail, 'OK_TRUE')
+        self.assertIsNotNone(parsed)
+
+    # 4
+    def test_old_contract_ok_true_with_extra_fields(self):
+        body = json.dumps({"ok": True, "timestamp": "2026-08-25", "rows": 999})
+        ok, detail, _ = _validate_post_response(body)
+        self.assertTrue(ok)
+        self.assertEqual(detail, 'OK_TRUE')
+
+    # 5  — exact replica of the 2026-08-26 failure scenario
+    def test_structural_echo_current_contract_accepted(self):
+        ok, detail, parsed = _validate_post_response(self._STRUCTURAL_RESPONSE)
+        self.assertTrue(ok, f"Structural echo should be accepted — got: {detail}")
+        self.assertIn('STRUCTURAL_OK', detail)
+        self.assertIn('t=2026-08-26T11:48:34', detail)
+        self.assertIn('lm_months=16', detail)
+        self.assertIsNotNone(parsed)
+
+    # 6
+    def test_structural_echo_single_month_accepted(self):
+        body = json.dumps({
+            "t": "2026-08-01T00:00:00",
+            "rt_cols": 1,
+            "maps": {"lm": ["Aug'26"], "src": ["Organic"]},
+        })
+        ok, detail, _ = _validate_post_response(body)
+        self.assertTrue(ok)
+        self.assertIn('lm_months=1', detail)
+
+    # 7
+    def test_explicit_ok_false_rejected(self):
+        body = json.dumps({"ok": False})
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+        self.assertIn('EXPLICIT_FAIL', detail)
+
+    # 8
+    def test_explicit_ok_false_with_error_detail(self):
+        body = json.dumps({"ok": False, "error": "Firebase quota exceeded"})
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+        self.assertIn('EXPLICIT_FAIL', detail)
+        self.assertIn('Firebase quota exceeded', detail)
+
+    # 9
+    def test_error_key_without_ok_rejected(self):
+        body = json.dumps({"error": "Script execution timed out", "t": "2026-08-26T10:00:00"})
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+        self.assertIn('ERROR_KEY', detail)
+        self.assertIn('Script execution timed out', detail)
+
+    # 10
+    def test_error_key_with_ok_true_accepted(self):
+        # ok:true wins over a stale error key
+        body = json.dumps({"ok": True, "error": "previous error logged", "t": "2026-08-26"})
+        ok, detail, _ = _validate_post_response(body)
+        self.assertTrue(ok)
+        self.assertEqual(detail, 'OK_TRUE')
+
+    # 11
+    def test_ambiguous_json_object_rejected(self):
+        body = json.dumps({"status": "done", "rows": 100})
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+        self.assertIn('AMBIGUOUS_RESPONSE', detail)
+
+    # 12
+    def test_json_array_rejected(self):
+        body = json.dumps([1, 2, 3])
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+        self.assertIn('NOT_A_DICT', detail)
+
+    # 13
+    def test_does_not_touch_filesystem(self):
+        import tempfile, os
+        # Validate purely in memory — no files created or modified
+        before = set(os.listdir(tempfile.gettempdir()))
+        _validate_post_response(self._STRUCTURAL_RESPONSE)
+        _validate_post_response('')
+        _validate_post_response('bad json')
+        after = set(os.listdir(tempfile.gettempdir()))
+        self.assertEqual(before, after,
+                         "_validate_post_response must not create temp files")
+
+    # 14
+    def test_structural_echo_missing_lm_key_rejected(self):
+        body = json.dumps({
+            "t": "2026-08-26T11:48:34",
+            "rt_cols": 1,
+            "maps": {"src": ["Organic"]},   # lm missing
+        })
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+        self.assertIn('AMBIGUOUS_RESPONSE', detail)
+
+    # 15
+    def test_structural_echo_empty_lm_rejected(self):
+        body = json.dumps({
+            "t": "2026-08-26T11:48:34",
+            "rt_cols": 1,
+            "maps": {"lm": []},             # empty lm
+        })
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+
+    # 16
+    def test_structural_echo_short_timestamp_rejected(self):
+        body = json.dumps({
+            "t": "2026",                    # too short to be a real ISO timestamp
+            "rt_cols": 1,
+            "maps": {"lm": ["Aug'26"]},
+        })
+        ok, detail, _ = _validate_post_response(body)
+        self.assertFalse(ok)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':

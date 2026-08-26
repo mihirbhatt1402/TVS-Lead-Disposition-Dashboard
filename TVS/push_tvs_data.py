@@ -2153,7 +2153,7 @@ _LEAD_REQUIRED_COLS = {'opty_id', 'Lead_Month', 'Date', 'model'}
 _RETAIL_REQUIRED_COLS = {'sourceLeadId', 'performanceMonth'}
 
 
-def _fail_exit(stage, reason, stg_path=None):
+def _fail_exit(stage, reason, stg_path=None, firebase_cloud_state='NO'):
     """Print a structured failure report and exit 1. Production is never modified."""
     _data_dir = Path(__file__).parent.parent / 'data'
     _prod     = _data_dir / 'tvs_payload.json.gz'
@@ -2164,7 +2164,7 @@ def _fail_exit(stage, reason, stg_path=None):
     print(f"Stage:    {stage}", file=sys.stderr, flush=True)
     print(f"Reason:   {reason}", file=sys.stderr, flush=True)
     print(f"\nProduction payload changed: NO", file=sys.stderr, flush=True)
-    print(f"Firebase changed:           NO", file=sys.stderr, flush=True)
+    print(f"Firebase changed:           {firebase_cloud_state}", file=sys.stderr, flush=True)
     print(f"GitHub Pages changed:       NO", file=sys.stderr, flush=True)
     if _prod.exists():
         _mtime = datetime.fromtimestamp(_prod.stat().st_mtime, timezone.utc)
@@ -2181,6 +2181,71 @@ def _fail_exit(stage, reason, stg_path=None):
     print(f"\nDashboard continues serving the previous known-good payload.", file=sys.stderr, flush=True)
     print(sep, file=sys.stderr, flush=True)
     sys.exit(1)
+
+
+def _validate_post_response(body):
+    """
+    Parse and validate the Apps Script POST response.
+
+    Returns (ok: bool, detail: str, parsed: dict|None).
+
+    Accepted success formats
+    ─────────────────────────
+    • Old contract  — {"ok": true, ...}
+      Apps Script explicitly signals success.
+
+    • Structural echo (current contract) — {"t": "<iso>", "rt_cols": <int>, "maps": {"lm": [...], ...}}
+      After a successful Firebase write the Apps Script echoes the three header
+      fields from the payload it just stored.  Presence of a valid timestamp,
+      rt_cols, and a non-empty lm array proves the payload was received, decoded,
+      and written — no separate ok flag needed.
+
+    Rejected
+    ─────────
+    • Empty body
+    • Non-JSON body
+    • {"ok": false, ...}         — explicit failure
+    • {"error": "...", ...}      — error key without ok:true
+    • Any JSON that meets neither success criterion
+    """
+    if not body:
+        return False, 'EMPTY_BODY: response was empty', None
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        return False, f'INVALID_JSON: {exc}', None
+
+    if not isinstance(parsed, dict):
+        return False, f'NOT_A_DICT: type={type(parsed).__name__}', parsed
+
+    # Explicit failure indicators — always reject
+    if parsed.get('ok') is False:
+        err = parsed.get('error') or parsed.get('message') or 'no detail'
+        return False, f'EXPLICIT_FAIL: ok=false, error={err!r}', parsed
+    if 'error' in parsed and parsed.get('ok') is not True:
+        return False, f'ERROR_KEY: {parsed["error"]!r}', parsed
+
+    # Explicit success — old contract
+    if parsed.get('ok') is True:
+        return True, 'OK_TRUE', parsed
+
+    # Structural success — new/current contract
+    # Apps Script echoes payload header fields after a confirmed Firebase write.
+    t_val    = parsed.get('t', '')
+    maps_val = parsed.get('maps')
+    rt_cols  = parsed.get('rt_cols')
+    if (isinstance(t_val, str) and len(t_val) >= 10
+            and isinstance(maps_val, dict)
+            and isinstance(maps_val.get('lm'), list)
+            and len(maps_val['lm']) >= 1
+            and rt_cols is not None):
+        n_months = len(maps_val['lm'])
+        return True, f'STRUCTURAL_OK: t={t_val[:19]}, lm_months={n_months}', parsed
+
+    # Ambiguous — has valid JSON but no clear success or failure signal
+    keys = list(parsed.keys())
+    return False, f'AMBIGUOUS_RESPONSE: keys={keys}', parsed
 
 
 def _load_source_metrics():
@@ -3122,10 +3187,26 @@ for _attempt in range(3):
         else:
             traceback.print_exc()
             _fail_exit('Firebase POST (all 3 attempts exhausted)', str(_e), _staging_path)
-print(f"Response: {body}", flush=True)
+print(f"Response: {body[:500]}{'…' if body and len(body) > 500 else ''}", flush=True)
 
-if not body or '"ok":true' not in body:
-    _fail_exit('Firebase response', f'"ok":true not found — got: {str(body)[:200]}', _staging_path)
+# ── Validate Apps Script response ─────────────────────────────────────────────
+# Response contract has two accepted forms:
+#   Old: {"ok": true, ...}
+#   New: {"t": "<iso>", "rt_cols": <int>, "maps": {"lm": [...], ...}}
+# Either form proves the payload was received and Firebase was written.
+# Any POST that succeeds at the HTTP layer but returns neither form is rejected
+# so production is never promoted on an ambiguous write confirmation.
+_resp_ok, _resp_detail, _resp_parsed = _validate_post_response(body)
+print(f"Response validation: {_resp_detail}", flush=True)
+if not _resp_ok:
+    # The POST may have reached Apps Script before the response was corrupted.
+    # Do NOT resend — risk of duplicate write.  Re-run the full pipeline instead.
+    _fail_exit(
+        'Firebase response',
+        _resp_detail,
+        _staging_path,
+        firebase_cloud_state='UNKNOWN — POST reached Apps Script; verify manually',
+    )
 
 # ── Firebase confirmed — PROMOTE STAGING → PRODUCTION ─────────────────────────
 _prev_existed = _prod_path.exists()
@@ -3221,7 +3302,7 @@ print(f"  Total retails (On Create):  {_grand_retails:>10,}", flush=True)
 print(f"  Combined retail map:        {len(retail_map):>10,}", flush=True)
 
 print(f"\nPUBLICATION", flush=True)
-print(f"  Firebase:  CONFIRMED (ok:true)", flush=True)
+print(f"  Firebase:  CONFIRMED ({_resp_detail})", flush=True)
 print(f"  Payload:   {_prod_path.name}  ({_prod_path.stat().st_size // 1024:,} KB)", flush=True)
 if _prev_existed:
     print(f"  Previous:  backed up to {_prev_path.name}", flush=True)
