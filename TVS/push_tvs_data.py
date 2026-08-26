@@ -2509,11 +2509,14 @@ for sheet in LEAD_SHEETS:
             _range = f"{MONTH_NAMES[(_min%100)-1]}'{_min//100:02d}" + (f" only" if _max == _min else f"+ ({len(std):,} rows)")
             print(f"  [{_lbl}] STAGE 6 FINAL: {len(std):,} rows kept [{_range}]", flush=True)
 
-            # Source metrics: track FILTERED row count (post-month-filter) for the
-            # drop comparison — this is what actually contributes to the dashboard.
-            # Raw row count is stored separately for diagnostics only.
-            _current_metrics[_lbl] = {'rows': len(std), 'raw_rows': len(raw)}
-            _check_source_drop(_lbl, len(std), _prev_metrics)
+            # Source metrics: compare RAW fetched count (len(raw)) to baseline.
+            # Blank Lead_Month rows filtered out in STAGE 6 are empty sheet rows
+            # that Apps Script includes via getLastRow() — they are NOT real data
+            # loss. Comparing filtered rows causes false failures whenever the sheet
+            # gains/loses blank rows between runs. Raw count confirms the fetch was
+            # complete; filtered count is stored for informational reference only.
+            _current_metrics[_lbl] = {'rows': len(raw), 'filtered_rows': len(std)}
+            _check_source_drop(_lbl, len(raw), _prev_metrics)
             print(f"", flush=True)
             break  # success
         except SystemExit:

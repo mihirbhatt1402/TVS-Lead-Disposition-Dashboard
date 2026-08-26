@@ -1689,6 +1689,49 @@ class _RetailDatePageFailed(Exception):
 _PUSH_TVS = Path(__file__).parent / 'push_tvs_data.py'
 
 
+class TestSourceDropCheck(unittest.TestCase):
+    """Tests 155–157: _check_source_drop regression for Aug26+ blank-row false failure.
+
+    Root cause: push_tvs_data.py passed len(std) (filtered count, 110,000) to
+    _check_source_drop instead of len(raw) (raw fetched count, 142,820).
+    When the sheet gains blank Lead_Month rows those are filtered out in STAGE 6,
+    making the filtered count fall below 80% of baseline — a false failure.
+    Fix: use raw fetched count for the source-drop baseline comparison.
+    """
+
+    def _check_source_drop(self, label, current_count, prev_metrics, threshold=0.80):
+        """Inline copy of _check_source_drop from push_tvs_data.py (must stay in sync)."""
+        prev = prev_metrics.get(label, {}).get('rows') if isinstance(prev_metrics.get(label), dict) \
+            else prev_metrics.get(label)
+        if prev is None or prev == 0:
+            return True  # no baseline
+        ratio = current_count / prev
+        return ratio >= threshold, ratio
+
+    def test_raw_count_matches_baseline_passes(self):
+        """Passing raw fetched count (142,820) to check against baseline (142,820) succeeds."""
+        prev = {'Aug26+-LeadMaster': {'rows': 142820}}
+        ok, ratio = self._check_source_drop('Aug26+-LeadMaster', 142820, prev)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(ratio, 1.0, places=3)
+
+    def test_filtered_count_below_threshold_is_false_failure(self):
+        """Passing filtered count (110,000) against baseline (142,820) gives 77% — false alarm."""
+        prev = {'Aug26+-LeadMaster': {'rows': 142820}}
+        ok, ratio = self._check_source_drop('Aug26+-LeadMaster', 110000, prev)
+        self.assertFalse(ok)          # 77% < 80% — this is the bug
+        self.assertLess(ratio, 0.80)
+
+    def test_source_check_uses_raw_count_in_source(self):
+        """push_tvs_data.py must pass len(raw) — not len(std) — to _check_source_drop."""
+        src = _PUSH_TVS.read_text(encoding='utf-8')
+        # The fix: _current_metrics stores 'rows': len(raw) and filtered_rows: len(std)
+        self.assertIn("'rows': len(raw)", src)
+        self.assertIn("'filtered_rows': len(std)", src)
+        # Must NOT compare filtered count (old buggy line)
+        self.assertNotIn("_check_source_drop(_lbl, len(std)", src)
+
+
 class TestPaginationConstants(unittest.TestCase):
     """Tests 155–164: Verify pagination constants in push_tvs_data.py.
     Read the source file as text so a change in the source is always caught."""
