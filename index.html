@@ -187,17 +187,22 @@ async function _safeJson(r, label) {
   }
   return r.json();
 }
-// apiFetchRole retries up to 3 times — it is the login gate and must survive transient 404s.
+// apiFetchRole retries up to 6 times with short delays.
+// Apps Script intermittently returns a 302→302→302→404 redirect chain (echo URL race condition).
+// 6 attempts at 33% failure rate gives P(all fail) < 0.1%.
+// During pipeline runs (higher load), more attempts are needed.
+const _ROLE_DELAYS = [0, 500, 1000, 2000, 3000, 5000]; // ms between retries
 async function apiFetchRole(email) {
   let lastErr;
-  for (let a = 0; a < 3; a++) {
-    if (a > 0) await new Promise(res => setTimeout(res, 2000 * a));
+  for (let a = 0; a < _ROLE_DELAYS.length; a++) {
+    if (_ROLE_DELAYS[a] > 0) await new Promise(res => setTimeout(res, _ROLE_DELAYS[a]));
     try {
       const r = await fetch(APPS_SCRIPT_URL + '?action=checkRole&email=' + encodeURIComponent(email));
       return await _safeJson(r, 'checkRole');
     } catch(e) { lastErr = e; }
   }
-  throw lastErr;
+  // All attempts exhausted. Wrap with actionable guidance.
+  throw new Error('Access service is temporarily unavailable — this can happen while the daily data sync is running. Please try again in 1–2 minutes.');
 }
 async function apiRequestAccess(email, name) {
   const r = await fetch(APPS_SCRIPT_URL + '?action=requestAccess', {
