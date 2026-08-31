@@ -1285,16 +1285,79 @@ def standardize_leads(raw_df):
     return df[[c for c in keep if c in df.columns]].copy()
 
 # ─── Status classification (Geo & Dealer tab) ─────────────────────────────────
-# Maps Status_Name → 'O' (open), 'B' (booking), or 'L' (lost).
-# Matching is lowercase substring — add variants here if new CRM values appear.
-_BOOKING_KWS = ('booking',)
-_LOST_KWS    = ('lost', 'not interest', 'dead', 'closed', 'dropped', 'rejected')
-def classify_status(sn):
-    if not sn: return 'O'
-    sl = sn.lower().strip()
-    if any(kw in sl for kw in _BOOKING_KWS): return 'B'
-    if any(kw in sl for kw in _LOST_KWS):   return 'L'
-    return 'O'
+# Exact canonical mapping: Status_Name (normalised) → 'O', 'B', or 'L'.
+# Source of truth: TVS CRM Lead Master → Status_Name column.
+# Do NOT use broad keyword matching — only explicit values map to B or L.
+# Any Status_Name absent from this dict is logged and tagged 'U' (unclassified)
+# so it neither inflates nor deflates O/B/L counts.
+#
+# To add a new status: append to the appropriate section below.
+_STATUS_TAG_MAP = {
+    # ── Booking ────────────────────────────────────────────────────────────────
+    'Booked':                                            'B',
+    'Booked (Callback Scheduled)':                       'B',
+
+    # ── Open ───────────────────────────────────────────────────────────────────
+    'Booking Request':                                   'O',
+    'Booking Requested (Callback Scheduled)':            'O',
+    'Booking Requested (Customer Not Responded)':        'O',
+    'Booking Requested (Dealer Visit Scheduled)':        'O',
+    'Booking Requested (Home Visit Scheduled)':          'O',
+    'Call for verification':                             'O',
+    'Call for verification (Callback Scheduled)':        'O',
+    'Call for verification (Customer Not Responded)':    'O',
+    'Call for verification (Dealer Visit Scheduled)':    'O',
+    'Customer Not Responded':                            'O',
+    'Enquiry Re Opened (Callback Scheduled)':            'O',
+    'Enquiry Re Opened (Customer Not Responded)':        'O',
+    'Enquiry Re Opened (Dealer Visit Scheduled)':        'O',
+    'Enquiry Re Opened (Home Visit Scheduled)':          'O',
+    'L1 Verified (Callback Scheduled)':                  'O',
+    'L1 Verified (Customer Not Responded)':              'O',
+    'L1 Verified (Dealer Visit Scheduled)':              'O',
+    'Pending Retail':                                    'O',
+    'Price Quote':                                       'O',
+    'Price Quote (Callback Scheduled)':                  'O',
+    'Price Quote (Customer Not Responded)':              'O',
+    'Price Quote (Dealer Visit Scheduled)':              'O',
+    'Price Quote (No Dealer Connect)':                   'O',
+    'Test Ride Completed (Callback Scheduled)':          'O',
+    'Test Ride Requested':                               'O',
+    'Test Ride Requested (Callback Scheduled)':          'O',
+    'Test Ride Requested (Customer Not Responded)':      'O',
+    'Test Ride Requested (Dealer Visit Scheduled)':      'O',
+    'Test Ride Requested (Home Visit Scheduled)':        'O',
+
+    # ── Lost ───────────────────────────────────────────────────────────────────
+    'Lost Not Contactable':                              'L',
+    'Lost Not Purchased':                                'L',
+    'Lost Purchased':                                    'L',
+    'Lost To Co-Dealer':                                 'L',
+}
+
+# Track Status_Name values NOT in the map so they can be reviewed.
+_STATUS_UNKNOWN_COUNTS: dict = {}
+
+def _norm_sn(sn: str) -> str:
+    """Normalise a Status_Name string: strip edges, collapse internal whitespace."""
+    return ' '.join(sn.strip().split())
+
+def classify_status(sn: str) -> str:
+    """
+    Map a raw Status_Name string to 'O' (open), 'B' (booking), 'L' (lost),
+    or 'U' (unclassified / unknown).
+
+    Only values present in _STATUS_TAG_MAP return B or L.
+    Unknown values NEVER silently become B or L — they return 'U' and
+    are counted in _STATUS_UNKNOWN_COUNTS for post-run review.
+    """
+    norm = _norm_sn(sn) if sn else ''
+    tag  = _STATUS_TAG_MAP.get(norm)
+    if tag is not None:
+        return tag
+    # Unknown — log it; return 'U' so counts stay honest.
+    _STATUS_UNKNOWN_COUNTS[norm or '(blank)'] = _STATUS_UNKNOWN_COUNTS.get(norm or '(blank)', 0) + 1
+    return 'U'
 
 # ─── Retail master ─────────────────────────────────────────────────────────────
 # Page size: 2000 rows/page for a narrow echo-URL window (same rationale as leads).
@@ -2026,12 +2089,14 @@ def build_payload(all_leads, retail_map):
             bump(mxdl, f"{mi}|{dli}|{li}",        is_ret, rtype)
             bump(ltdl, f"{tti}|{dli}|{li}",       is_ret, rtype)
             # Status classification for Geo & Dealer tab (lead-level, not retail-level)
+            # 'U' (unclassified) increments neither bucket — intentional.
             _sc = classify_status(_sns[i])
             _sk = f"{cti}|{dli}|{li}"
             if _sk not in dl_sn: dl_sn[_sk] = [0, 0, 0]
             if   _sc == 'B': dl_sn[_sk][1] += 1
             elif _sc == 'L': dl_sn[_sk][2] += 1
-            else:            dl_sn[_sk][0] += 1
+            elif _sc == 'O': dl_sn[_sk][0] += 1
+            # 'U': not counted in any bucket
 
         rm  = retail_map[lid].get('rm', '') if is_ret else ''
         um  = rm if rm else lm
@@ -2088,6 +2153,20 @@ def build_payload(all_leads, retail_map):
                     if 'DMS' in _rt_u:    ram[_rk][1] += 1
                     elif 'CALL' in _rt_u: ram[_rk][2] += 1
                     _ram_valid += 1
+
+    # ── Status classification diagnostics ─────────────────────────────────────
+    if _dls is not None:
+        total_o = sum(v[0] for v in dl_sn.values())
+        total_b = sum(v[1] for v in dl_sn.values())
+        total_l = sum(v[2] for v in dl_sn.values())
+        total_u = sum(_STATUS_UNKNOWN_COUNTS.values())
+        print(f"Status classification: O={total_o:,}  B={total_b:,}  L={total_l:,}  "
+              f"U={total_u:,} ({len(_STATUS_UNKNOWN_COUNTS)} unique unknown)", flush=True)
+        if _STATUS_UNKNOWN_COUNTS:
+            top_unknown = sorted(_STATUS_UNKNOWN_COUNTS.items(), key=lambda x: -x[1])[:20]
+            print("  Top unclassified Status_Name values:", flush=True)
+            for sn_val, cnt in top_unknown:
+                print(f"    {cnt:>8,}  {repr(sn_val)}", flush=True)
 
     def to_rows(d, key_fn):
         return [[*key_fn(k), v[0], v[1], v[2], v[3]] for k, v in d.items()]

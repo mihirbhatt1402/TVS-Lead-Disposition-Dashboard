@@ -3001,6 +3001,391 @@ class TestExplicitContractResponse(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# STATUS CLASSIFICATION — inline copy of classify_status + _STATUS_TAG_MAP
+# Must stay in sync with push_tvs_data.py.
+# ---------------------------------------------------------------------------
+
+_STATUS_TAG_MAP_TEST = {
+    # ── Booking ──────────────────────────────────────────────────────────────
+    'Booked':                                            'B',
+    'Booked (Callback Scheduled)':                       'B',
+    # ── Open ─────────────────────────────────────────────────────────────────
+    'Booking Request':                                   'O',
+    'Booking Requested (Callback Scheduled)':            'O',
+    'Booking Requested (Customer Not Responded)':        'O',
+    'Booking Requested (Dealer Visit Scheduled)':        'O',
+    'Booking Requested (Home Visit Scheduled)':          'O',
+    'Call for verification':                             'O',
+    'Call for verification (Callback Scheduled)':        'O',
+    'Call for verification (Customer Not Responded)':    'O',
+    'Call for verification (Dealer Visit Scheduled)':    'O',
+    'Customer Not Responded':                            'O',
+    'Enquiry Re Opened (Callback Scheduled)':            'O',
+    'Enquiry Re Opened (Customer Not Responded)':        'O',
+    'Enquiry Re Opened (Dealer Visit Scheduled)':        'O',
+    'Enquiry Re Opened (Home Visit Scheduled)':          'O',
+    'L1 Verified (Callback Scheduled)':                  'O',
+    'L1 Verified (Customer Not Responded)':              'O',
+    'L1 Verified (Dealer Visit Scheduled)':              'O',
+    'Pending Retail':                                    'O',
+    'Price Quote':                                       'O',
+    'Price Quote (Callback Scheduled)':                  'O',
+    'Price Quote (Customer Not Responded)':              'O',
+    'Price Quote (Dealer Visit Scheduled)':              'O',
+    'Price Quote (No Dealer Connect)':                   'O',
+    'Test Ride Completed (Callback Scheduled)':          'O',
+    'Test Ride Requested':                               'O',
+    'Test Ride Requested (Callback Scheduled)':          'O',
+    'Test Ride Requested (Customer Not Responded)':      'O',
+    'Test Ride Requested (Dealer Visit Scheduled)':      'O',
+    'Test Ride Requested (Home Visit Scheduled)':        'O',
+    # ── Lost ─────────────────────────────────────────────────────────────────
+    'Lost Not Contactable':                              'L',
+    'Lost Not Purchased':                                'L',
+    'Lost Purchased':                                    'L',
+    'Lost To Co-Dealer':                                 'L',
+}
+
+def _norm_sn_test(sn):
+    return ' '.join(sn.strip().split())
+
+def _classify_status_test(sn):
+    norm = _norm_sn_test(sn) if sn else ''
+    return _STATUS_TAG_MAP_TEST.get(norm, 'U')
+
+
+class TestStatusClassification(unittest.TestCase):
+    """
+    Requirements:
+    1.  Every Status_Name in the mapping returns the correct tag.
+    2.  Booked → B.
+    3.  Booked (Callback Scheduled) → B.
+    4.  All Booking Request variants → O.
+    5.  All Call for verification variants → O.
+    6.  All Enquiry Re Opened variants → O.
+    7.  All L1 Verified variants → O.
+    8.  All Lost variants → L.
+    9.  Pending Retail → O.
+    10. All Price Quote variants → O.
+    11. All Test Ride variants → O.
+    12. Unknown status → U (never silently B or L).
+    13. No duplicate counting (each lead in exactly one bucket).
+    14. Whitespace normalisation works.
+    15. Blank / None / empty → U.
+    """
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def assertTag(self, sn, expected_tag):
+        got = _classify_status_test(sn)
+        self.assertEqual(got, expected_tag,
+            f"classify_status({sn!r}) = {got!r}, expected {expected_tag!r}")
+
+    # ── req 2: Booked → B ─────────────────────────────────────────────────────
+    def test_booked_is_booking(self):
+        self.assertTag('Booked', 'B')
+
+    # ── req 3: Booked (Callback Scheduled) → B ───────────────────────────────
+    def test_booked_callback_is_booking(self):
+        self.assertTag('Booked (Callback Scheduled)', 'B')
+
+    # ── Only 2 Booking values; all others with "booking" in name must be O ────
+    def test_booking_request_is_open_not_booking(self):
+        self.assertTag('Booking Request', 'O')
+
+    def test_booking_requested_callback_is_open(self):
+        self.assertTag('Booking Requested (Callback Scheduled)', 'O')
+
+    def test_booking_requested_not_responded_is_open(self):
+        self.assertTag('Booking Requested (Customer Not Responded)', 'O')
+
+    def test_booking_requested_dealer_visit_is_open(self):
+        self.assertTag('Booking Requested (Dealer Visit Scheduled)', 'O')
+
+    def test_booking_requested_home_visit_is_open(self):
+        self.assertTag('Booking Requested (Home Visit Scheduled)', 'O')
+
+    # ── req 4: All Booking Request variants ───────────────────────────────────
+    def test_all_booking_request_variants_are_open(self):
+        booking_request_variants = [
+            'Booking Request',
+            'Booking Requested (Callback Scheduled)',
+            'Booking Requested (Customer Not Responded)',
+            'Booking Requested (Dealer Visit Scheduled)',
+            'Booking Requested (Home Visit Scheduled)',
+        ]
+        for sn in booking_request_variants:
+            with self.subTest(sn=sn):
+                self.assertTag(sn, 'O')
+
+    # ── req 5: All Call for verification variants ─────────────────────────────
+    def test_all_call_for_verification_variants_are_open(self):
+        cfv_variants = [
+            'Call for verification',
+            'Call for verification (Callback Scheduled)',
+            'Call for verification (Customer Not Responded)',
+            'Call for verification (Dealer Visit Scheduled)',
+        ]
+        for sn in cfv_variants:
+            with self.subTest(sn=sn):
+                self.assertTag(sn, 'O')
+
+    # ── req 6: All Enquiry Re Opened variants ─────────────────────────────────
+    def test_all_enquiry_re_opened_variants_are_open(self):
+        ero_variants = [
+            'Enquiry Re Opened (Callback Scheduled)',
+            'Enquiry Re Opened (Customer Not Responded)',
+            'Enquiry Re Opened (Dealer Visit Scheduled)',
+            'Enquiry Re Opened (Home Visit Scheduled)',
+        ]
+        for sn in ero_variants:
+            with self.subTest(sn=sn):
+                self.assertTag(sn, 'O')
+
+    # ── req 7: All L1 Verified variants ──────────────────────────────────────
+    def test_all_l1_verified_variants_are_open(self):
+        l1_variants = [
+            'L1 Verified (Callback Scheduled)',
+            'L1 Verified (Customer Not Responded)',
+            'L1 Verified (Dealer Visit Scheduled)',
+        ]
+        for sn in l1_variants:
+            with self.subTest(sn=sn):
+                self.assertTag(sn, 'O')
+
+    # ── req 8: All Lost variants ──────────────────────────────────────────────
+    def test_all_lost_variants_are_lost(self):
+        lost_variants = [
+            'Lost Not Contactable',
+            'Lost Not Purchased',
+            'Lost Purchased',
+            'Lost To Co-Dealer',
+        ]
+        for sn in lost_variants:
+            with self.subTest(sn=sn):
+                self.assertTag(sn, 'L')
+
+    # ── req 9: Pending Retail ─────────────────────────────────────────────────
+    def test_pending_retail_is_open(self):
+        self.assertTag('Pending Retail', 'O')
+
+    # ── req 10: All Price Quote variants ─────────────────────────────────────
+    def test_all_price_quote_variants_are_open(self):
+        pq_variants = [
+            'Price Quote',
+            'Price Quote (Callback Scheduled)',
+            'Price Quote (Customer Not Responded)',
+            'Price Quote (Dealer Visit Scheduled)',
+            'Price Quote (No Dealer Connect)',
+        ]
+        for sn in pq_variants:
+            with self.subTest(sn=sn):
+                self.assertTag(sn, 'O')
+
+    # ── req 11: All Test Ride variants ────────────────────────────────────────
+    def test_all_test_ride_variants_are_open(self):
+        tr_variants = [
+            'Test Ride Completed (Callback Scheduled)',
+            'Test Ride Requested',
+            'Test Ride Requested (Callback Scheduled)',
+            'Test Ride Requested (Customer Not Responded)',
+            'Test Ride Requested (Dealer Visit Scheduled)',
+            'Test Ride Requested (Home Visit Scheduled)',
+        ]
+        for sn in tr_variants:
+            with self.subTest(sn=sn):
+                self.assertTag(sn, 'O')
+
+    # ── req 12: Unknown status → U, never B or L ─────────────────────────────
+    def test_unknown_status_returns_U_not_B(self):
+        unknowns = [
+            'Retailed',
+            'Retail Done',
+            'Hot Lead',
+            'Interested',
+            'New Lead',
+            'Contacted',
+            'Follow Up',
+            'Negotiation',
+            'Exchanged',
+        ]
+        for sn in unknowns:
+            with self.subTest(sn=sn):
+                tag = _classify_status_test(sn)
+                self.assertNotEqual(tag, 'B',
+                    f"{sn!r} must not map to B (got {tag!r})")
+                self.assertNotEqual(tag, 'L',
+                    f"{sn!r} must not map to L (got {tag!r})")
+
+    def test_unknown_status_returns_U(self):
+        self.assertEqual(_classify_status_test('Some Future Status'), 'U')
+        self.assertEqual(_classify_status_test('Another Unknown'), 'U')
+
+    # ── req 12: "Booking Request" must NOT map to B under any circumstances ───
+    def test_booking_request_never_maps_to_B(self):
+        """Regression guard: old broad-keyword logic would have returned B."""
+        self.assertNotEqual(_classify_status_test('Booking Request'), 'B')
+        self.assertNotEqual(_classify_status_test('Booking Requested (Callback Scheduled)'), 'B')
+        self.assertNotEqual(_classify_status_test('Booking Requested (Customer Not Responded)'), 'B')
+        self.assertNotEqual(_classify_status_test('Booking Requested (Home Visit Scheduled)'), 'B')
+
+    # ── req 12: "Customer Not Responded" must NOT map to L ───────────────────
+    def test_customer_not_responded_is_not_lost(self):
+        """Old logic: 'not interest' substring match would NOT have caught this,
+        but ensure it's Open, not Lost."""
+        self.assertEqual(_classify_status_test('Customer Not Responded'), 'O')
+
+    # ── req 14: whitespace normalisation ─────────────────────────────────────
+    def test_leading_trailing_whitespace_stripped(self):
+        self.assertEqual(_classify_status_test('  Booked  '), 'B')
+        self.assertEqual(_classify_status_test('  Lost Not Purchased  '), 'L')
+        self.assertEqual(_classify_status_test('  Price Quote  '), 'O')
+
+    def test_internal_whitespace_collapsed(self):
+        # _norm_sn uses split()+join which collapses internal runs of spaces.
+        # 'Booked  (Callback  Scheduled)' → 'Booked (Callback Scheduled)' → B.
+        self.assertEqual(_classify_status_test('Booked  (Callback  Scheduled)'), 'B')
+
+    def test_internal_single_space_normalised(self):
+        # Normal single spaces → still match after normalisation
+        self.assertEqual(_classify_status_test('Booked (Callback Scheduled)'), 'B')
+        self.assertEqual(_classify_status_test('Lost Not Contactable'), 'L')
+
+    # ── req 15: blank / empty inputs ─────────────────────────────────────────
+    def test_empty_string_returns_U(self):
+        self.assertEqual(_classify_status_test(''), 'U')
+
+    def test_whitespace_only_returns_U(self):
+        self.assertEqual(_classify_status_test('   '), 'U')
+
+    # ── req 1: every key in the map is covered ────────────────────────────────
+    def test_every_map_entry_returns_correct_tag(self):
+        for sn, expected in _STATUS_TAG_MAP_TEST.items():
+            with self.subTest(sn=sn):
+                self.assertTag(sn, expected)
+
+    # ── req 13: no duplicate counting ─────────────────────────────────────────
+    def test_no_duplicate_counting_each_lead_one_bucket(self):
+        """
+        Simulate dl_sn aggregation: each lead increments exactly one of
+        [open, booking, lost] or none (if 'U').
+        Total O+B+L ≤ total leads; classified + unclassified = total leads.
+        """
+        leads = [
+            ('Booked',                           'B'),
+            ('Booking Request',                  'O'),
+            ('Lost Not Purchased',               'L'),
+            ('Some Unknown Status',              'U'),
+            ('Price Quote',                      'O'),
+            ('Booked (Callback Scheduled)',       'B'),
+            ('Lost To Co-Dealer',                'L'),
+            ('Customer Not Responded',           'O'),
+        ]
+        bucket = [0, 0, 0, 0]  # [O, B, L, U]
+        for sn, expected_tag in leads:
+            tag = _classify_status_test(sn)
+            self.assertEqual(tag, expected_tag, f"{sn!r} → {tag!r} (expected {expected_tag!r})")
+            if   tag == 'O': bucket[0] += 1
+            elif tag == 'B': bucket[1] += 1
+            elif tag == 'L': bucket[2] += 1
+            else:            bucket[3] += 1
+
+        self.assertEqual(bucket[0], 3, 'Open count')   # Booking Request, Price Quote, CNR
+        self.assertEqual(bucket[1], 2, 'Booking count') # Booked, Booked CB
+        self.assertEqual(bucket[2], 2, 'Lost count')    # Lost NP, Lost Co-Dealer
+        self.assertEqual(bucket[3], 1, 'Unknown count') # Some Unknown Status
+        self.assertEqual(sum(bucket), len(leads), 'Total must equal lead count (no duplicates)')
+
+    # ── req 14: dl_sn aggregation structure ──────────────────────────────────
+    def test_dl_sn_aggregation_by_dealer(self):
+        """
+        Simulates the dl_sn aggregation loop for a small dealer dataset.
+        Verifies [open, booking, lost] per (city, dealer, month) key.
+        """
+        leads = [
+            # (cti, dli, lmi, status_name)
+            (0, 0, 0, 'Booked'),
+            (0, 0, 0, 'Booking Request'),
+            (0, 0, 0, 'Lost Not Purchased'),
+            (0, 0, 0, 'Some Unknown'),
+            (0, 0, 0, 'Price Quote'),
+            (0, 1, 0, 'Booked (Callback Scheduled)'),
+            (0, 1, 0, 'Lost To Co-Dealer'),
+            (0, 1, 1, 'Test Ride Requested'),
+        ]
+        dl_sn_sim = {}
+        for cti, dli, lmi, sn in leads:
+            tag = _classify_status_test(sn)
+            key = (cti, dli, lmi)
+            if key not in dl_sn_sim:
+                dl_sn_sim[key] = [0, 0, 0]
+            if   tag == 'O': dl_sn_sim[key][0] += 1
+            elif tag == 'B': dl_sn_sim[key][1] += 1
+            elif tag == 'L': dl_sn_sim[key][2] += 1
+            # U: not counted
+
+        # Dealer 0, month 0: O=2(BR+PQ), B=1(Booked), L=1(LostNP), U=1(Unknown)→not counted
+        self.assertEqual(dl_sn_sim[(0, 0, 0)], [2, 1, 1])
+        # Dealer 1, month 0: O=0, B=1(Booked CB), L=1(Lost Co-Dealer)
+        self.assertEqual(dl_sn_sim[(0, 1, 0)], [0, 1, 1])
+        # Dealer 1, month 1: O=1(Test Ride), B=0, L=0
+        self.assertEqual(dl_sn_sim[(0, 1, 1)], [1, 0, 0])
+
+    # ── req 15: filter-aware aggregation (month filter) ───────────────────────
+    def test_dl_sn_respects_month_filter(self):
+        """Month filter: only count leads in selected months."""
+        # dl_sn rows: [cti, dli, lmi, open, booking, lost]
+        dl_sn_rows = [
+            [0, 0, 0, 3, 1, 2],  # month 0
+            [0, 0, 1, 5, 2, 1],  # month 1
+            [0, 0, 2, 1, 0, 3],  # month 2
+        ]
+        lm_arr = ["Jul'26", "Aug'26", "Sep'26"]
+        active_months = {"Aug'26"}  # only month index 1
+
+        total_open = total_booking = total_lost = 0
+        for row in dl_sn_rows:
+            lmi = row[2]
+            if lm_arr[lmi] not in active_months:
+                continue
+            total_open    += row[3]
+            total_booking += row[4]
+            total_lost    += row[5]
+
+        self.assertEqual(total_open,    5)
+        self.assertEqual(total_booking, 2)
+        self.assertEqual(total_lost,    1)
+
+    def test_dl_sn_all_months_unfiltered(self):
+        """When no month filter is active, all rows contribute."""
+        dl_sn_rows = [
+            [0, 0, 0, 3, 1, 2],
+            [0, 0, 1, 5, 2, 1],
+        ]
+        total_open    = sum(r[3] for r in dl_sn_rows)
+        total_booking = sum(r[4] for r in dl_sn_rows)
+        total_lost    = sum(r[5] for r in dl_sn_rows)
+        self.assertEqual(total_open,    8)
+        self.assertEqual(total_booking, 3)
+        self.assertEqual(total_lost,    3)
+
+    # ── Complete map coverage count ───────────────────────────────────────────
+    def test_map_has_exactly_2_booking_entries(self):
+        booking = [k for k, v in _STATUS_TAG_MAP_TEST.items() if v == 'B']
+        self.assertEqual(len(booking), 2, f'Expected 2 Booking entries, got {len(booking)}: {booking}')
+
+    def test_map_has_exactly_4_lost_entries(self):
+        lost = [k for k, v in _STATUS_TAG_MAP_TEST.items() if v == 'L']
+        self.assertEqual(len(lost), 4, f'Expected 4 Lost entries, got {len(lost)}: {lost}')
+
+    def test_map_has_correct_open_count(self):
+        opens = [k for k, v in _STATUS_TAG_MAP_TEST.items() if v == 'O']
+        self.assertEqual(len(opens), 29, f'Expected 29 Open entries, got {len(opens)}')
+
+    def test_total_map_entries(self):
+        self.assertEqual(len(_STATUS_TAG_MAP_TEST), 35)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
