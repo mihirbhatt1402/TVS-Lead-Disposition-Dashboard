@@ -424,6 +424,7 @@ function normalizeCities(data) {
     ['stcm',  1, 3], ['cdm',   0, 3], ['cdsm', 0, 4],
     ['u_cm',  0, 2], ['u_csm', 0, 3], ['u_cxm',0, 3],
     ['u_stcm',1, 3], ['u_cdm', 0, 3], ['u_cdsm',0,4],
+    ['dl_sn', 0, 3],
   ];
   for (const [mk, cc, nk] of CITY_MATS) remapMatrix(mk, cc, nk);
 
@@ -2743,6 +2744,309 @@ const CityModelTab = React.memo(function CityModelTab({ data, filters, months, R
 });
 
 /* ════════════════════════════════════════════════════════════════════
+   GEO & DEALER TAB
+   Columns: Dealer | City | State | Leads | City Share | Open Leads |
+            Booking | Retail Attribution | Conv % | Lost | Flags
+   Status buckets come from dl_sn (city×dealer×month→[open,booking,lost])
+   which is built by the pipeline from Status_Name in the Lead Master.
+   When dl_sn is absent (payload predates this feature), status columns
+   show "—" rather than 0 so the distinction is clear.
+   ════════════════════════════════════════════════════════════════════ */
+const GeoDealerTab = React.memo(function GeoDealerTab({ data, filters, months, RT, leadsMode }) {
+  const { maps } = data;
+  const cdm      = data.cdm    || [];
+  const u_cdm    = data.u_cdm  || [];
+  const dl_sn    = data.dl_sn  || [];
+  const getLR    = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
+
+  const [search,   setSearch]   = useState('');
+  const [sortCol,  setSortCol]  = useState('leads');
+  const [sortDir,  setSortDir]  = useState(-1);  // -1 = desc
+
+  const hasDealers  = !!(maps.dl && cdm.length > 0);
+  const hasCities   = !!(maps.city && maps.city_state);
+  const hasStatus   = dl_sn.length > 0;
+
+  // Pre-build month set for O(1) lookup
+  const monthSet = useMemo(() => new Set(months), [months]);
+
+  // ── Aggregate dealer data ──────────────────────────────────────────────────
+  const tableRows = useMemo(() => {
+    if (!hasDealers || !hasCities) return [];
+
+    const cityStateArr = maps.city_state || [];
+    const allM  = monthSet.size === 0;
+    const hasCF = filters.cities  && filters.cities.size  > 0;
+    const hasSF = filters.states  && filters.states.size  > 0;
+
+    // Use leadsMode to pick the right matrix for retail attribution
+    const retMat = leadsMode === 'update' ? u_cdm : cdm;
+
+    // Step 1 — aggregate leads (always On Create = cdm) and retails from retMat
+    const dlMap = new Map(); // dli → { cti, leads, rets, open, booking, lost }
+
+    function applyFilters(cti, lmi) {
+      const m = maps.lm[lmi];
+      if (!allM && !monthSet.has(m)) return false;
+      if (hasCF) {
+        const city = maps.city[cti];
+        if (!filters.cities.has(city)) return false;
+      }
+      if (hasSF) {
+        const sti = cityStateArr[cti];
+        if (sti == null || !filters.states.has(maps.st[sti])) return false;
+      }
+      return true;
+    }
+
+    // Count leads from cdm (On Create — leads don't change with leadsMode)
+    for (const row of cdm) {
+      const cti = row[0], dli = row[1], lmi = row[2];
+      if (!applyFilters(cti, lmi)) continue;
+      const l = row[row.length - 4];  // lead count is always 4th from end
+      if (!dlMap.has(dli)) dlMap.set(dli, { cti, leads:0, rets:0, open:0, booking:0, lost:0 });
+      const rec = dlMap.get(dli);
+      rec.leads += l;
+      if (l > (rec._maxL || 0)) { rec.cti = cti; rec._maxL = l; }
+    }
+
+    // Count retails from retMat (honours leadsMode)
+    for (const row of retMat) {
+      const cti = row[0], dli = row[1], lmi = row[2];
+      if (!applyFilters(cti, lmi)) continue;
+      if (!dlMap.has(dli)) continue;
+      const [, r] = getLR(row);
+      dlMap.get(dli).rets += r;
+    }
+
+    // Step 2 — aggregate status (only available after pipeline includes dl_sn)
+    if (hasStatus) {
+      for (const row of dl_sn) {
+        const cti = row[0], dli = row[1], lmi = row[2];
+        if (!applyFilters(cti, lmi)) continue;
+        if (!dlMap.has(dli)) continue;
+        const rec = dlMap.get(dli);
+        rec.open    += row[3];
+        rec.booking += row[4];
+        rec.lost    += row[5];
+      }
+    }
+
+    // Step 3 — city totals for City Share denominator
+    const cityLeads = new Map(); // cti → total leads
+    for (const [, rec] of dlMap) cityLeads.set(rec.cti, (cityLeads.get(rec.cti) || 0) + rec.leads);
+
+    // Step 4 — build output rows
+    const out = [];
+    for (const [dli, rec] of dlMap) {
+      if (rec.leads === 0 && rec.rets === 0) continue;
+      const dealer    = maps.dl[dli] || '—';
+      const cti       = rec.cti;
+      const city      = hasCities ? (maps.city[cti] || '—') : '—';
+      const sti       = hasCities ? (cityStateArr[cti] ?? null) : null;
+      const state     = sti != null ? (maps.st[sti] || '—') : '—';
+      const cityTotal = cityLeads.get(cti) || 1;
+      const cityShare = rec.leads / cityTotal * 100;
+      const convPct   = rec.leads > 0 ? rec.rets / rec.leads * 100 : 0;
+      out.push({ dealer, city, state, leads: rec.leads, rets: rec.rets,
+                 cityShare, convPct, open: rec.open, booking: rec.booking, lost: rec.lost });
+    }
+    return out;
+  }, [cdm, u_cdm, dl_sn, maps, monthSet, filters, getLR, leadsMode, hasDealers, hasCities, hasStatus]);
+
+  // ── Filter (search) + sort ─────────────────────────────────────────────────
+  const displayRows = useMemo(() => {
+    let rows = tableRows;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      rows = rows.filter(r =>
+        r.dealer.toLowerCase().includes(q) ||
+        r.city.toLowerCase().includes(q) ||
+        r.state.toLowerCase().includes(q)
+      );
+    }
+    const key = sortCol;
+    const d   = sortDir;
+    return [...rows].sort((a, b) => {
+      const av = a[key], bv = b[key];
+      if (typeof av === 'number' && typeof bv === 'number') return d * (bv - av);
+      return d * String(av).localeCompare(String(bv));
+    });
+  }, [tableRows, search, sortCol, sortDir]);
+
+  // ── City Share badge ───────────────────────────────────────────────────────
+  function cityShareBadge(pct) {
+    const bg = pct >= 80 ? '#FEE2E2' : pct >= 40 ? '#FEF3C7' : '#F0FDF4';
+    const cl = pct >= 80 ? '#B91C1C' : pct >= 40 ? '#92400E' : '#166534';
+    return ce('span', {
+      style:{ display:'inline-block', padding:'2px 8px', borderRadius:20, fontSize:'calc(10px * var(--tvs-font-scale))',
+              fontWeight:700, fontFamily:'DM Mono,monospace', background:bg, color:cl, whiteSpace:'nowrap' }
+    }, pct.toFixed(1) + '%');
+  }
+
+  // ── Column sort helper ─────────────────────────────────────────────────────
+  function thSort(col, label) {
+    const active = sortCol === col;
+    const arrow  = active ? (sortDir === -1 ? ' ↓' : ' ↑') : ' ↕';
+    return ce('th', {
+      className: 'grp-toggle left',
+      style: { cursor:'pointer', userSelect:'none', background: active ? '#C5CAE9' : '#E8EAF6',
+               color: active ? '#0D47A1' : '#1A237E' },
+      onClick: () => {
+        if (active) setSortDir(d => -d);
+        else { setSortCol(col); setSortDir(-1); }
+      }
+    }, label + arrow);
+  }
+
+  function thNum(col, label) {
+    const active = sortCol === col;
+    const arrow  = active ? (sortDir === -1 ? ' ↓' : ' ↑') : ' ↕';
+    return ce('th', {
+      className: 'grp-toggle',
+      style: { cursor:'pointer', userSelect:'none', background: active ? '#C5CAE9' : '#E8EAF6',
+               color: active ? '#0D47A1' : '#1A237E' },
+      onClick: () => {
+        if (active) setSortDir(d => -d);
+        else { setSortCol(col); setSortDir(-1); }
+      }
+    }, label + arrow);
+  }
+
+  // ── Empty / loading states ─────────────────────────────────────────────────
+  if (!hasDealers) return ce('div', {
+    className:'fs-14', style:{textAlign:'center',padding:60,color:'#94A3B8'}
+  },
+    ce('div', { style:{fontSize:32,marginBottom:12} }, '🏪'),
+    'Dealer data will be available after the next pipeline run.'
+  );
+
+  const noData = displayRows.length === 0;
+
+  return ce('div', { className:'fade-up' },
+
+    // ── Header bar ────────────────────────────────────────────────────────────
+    ce('div', { className:'card', style:{padding:'14px 18px',marginBottom:12,borderTop:'3px solid #E31837',
+        display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10} },
+      ce('div', { style:{display:'flex',alignItems:'center',gap:10} },
+        ce('div', { className:'fs-14', style:{fontWeight:800,color:'#0f172a',letterSpacing:'-.02em'} },
+          'Dealer Performance'),
+        !hasStatus && ce('span', {
+          style:{fontSize:'calc(10px * var(--tvs-font-scale))',color:'#92400E',background:'#FEF3C7',
+                 padding:'2px 10px',borderRadius:20,fontWeight:600}
+        }, 'Status data available after next pipeline run')
+      ),
+      ce('div', { style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'} },
+        // Search box
+        ce('input', {
+          type:'text', placeholder:'Search dealer / city / state…',
+          value: search, onChange: e => setSearch(e.target.value),
+          style:{ padding:'5px 12px', border:'1px solid #CBD5E1', borderRadius:20,
+                  fontSize:'calc(11px * var(--tvs-font-scale))', fontFamily:'inherit',
+                  outline:'none', width:220, background:'#fff', color:'#0f172a' }
+        }),
+        ce('div', { className:'fs-10', style:{color:'#64748B',fontFamily:'DM Mono,monospace'} },
+          Nf(displayRows.length) + ' dealer' + (displayRows.length !== 1 ? 's' : ''))
+      )
+    ),
+
+    // ── Summary KPIs ──────────────────────────────────────────────────────────
+    (() => {
+      const tot = displayRows.reduce((a, r) => {
+        a.leads += r.leads; a.rets += r.rets;
+        a.open += r.open; a.booking += r.booking; a.lost += r.lost;
+        return a;
+      }, { leads:0, rets:0, open:0, booking:0, lost:0 });
+      const convPct = tot.leads > 0 ? tot.rets / tot.leads * 100 : 0;
+      const kpis = [
+        { label:'Dealers',   value: Nf(displayRows.length) },
+        { label:'Leads',     value: Nf(tot.leads) },
+        { label:'Retails',   value: Nf(tot.rets),    accent:'#003087' },
+        { label:'Conv %',    value: convPct > 0 ? convPct.toFixed(1)+'%' : '—', accent: convPct >= 15 ? '#16A34A' : convPct >= 8 ? '#D97706' : '#DC2626' },
+        ...(hasStatus ? [
+          { label:'Open Leads', value: Nf(tot.open),    accent:'#003087' },
+          { label:'Booking',    value: Nf(tot.booking), accent:'#7C3AED' },
+          { label:'Lost',       value: Nf(tot.lost),    accent:'#DC2626' },
+        ] : []),
+      ];
+      return ce(SummaryBar, { kpis });
+    })(),
+
+    // ── Table ────────────────────────────────────────────────────────────────
+    ce('div', { className:'card', style:{padding:0,overflow:'hidden'} },
+      ce('div', { className:'scroll-x' },
+        ce('table', null,
+          ce('thead', null,
+            ce('tr', null,
+              thSort('dealer', 'Dealer'),
+              thSort('city',   'City'),
+              thSort('state',  'State'),
+              thNum('leads',   'Leads'),
+              thNum('cityShare','City Share'),
+              thNum('open',    'Open Leads'),
+              thNum('booking', 'Booking'),
+              thNum('rets',    'Retail Attribution'),
+              thNum('convPct', 'Conv %'),
+              thNum('lost',    'Lost'),
+              ce('th', null, 'Flags'),
+            )
+          ),
+          ce('tbody', null,
+            noData
+              ? ce('tr', null, ce('td', { colSpan:11, style:{textAlign:'center',padding:40,color:'#94A3B8'} },
+                  search ? 'No dealers match "' + search + '".' : 'No data for the selected filters.'))
+              : displayRows.map((r, idx) =>
+                  ce('tr', { key: r.dealer + '|' + r.city, className:'dealer-row' },
+
+                    // Dealer
+                    ce('td', { className:'label', style:{minWidth:180,maxWidth:260} }, r.dealer),
+
+                    // City
+                    ce('td', { className:'label', style:{color:'#003087',fontFamily:"'Inter',system-ui,sans-serif",
+                        fontWeight:500,fontSize:'calc(11px * var(--tvs-font-scale))',background:'#FAFAFA'} },
+                      r.city),
+
+                    // State
+                    ce('td', { style:{textAlign:'left',fontFamily:"'Inter',system-ui,sans-serif",
+                        fontSize:'calc(11px * var(--tvs-font-scale))',color:'#475569'} },
+                      r.state),
+
+                    // Leads
+                    ce('td', { style:{fontWeight:600} }, Nf(r.leads)),
+
+                    // City Share
+                    ce('td', null, cityShareBadge(r.cityShare)),
+
+                    // Open Leads
+                    ce('td', { style:{color: hasStatus ? '#1D4ED8' : '#94A3B8', fontWeight: hasStatus ? 600 : 400} },
+                      hasStatus ? Nf(r.open) : '—'),
+
+                    // Booking
+                    ce('td', { style:{color: hasStatus ? '#7C3AED' : '#94A3B8', fontWeight: hasStatus ? 600 : 400} },
+                      hasStatus ? Nf(r.booking) : '—'),
+
+                    // Retail Attribution
+                    ce('td', { style:{color:'#003087',fontWeight:600} }, Nf(r.rets)),
+
+                    // Conv %
+                    ce('td', null, l2rBadge(r.convPct)),
+
+                    // Lost
+                    ce('td', { style:{color: hasStatus ? '#B91C1C' : '#94A3B8', fontWeight: hasStatus ? 600 : 400} },
+                      hasStatus ? Nf(r.lost) : '—'),
+
+                    // Flags
+                    ce('td', { className:'badge-gray' }, '—'),
+                  )
+                )
+          )
+        )
+      )
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
    APP ROOT
    ════════════════════════════════════════════════════════════════════ */
 const TABS = [
@@ -2750,10 +3054,9 @@ const TABS = [
   { id:'source',      label:'Source Analysis' },
   { id:'ltxsrc',      label:'LT × Source' },
   { id:'modelxsrc',   label:'Model × Source' },
-  { id:'statexsrc',   label:'State × Source' },
-  { id:'cityxsrc',    label:'City × Source' },
   { id:'statexmodel', label:'State × Model' },
   { id:'cityxmodel',  label:'City × Model' },
+  { id:'geodealer',   label:'Geo & Dealer' },
   { id:'dispersion',  label:'Retail Dispersion' },
   { id:'pivot',       label:'Pivot Table' },
   { id:'ageing',      label:'Retail Ageing' },
@@ -2867,7 +3170,7 @@ function App() {
   const role       = auth ? auth.role : null;
   const viewerMode = role === 'viewer';
   const visibleTabs = viewerMode
-    ? TABS.filter(t => ['modelxsrc','statexsrc','cityxsrc','statexmodel','cityxmodel'].includes(t.id))
+    ? TABS.filter(t => ['modelxsrc','statexmodel','cityxmodel','geodealer'].includes(t.id))
     : TABS;
 
   const tabContent = useMemo(() => {
@@ -2878,10 +3181,9 @@ function App() {
       case 'source':      return ce(SourceTab,         props);
       case 'ltxsrc':      return ce(LTSourceTab,       props);
       case 'modelxsrc':   return ce(ModelSourceTab,    props);
-      case 'statexsrc':   return ce(StateSourceTab,    props);
-      case 'cityxsrc':    return ce(CitySourceTab,     props);
       case 'statexmodel': return ce(StateModelTab,     props);
       case 'cityxmodel':  return ce(CityModelTab,      props);
+      case 'geodealer':   return ce(GeoDealerTab,       props);
       case 'dispersion':  return ce(DispersionTab,     props);
       case 'pivot':       return ce(PivotTab,          props);
       case 'ageing':      return ce(RetailAgeingTab,   props);

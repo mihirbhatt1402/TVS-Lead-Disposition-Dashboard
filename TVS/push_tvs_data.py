@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 
 MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwzgnXPbCbunBblnMUrqdWg3eY9qsIwCrFxuYuvYSpxtH22l4Cs32vdkOkDhUn-qwM64w/exec"
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwdTKif3l3gYJKMwZBO6PjmYgNbWulkQ9TMEIsN-6xMdG2efbndnSoHE4tC63Oe6AKmlQ/exec"
 SECRET = "tvs2026push"
 
 RETAILS_FILE_ID = '1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE'
@@ -952,6 +952,7 @@ LEAD_COL_MAP = {
     # optional — for DMS/CC retail-type split if columns exist
     'Retail By':        '_RetailBy',
     'DMS_Retail_Month': '_RetailMonth',
+    'Status_Name':      'StatusName',
 }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1104,7 +1105,7 @@ def proxy_get(action, extra_params=None, timeout=120):
 # ─── Sheet reader (paginated via Apps Script getSheetData) ────────────────────
 
 # Only these columns are needed from each lead sheet — reduces payload ~70%
-LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medium,Retail By,DMS_Retail_Month'
+LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medium,Retail By,DMS_Retail_Month,Status_Name'
 
 # Page size: 3000 rows/page keeps each Apps Script execution under ~30 s,
 # narrowing the transient echo-URL window (302 bounce-back race condition).
@@ -1280,8 +1281,20 @@ def standardize_leads(raw_df):
             df.loc[still_empty, 'LeadMonth'] = df.loc[still_empty, 'SorceLeadId'].apply(
                 lambda v: lid_to_month(to_id(v)))
     keep = ['SorceLeadId','LeadMonth','CreateDate','ModelName','Source','LeadType',
-            'State','Zone','BuyingDays','CityName','DealerName']
+            'State','Zone','BuyingDays','CityName','DealerName','StatusName']
     return df[[c for c in keep if c in df.columns]].copy()
+
+# ─── Status classification (Geo & Dealer tab) ─────────────────────────────────
+# Maps Status_Name → 'O' (open), 'B' (booking), or 'L' (lost).
+# Matching is lowercase substring — add variants here if new CRM values appear.
+_BOOKING_KWS = ('booking',)
+_LOST_KWS    = ('lost', 'not interest', 'dead', 'closed', 'dropped', 'rejected')
+def classify_status(sn):
+    if not sn: return 'O'
+    sl = sn.lower().strip()
+    if any(kw in sl for kw in _BOOKING_KWS): return 'B'
+    if any(kw in sl for kw in _LOST_KWS):   return 'L'
+    return 'O'
 
 # ─── Retail master ─────────────────────────────────────────────────────────────
 # Page size: 2000 rows/page for a narrow echo-URL window (same rationale as leads).
@@ -1887,6 +1900,7 @@ def build_payload(all_leads, retail_map):
     ltdl, u_ltdl = {}, {}  # lead-type × dealer × month
     disp, u_disp = {}, {}   # enquired_model × purchased_model × month (retails only)
     cdm, csm, cdsm = {},{},{}
+    dl_sn = {}  # city × dealer × lead-month → [L_open, L_booking, L_lost]
     cxm, u_cxm = {}, {}           # city × model × month
     cxsm, u_cxsm = {}, {}         # city × src × model × month (source-filterable)
     u_cm, u_csm = {}, {}          # city × month (retail-month attribution)
@@ -1935,6 +1949,7 @@ def build_payload(all_leads, retail_map):
     _cities = _col('CityName')
     _cds    = _col('CreateDate')   # Lead CreateDate — used for Retail Ageing only
     _dls    = all_leads[dl_col].fillna('').astype(str).values if dl_col and dl_col in _c else None
+    _sns    = _col('StatusName')
 
     del all_leads, _c  # free ~500 MB DataFrame now that we have arrays
     _gc.collect()
@@ -2010,6 +2025,13 @@ def build_payload(all_leads, retail_map):
             bump(stdm, f"{sti}|{dli}|{li}",       is_ret, rtype)
             bump(mxdl, f"{mi}|{dli}|{li}",        is_ret, rtype)
             bump(ltdl, f"{tti}|{dli}|{li}",       is_ret, rtype)
+            # Status classification for Geo & Dealer tab (lead-level, not retail-level)
+            _sc = classify_status(_sns[i])
+            _sk = f"{cti}|{dli}|{li}"
+            if _sk not in dl_sn: dl_sn[_sk] = [0, 0, 0]
+            if   _sc == 'B': dl_sn[_sk][1] += 1
+            elif _sc == 'L': dl_sn[_sk][2] += 1
+            else:            dl_sn[_sk][0] += 1
 
         rm  = retail_map[lid].get('rm', '') if is_ret else ''
         um  = rm if rm else lm
@@ -2108,6 +2130,7 @@ def build_payload(all_leads, retail_map):
         'u_cxsm':  to_rows(u_cxsm, lambda k: list(map(int, k.split('|')))),
         **({"cdm":  to_rows(cdm,  lambda k: list(map(int, k.split('|')))),
             "cdsm": to_rows(cdsm, lambda k: list(map(int, k.split('|')))),
+            "dl_sn": [[*map(int,k.split('|')), *v] for k,v in dl_sn.items()],
             "stdm": to_rows(stdm, lambda k: list(map(int, k.split('|')))),
             "mxdl": to_rows(mxdl, lambda k: list(map(int, k.split('|')))),
             "ltdl": to_rows(ltdl, lambda k: list(map(int, k.split('|')))),
