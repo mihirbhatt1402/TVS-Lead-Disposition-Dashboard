@@ -2625,10 +2625,6 @@ const StateModelTab = React.memo(function StateModelTab({ data, filters, months,
     const a=buildAgg(new Set(months)); return a.grand.l>0?a:null;
   }, [buildAgg, months]);
 
-  const monthlyAggs = useMemo(() =>
-    months.map(M => ({ M, agg: (() => { const a=buildAgg(new Set([M])); return a.grand.l>0?a:null; })() })),
-  [buildAgg, months]);
-
   const exportAgg = useCallback((agg, label) => {
     if (!agg) return;
     const {colKeys,rowKeys,rowAggs,grand}=agg;
@@ -2652,12 +2648,7 @@ const StateModelTab = React.memo(function StateModelTab({ data, filters, months,
         title:'∑ All Months — State × Model Summary',
         onExport:()=>exportAgg(summaryAgg,'Summary') })
     ),
-    monthlyAggs.map(({M,agg}) => agg ?
-      ce('div', { key:M, className:'card', style:{padding:'16px 18px',marginBottom:14} },
-        ce(CrossTabGrid, { agg, rowLabel:'State', colLabel:'Model', rtCols:data.rt_cols,
-          title:'State × Model — '+M, onExport:()=>exportAgg(agg,M) })
-      ) : null
-    )
+    ce(CityModelTab, { data, filters, months, RT, viewerMode })
   );
 });
 
@@ -2729,17 +2720,13 @@ const CityModelTab = React.memo(function CityModelTab({ data, filters, months, R
     exportXlsx({'City × Model':rows},'TVS_CityModel_All');
   }, [summaryAgg]);
 
-  if (cxm.length===0) return ce('div',{className:'fs-14',style:{textAlign:'center',padding:50,color:'#94A3B8'}},
-    '📦 City × Model data will be available after the next pipeline run.');
+  if (cxm.length===0) return null;
 
-  if (!summaryAgg) return ce('div',{className:'fs-14',style:{textAlign:'center',padding:50,color:'#94A3B8'}},
-    'No data matches the current filters.');
+  if (!summaryAgg) return null;
 
-  return ce('div', { className:'fade-up' },
-    ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #003087'} },
-      ce(CrossTabGrid, { agg:summaryAgg, rowLabel:'City', colLabel:'Model', rtCols:data.rt_cols,
-        title:'City × Model', onExport: exportSummary })
-    )
+  return ce('div', { className:'card', style:{padding:'16px 18px',marginBottom:14,borderTop:'3px solid #0057B8'} },
+    ce(CrossTabGrid, { agg:summaryAgg, rowLabel:'City', colLabel:'Model', rtCols:data.rt_cols,
+      title:'∑ All Months — City × Model Summary', onExport: exportSummary })
   );
 });
 
@@ -3055,7 +3042,6 @@ const TABS = [
   { id:'ltxsrc',      label:'LT × Source' },
   { id:'modelxsrc',   label:'Model × Source' },
   { id:'statexmodel', label:'State × Model' },
-  { id:'cityxmodel',  label:'City × Model' },
   { id:'geodealer',   label:'Geo & Dealer' },
   { id:'dispersion',  label:'Retail Dispersion' },
   { id:'pivot',       label:'Pivot Table' },
@@ -3170,7 +3156,7 @@ function App() {
   const role       = auth ? auth.role : null;
   const viewerMode = role === 'viewer';
   const visibleTabs = viewerMode
-    ? TABS.filter(t => ['modelxsrc','statexmodel','cityxmodel','geodealer'].includes(t.id))
+    ? TABS.filter(t => ['modelxsrc','statexmodel','geodealer'].includes(t.id))
     : TABS;
 
   const tabContent = useMemo(() => {
@@ -3182,7 +3168,6 @@ function App() {
       case 'ltxsrc':      return ce(LTSourceTab,       props);
       case 'modelxsrc':   return ce(ModelSourceTab,    props);
       case 'statexmodel': return ce(StateModelTab,     props);
-      case 'cityxmodel':  return ce(CityModelTab,      props);
       case 'geodealer':   return ce(GeoDealerTab,       props);
       case 'dispersion':  return ce(DispersionTab,     props);
       case 'pivot':       return ce(PivotTab,          props);
