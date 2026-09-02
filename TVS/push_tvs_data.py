@@ -42,26 +42,58 @@ SECRET = "tvs2026push"
 RETAILS_FILE_ID = '1ZWBlzxX-g2R5iCcrsGUWrqSvxIHcchFHtajDDPcFJgE'
 RETAILS_TAB     = 'Raw'
 
-# Live lead masters - each sheet is authoritative for its month range only.
-# Jul'26 Lead Master : dedicated July GSheet (Jul'26 rows only)
-# Aug'26+ Lead Master: rolling current-month GSheet (Aug'26 onwards)
-# min_mo / max_mo are month_order integers (YY*100+MM); None = no upper bound.
+# Live lead masters — each entry is authoritative for its month range only.
+#
+# CLOSED months (frozen sheets — do NOT edit id/tab for closed entries):
+#   Jul'26  — dedicated July GSheet, rows hard-capped to Jul'26.
+#   Aug'26  — FROZEN snapshot committed at month-close (2026-09-01).
+#             This sheet must receive no new lead data; it is the permanent
+#             source for August leads from this point forward.
+#
+# OPEN months:
+#   Sep'26  — Lead Master URL not yet provided. See PENDING_LEAD_MONTHS below.
+#             When the September sheet is ready, add a new entry here, set
+#             min_mo=2609 / max_mo=2609, and remove "Sep'26" from
+#             PENDING_LEAD_MONTHS.
+#
+# min_mo / max_mo: month_order integers (YY*100+MM). None = no upper bound.
+# 'frozen': True documents closed months; has no runtime effect.
 LEAD_SHEETS = [
     {
         'id':     '1gaRoPLebv7jaBgWEET-XSQuhqE_XgQlGru39TA-FoSo',
         'tab':    'TVS',
         'label':  "Jul'26-LeadMaster",
-        'min_mo': 2607,   # Jul'26 only
+        'min_mo': 2607,
         'max_mo': 2607,
+        'frozen': True,
     },
+    # Aug'26 — FROZEN snapshot sheet (month closed 2026-09-01).
+    # Retail continues to update; lead rows are permanently fixed.
     {
-        'id':     '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',
+        'id':     '1Wp26qCv3d6oEq1h2wGamlHmCb9YuYrNDa8x8i653W3M',
         'tab':    'TVS',
-        'label':  'Aug26+-LeadMaster',
-        'min_mo': 2607,   # Jul'26 onwards (Jul'26 rows dedup against Jul'26-LeadMaster at STAGE 8)
-        'max_mo': None,   # no upper bound
+        'label':  "Aug'26-LeadMaster-FROZEN",
+        'min_mo': 2608,
+        'max_mo': 2608,
+        'frozen': True,
     },
+    # ── Sep'26 Lead Master — URL PENDING ─────────────────────────────────────
+    # Uncomment and fill in 'id' when the September Lead Master GSheet is ready.
+    # Also remove "Sep'26" from PENDING_LEAD_MONTHS below.
+    # {
+    #     'id':     '<SEP26_SHEET_ID>',
+    #     'tab':    'TVS',
+    #     'label':  "Sep'26-LeadMaster",
+    #     'min_mo': 2609,
+    #     'max_mo': 2609,
+    # },
 ]
+
+# Months whose Lead Master GSheet has not yet been provided.
+# The pipeline treats these as covered (no hard-fail for current-month) but
+# fetches 0 lead rows and prints a clear warning.
+# When a month's sheet is ready: add it to LEAD_SHEETS above and remove it here.
+PENDING_LEAD_MONTHS: set = {"Sep'26"}
 
 # Bootstrap/DR only: local path to historical Excel files, used only when rebuilding
 # hist_cache.json.gz from scratch. Never accessed during normal production runs
@@ -2831,20 +2863,24 @@ if 'LeadMonth' in online_leads.columns:
 # LOGIC:
 #
 #   Prior live months (ONLINE_START through end of the PREVIOUS calendar month):
-#     REQUIRED — hard-fail if any are absent. These are closed periods; zero rows
-#     means a source sheet failed or lost data silently.
+#     REQUIRED — hard-fail if any are absent, UNLESS the month is in
+#     PENDING_LEAD_MONTHS (Lead Master not yet provided → no rows expected).
+#     Zero rows for a non-pending prior month means a source sheet failed or
+#     lost data silently.
 #
 #   Current calendar month:
-#     - Hard-fail if NO entry in LEAD_SHEETS covers it (no sheet configured to
-#       fetch the current month → data gap is guaranteed).
-#     - WARN (not fail) if a covering sheet returned 0 rows. This is normal at the
-#       start of a new month before any leads are created in CRM.
+#     - COVERED if either:
+#       (a) at least one LEAD_SHEETS entry spans it, OR
+#       (b) it is listed in PENDING_LEAD_MONTHS (sheet pending → warn, not fail).
+#     - Hard-fail only if neither (a) nor (b) is true.
+#     - WARN (not fail) if a covering sheet returned 0 rows. Normal at start of
+#       a new month before any CRM leads exist.
+#     - WARN clearly if the month is pending — dashboard will show 0 new leads.
 #
-# This design makes Sep'26 roll-over automatic: the Aug26+ sheet has max_mo=None,
-# so it already covers Sep'26 and every future month without any code change. The
-# pipeline only hard-fails if CRM moves to a brand-new GSheet AND that sheet is not
-# added to LEAD_SHEETS (in which case _cur_month_covered is False → hard-fail with
-# a clear message).
+# MONTH-CLOSE PATTERN:
+#   When a month closes, its Lead Master sheet is frozen (id stays in LEAD_SHEETS
+#   with matching min_mo=max_mo). The NEXT month starts in PENDING_LEAD_MONTHS
+#   until its Lead Master URL is provided. Retail always continues updating.
 
 _ref_m  = ONLINE_START_ORDER % 100    # e.g. 7 (July)
 _ref_y  = ONLINE_START_ORDER // 100   # e.g. 26
@@ -2865,20 +2901,27 @@ while (_y * 100 + _m) <= (_prev_y * 100 + _prev_m):
 _cur_month_str   = f"{MONTH_NAMES[_cur_m - 1]}'{_cur_y:02d}"
 _cur_month_order = _cur_y * 100 + _cur_m
 
-# Is the current month within the min_mo..max_mo range of at least one LEAD_SHEET?
-_cur_month_covered = any(
+# Is the current month within the min_mo..max_mo range of at least one LEAD_SHEET,
+# OR declared as pending (sheet URL not yet provided)?
+_cur_in_lead_sheets = any(
     s.get('min_mo', 0) <= _cur_month_order and
     (s.get('max_mo') is None or s.get('max_mo') >= _cur_month_order)
     for s in LEAD_SHEETS
 )
+_cur_month_pending  = _cur_month_str in PENDING_LEAD_MONTHS
+_cur_month_covered  = _cur_in_lead_sheets or _cur_month_pending
 
 _online_lm_set = (
     set(online_leads['LeadMonth'].unique())
     if 'LeadMonth' in online_leads.columns and len(online_leads) > 0 else set()
 )
 
-# Hard-fail for any prior live month with 0 rows.
-_missing_prior = [mo for mo in _prior_live_months if mo not in _online_lm_set]
+# Hard-fail for any prior live month with 0 rows — UNLESS it is in PENDING_LEAD_MONTHS
+# (Lead Master URL not yet provided; 0 rows expected by design).
+_missing_prior = [
+    mo for mo in _prior_live_months
+    if mo not in _online_lm_set and mo not in PENDING_LEAD_MONTHS
+]
 if _missing_prior:
     _fail_exit(
         'Live month presence check',
@@ -2888,19 +2931,28 @@ if _missing_prior:
         f'One or more source sheets may have returned empty data or failed silently.'
     )
 
-# Hard-fail if no LEAD_SHEET covers the current month at all.
+# Hard-fail only if the current month has NO coverage at all.
 if not _cur_month_covered:
     _fail_exit(
         'Live month presence check — current month not covered',
         f'Current month {_cur_month_str!r} (order {_cur_month_order}) is not covered by any '
-        f'entry in LEAD_SHEETS. Check min_mo/max_mo for each sheet. '
-        f'Add a new LEAD_SHEETS entry, or extend max_mo of an existing entry, '
-        f'to ensure this month is fetched on future runs.',
+        f'entry in LEAD_SHEETS and is not in PENDING_LEAD_MONTHS. '
+        f'Add a new LEAD_SHEETS entry for this month, or add it to PENDING_LEAD_MONTHS '
+        f'if the Lead Master URL is not yet available.',
     )
 
-# Current month: warn if 0 rows (normal at start of month), do not fail.
+# Pending current month — warn clearly; 0 leads expected.
+if _cur_month_pending:
+    print(
+        f"  WARNING: current month {_cur_month_str!r} is in PENDING_LEAD_MONTHS — "
+        f"Lead Master URL has not been provided yet. "
+        f"The dashboard will show 0 new leads for {_cur_month_str!r} until the sheet "
+        f"is added to LEAD_SHEETS and PENDING_LEAD_MONTHS is updated.", flush=True
+    )
+
+# Non-pending current month with 0 rows — warn (normal at start of month).
 _cur_month_in_data = _cur_month_str in _online_lm_set
-if not _cur_month_in_data:
+if not _cur_month_in_data and not _cur_month_pending:
     print(
         f"  WARNING: current month {_cur_month_str!r} is covered by LEAD_SHEETS but "
         f"has 0 rows in online_leads. This is expected if no leads have been created "
