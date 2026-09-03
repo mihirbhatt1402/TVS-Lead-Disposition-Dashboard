@@ -51,10 +51,9 @@ RETAILS_TAB     = 'Raw'
 #             source for August leads from this point forward.
 #
 # OPEN months:
-#   Sep'26  — Lead Master URL not yet provided. See PENDING_LEAD_MONTHS below.
-#             When the September sheet is ready, add a new entry here, set
-#             min_mo=2609 / max_mo=2609, and remove "Sep'26" from
-#             PENDING_LEAD_MONTHS.
+#   Sep'26  — current/live Lead Master (activated 2026-09-03).
+#             When October closes, set max_mo=2609, add frozen=True, and
+#             add a new Oct'26 entry.
 #
 # min_mo / max_mo: month_order integers (YY*100+MM). None = no upper bound.
 # 'frozen': True documents closed months; has no runtime effect.
@@ -77,23 +76,23 @@ LEAD_SHEETS = [
         'max_mo': 2608,
         'frozen': True,
     },
-    # ── Sep'26 Lead Master — URL PENDING ─────────────────────────────────────
-    # Uncomment and fill in 'id' when the September Lead Master GSheet is ready.
-    # Also remove "Sep'26" from PENDING_LEAD_MONTHS below.
-    # {
-    #     'id':     '<SEP26_SHEET_ID>',
-    #     'tab':    'TVS',
-    #     'label':  "Sep'26-LeadMaster",
-    #     'min_mo': 2609,
-    #     'max_mo': 2609,
-    # },
+    # Sep'26 — current/open Lead Master (activated 2026-09-03).
+    # max_mo=None so it automatically covers Sep'26 and any later months
+    # until this entry is capped and a new month is added at close.
+    {
+        'id':     '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',
+        'tab':    'TVS',
+        'label':  "Sep'26-LeadMaster",
+        'min_mo': 2609,
+        'max_mo': None,   # open month — no upper bound until month-close
+    },
 ]
 
 # Months whose Lead Master GSheet has not yet been provided.
 # The pipeline treats these as covered (no hard-fail for current-month) but
 # fetches 0 lead rows and prints a clear warning.
 # When a month's sheet is ready: add it to LEAD_SHEETS above and remove it here.
-PENDING_LEAD_MONTHS: set = {"Sep'26"}
+PENDING_LEAD_MONTHS: set = set()  # Sep'26 activated 2026-09-03
 
 # Bootstrap/DR only: local path to historical Excel files, used only when rebuilding
 # hist_cache.json.gz from scratch. Never accessed during normal production runs

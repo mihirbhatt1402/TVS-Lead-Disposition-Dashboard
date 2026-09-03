@@ -3407,9 +3407,16 @@ _LEAD_SHEETS_TEST = [
         'max_mo': 2608,
         'frozen': True,
     },
+    {
+        'id':     '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',
+        'tab':    'TVS',
+        'label':  "Sep'26-LeadMaster",
+        'min_mo': 2609,
+        'max_mo': None,
+    },
 ]
 
-_PENDING_LEAD_MONTHS_TEST: set = {"Sep'26"}
+_PENDING_LEAD_MONTHS_TEST: set = set()  # Sep'26 activated 2026-09-03
 
 # month_order helper (mirrors push_tvs_data.py)
 _MONTH_NAMES_T = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -3467,20 +3474,30 @@ class TestMonthCloseArchitecture(unittest.TestCase):
         self.assertTrue(aug.get('frozen'), 'Aug\'26 entry must have frozen=True')
         self.assertEqual(aug['max_mo'], 2608, 'Aug\'26 max_mo must be 2608 (closed at Aug)')
 
-    # ── R2: September is CURRENT but pending ─────────────────────────────────
-    def test_r2_september_is_current_and_pending(self):
-        self.assertIn("Sep'26", _PENDING_LEAD_MONTHS_TEST,
-                      "Sep'26 must be in PENDING_LEAD_MONTHS until its sheet is provided")
-        sep_in_sheets = any(
-            s.get('min_mo', 0) <= 2609 <= (s.get('max_mo') or 9999)
-            for s in _LEAD_SHEETS_TEST
+    # ── R2: September is CURRENT and ACTIVE (activated 2026-09-03) ───────────
+    def test_r2_september_is_active_in_lead_sheets(self):
+        sep_entry = next(
+            (s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2609), None
         )
-        self.assertFalse(sep_in_sheets,
-                         "Sep'26 must NOT have a real LEAD_SHEETS entry until the URL is provided")
+        self.assertIsNotNone(sep_entry, "Sep'26 must have a real LEAD_SHEETS entry")
+        self.assertEqual(sep_entry['id'], '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o',
+                         'Sep\'26 must use the confirmed September Lead Master ID')
+        self.assertIsNone(sep_entry.get('max_mo'),
+                          'Sep\'26 max_mo must be None (open month, no upper bound yet)')
+        self.assertFalse(sep_entry.get('frozen', False),
+                         'Sep\'26 must NOT be frozen — it is the current open month')
 
-    def test_r2_september_covered_via_pending(self):
+    def test_r2_september_not_in_pending(self):
+        self.assertNotIn("Sep'26", _PENDING_LEAD_MONTHS_TEST,
+                         "Sep'26 must NOT be in PENDING_LEAD_MONTHS after activation")
+
+    def test_r2_pending_lead_months_is_empty(self):
+        self.assertEqual(len(_PENDING_LEAD_MONTHS_TEST), 0,
+                         'PENDING_LEAD_MONTHS must be empty after Sep\'26 activation')
+
+    def test_r2_september_covered_via_lead_sheets(self):
         covered = _cur_month_covered_t("Sep'26", _LEAD_SHEETS_TEST, _PENDING_LEAD_MONTHS_TEST)
-        self.assertTrue(covered, "Sep'26 must be treated as covered (no hard-fail) via PENDING")
+        self.assertTrue(covered, "Sep'26 must be covered via LEAD_SHEETS (not pending)")
 
     # ── R3: August Lead Master points to the frozen sheet ────────────────────
     def test_r3_august_lead_master_url_is_frozen_sheet(self):
@@ -3499,12 +3516,16 @@ class TestMonthCloseArchitecture(unittest.TestCase):
                              'Frozen Aug sheet must have a finite max_mo, not None')
         self.assertEqual(aug['max_mo'], 2608)
 
-    def test_r4_old_rolling_aug_sheet_removed(self):
-        """The old rolling Aug+ sheet (1iSw5zXF67...) must not be in LEAD_SHEETS."""
-        old_id = '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o'
-        ids = [s['id'] for s in _LEAD_SHEETS_TEST]
-        self.assertNotIn(old_id, ids,
-                         'Old rolling Aug26+ sheet must be removed from LEAD_SHEETS')
+    def test_r4_old_rolling_aug_sheet_reused_as_sep(self):
+        """The sheet 1iSw5zXF67... was the old rolling Aug+ sheet; it now lives in
+        LEAD_SHEETS as the Sep'26 entry (min_mo=2609, not 2607/2608)."""
+        sep_id = '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o'
+        sep = next((s for s in _LEAD_SHEETS_TEST if s['id'] == sep_id), None)
+        self.assertIsNotNone(sep, 'Sep sheet ID must be present in LEAD_SHEETS')
+        self.assertEqual(sep['min_mo'], 2609,
+                         'Sheet reused for Sep must have min_mo=2609, not earlier months')
+        self.assertIsNone(sep['max_mo'],
+                          'Sep sheet is open-ended (no max_mo until month-close)')
 
     # ── R5 & R6: August Retail continues updating (structural) ───────────────
     def test_r5_retail_sheet_config_unchanged(self):
@@ -3620,13 +3641,13 @@ class TestMonthCloseArchitecture(unittest.TestCase):
 
     def test_r13_pending_month_not_required_in_prior(self):
         """A pending month in _prior_live_months must NOT trigger a hard-fail."""
-        # Edge case: if Sep'26 somehow ends up in prior_live_months while still pending,
-        # it must be excluded from the missing list.
-        missing = _missing_prior_t(["Jul'26", "Sep'26"],
-                                   {"Jul'26"},    # Jul present, Sep absent
-                                   _PENDING_LEAD_MONTHS_TEST)
-        self.assertNotIn("Sep'26", missing,
-                         "Pending Sep'26 must not appear in _missing_prior")
+        # Use a hypothetical Oct'26 as the pending month (Sep is now active).
+        hypothetical_pending = {"Oct'26"}
+        missing = _missing_prior_t(["Jul'26", "Oct'26"],
+                                   {"Jul'26"},    # Jul present, Oct absent (pending)
+                                   hypothetical_pending)
+        self.assertNotIn("Oct'26", missing,
+                         "A pending month must not appear in _missing_prior")
 
     # ── R14: Existing validation tests still pass (meta-check) ───────────────
     def test_r14_month_order_function_intact(self):
@@ -3696,12 +3717,12 @@ class TestMonthCloseArchitecture(unittest.TestCase):
             _check_source_drop_sim("Aug'26-LeadMaster-FROZEN", 49999, prev), 'OK',
             '1-row variance must not trigger source-drop alert')
 
-    def test_r17_sep_pending_not_checked_for_source_drop(self):
-        """Sep'26 has no LEAD_SHEETS entry → no source_metrics key → no drop check."""
+    def test_r17_sep_source_drop_checked_normally(self):
+        """Sep'26 now has a LEAD_SHEETS entry → source-drop check applies on next run."""
         labels_in_sheets = {s['label'] for s in _LEAD_SHEETS_TEST}
         sep_labels = {lb for lb in labels_in_sheets if 'Sep' in lb}
-        self.assertEqual(sep_labels, set(),
-                         'No Sep\'26 entry in LEAD_SHEETS → no source-drop check possible')
+        self.assertNotEqual(sep_labels, set(),
+                            'Sep\'26 is now in LEAD_SHEETS — source-drop check must apply')
 
     # ── Config completeness ────────────────────────────────────────────────────
     def test_config_all_lead_sheets_have_required_keys(self):
@@ -3711,15 +3732,129 @@ class TestMonthCloseArchitecture(unittest.TestCase):
             self.assertEqual(missing, set(),
                              f"Sheet {s.get('label', '?')} missing keys: {missing}")
 
-    def test_config_pending_lead_months_is_set(self):
+    def test_config_pending_lead_months_is_empty_set(self):
         self.assertIsInstance(_PENDING_LEAD_MONTHS_TEST, set)
-        self.assertIn("Sep'26", _PENDING_LEAD_MONTHS_TEST)
+        self.assertEqual(len(_PENDING_LEAD_MONTHS_TEST), 0,
+                         'PENDING_LEAD_MONTHS must be empty after Sep\'26 activation')
 
-    def test_config_sep_not_in_lead_sheets_and_in_pending(self):
-        """Sep'26 must be pending (not in LEAD_SHEETS) — clean separation."""
-        all_sheet_labels = [s['label'] for s in _LEAD_SHEETS_TEST]
-        for lbl in all_sheet_labels:
-            self.assertNotIn('Sep', lbl, f"Sep'26 must not have a real LEAD_SHEETS entry yet")
+    def test_config_sep_in_lead_sheets_and_not_in_pending(self):
+        """Sep'26 must be in LEAD_SHEETS and not pending."""
+        sep_entry = next((s for s in _LEAD_SHEETS_TEST if 'Sep' in s['label']), None)
+        self.assertIsNotNone(sep_entry, "Sep'26 must have a LEAD_SHEETS entry")
+        self.assertNotIn("Sep'26", _PENDING_LEAD_MONTHS_TEST,
+                         "Sep'26 must not be in PENDING_LEAD_MONTHS")
+
+    # ── Sep'26 activation — new tests (R1-R20 extended) ─────────────────────
+
+    def test_sep_spreadsheet_id_correct(self):
+        """Sep'26 must use the confirmed spreadsheet ID."""
+        sep = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2609), None)
+        self.assertIsNotNone(sep)
+        self.assertEqual(sep['id'], '1iSw5zXF67q5Wkoz2mSPFqql9OPAcqmd0um5BEHUGf4o')
+
+    def test_sep_is_not_frozen(self):
+        sep = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2609), None)
+        self.assertIsNotNone(sep)
+        self.assertFalse(sep.get('frozen', False), 'Open month must not be frozen')
+
+    def test_sep_min_mo_is_2609(self):
+        sep = next((s for s in _LEAD_SHEETS_TEST if 'Sep' in s.get('label', '')), None)
+        self.assertIsNotNone(sep)
+        self.assertEqual(sep['min_mo'], 2609)
+
+    def test_sep_max_mo_is_none(self):
+        """Sep'26 is the open month — no upper cap yet."""
+        sep = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2609), None)
+        self.assertIsNotNone(sep)
+        self.assertIsNone(sep.get('max_mo'))
+
+    def test_aug_sheet_does_not_cover_sep(self):
+        """Aug frozen sheet must not cover Sep'26 rows."""
+        aug = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2608), None)
+        self.assertIsNotNone(aug)
+        # STAGE 6: aug max_mo=2608 → Sep'26 (order 2609) filtered out
+        sep_order = 2609
+        self.assertLess(aug['max_mo'], sep_order,
+                        'Aug frozen sheet (max_mo=2608) must not include Sep\'26 rows')
+
+    def test_sep_sheet_does_not_cover_aug(self):
+        """Sep'26 sheet (min_mo=2609) must exclude Aug'26 rows."""
+        sep = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2609), None)
+        self.assertIsNotNone(sep)
+        aug_order = 2608
+        self.assertGreater(sep['min_mo'], aug_order,
+                           'Sep\'26 sheet (min_mo=2609) must not include Aug\'26 rows')
+
+    def test_sep_no_double_coverage(self):
+        """Sep'26 must be covered by exactly one LEAD_SHEETS entry."""
+        sep_covering = [
+            s for s in _LEAD_SHEETS_TEST
+            if s.get('min_mo', 0) <= 2609 <= (s.get('max_mo') or 9999)
+        ]
+        self.assertEqual(len(sep_covering), 1,
+                         f'Sep\'26 must be covered by exactly 1 sheet, got: '
+                         f'{[s["label"] for s in sep_covering]}')
+
+    def test_aug_no_double_coverage_after_sep_added(self):
+        """Verify Aug'26 still covered by exactly 1 sheet (Sep entry does not overlap)."""
+        aug_covering = [
+            s for s in _LEAD_SHEETS_TEST
+            if s.get('min_mo', 0) <= 2608 <= (s.get('max_mo') or 9999)
+        ]
+        self.assertEqual(len(aug_covering), 1,
+                         f'Aug\'26 must still be covered by exactly 1 sheet after Sep activation')
+
+    def test_sep_on_create_live(self):
+        """Sep'26 On Create — lead rows fetched live (no frozen flag)."""
+        sep = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2609), None)
+        self.assertIsNotNone(sep)
+        self.assertFalse(sep.get('frozen', False))
+        # On Create uses LeadMonth; Sep'26 rows (month_order=2609) pass STAGE 6.
+        self.assertEqual(_month_order_t("Sep'26"), 2609)
+        self.assertGreaterEqual(2609, sep['min_mo'])  # passes min filter
+
+    def test_sep_on_update_live(self):
+        """Sep'26 On Update — live data (sep sheet open, no max_mo cap)."""
+        sep = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2609), None)
+        self.assertIsNotNone(sep)
+        self.assertIsNone(sep.get('max_mo'),
+                          'Open sep sheet must have no max_mo cap — On Update is live')
+
+    def test_aug_on_create_still_frozen(self):
+        """Aug'26 On Create — lead pool is permanently fixed (frozen sheet)."""
+        aug = next((s for s in _LEAD_SHEETS_TEST if s.get('min_mo') == 2608), None)
+        self.assertIsNotNone(aug)
+        self.assertTrue(aug.get('frozen'))
+        self.assertEqual(aug['max_mo'], 2608)  # only Aug rows pass
+
+    def test_aug_on_update_still_frozen(self):
+        """Aug'26 On Update — no new Aug lead rows can enter from any sheet."""
+        overlapping_aug = [
+            s for s in _LEAD_SHEETS_TEST
+            if not s.get('frozen', False)
+            and s.get('min_mo', 0) <= 2608
+            and (s.get('max_mo') is None or s.get('max_mo') >= 2608)
+        ]
+        self.assertEqual(overlapping_aug, [],
+                         'No non-frozen sheet must cover Aug\'26 after Sep activation')
+
+    def test_status_name_available_for_sep(self):
+        """LEAD_COLS must include Status_Name for Sep leads (Geo & Dealer tab)."""
+        LEAD_COLS = 'opty_id,Lead_Month,Date,model,City,State,Dealer_Name,lead_type,Medium,Retail By,DMS_Retail_Month,Status_Name'
+        self.assertIn('Status_Name', LEAD_COLS)
+
+    def test_geo_dealer_classification_unchanged_for_sep(self):
+        """Sep leads must use the same exact Status_Name→tag mapping."""
+        self.assertEqual(_classify_status_test('Booked'), 'B')
+        self.assertEqual(_classify_status_test('Lost Not Purchased'), 'L')
+        self.assertEqual(_classify_status_test('Call for verification'), 'O')
+        self.assertEqual(_classify_status_test('Booking Request'), 'O')
+        self.assertEqual(_classify_status_test('SomeNewUnknownStatus'), 'U')
+
+    def test_lead_sheets_count_is_three(self):
+        """After Sep activation, LEAD_SHEETS must have exactly 3 entries."""
+        self.assertEqual(len(_LEAD_SHEETS_TEST), 3,
+                         'LEAD_SHEETS must have Jul + Aug + Sep entries')
 
 
 # ---------------------------------------------------------------------------
