@@ -3867,12 +3867,18 @@ class TestMonthCloseArchitecture(unittest.TestCase):
 
 # ── Inline pipeline normalisation (mirrors the new logic in push_tvs_data.py) ──
 
-def _norm_src_test(raw: str) -> str:
-    """Mirrors the source normalisation block in build_payload."""
+def _norm_src_test(raw: str, lt: str = '') -> str:
+    """Mirrors the source normalisation block in build_payload.
+    lt: lead type string — required to apply the Facebook business rule.
+    """
     src = (raw or '').strip() or 'Unknown'
     if src in ('Non-MS', 'Non MS', 'Non- MS'):
         src = 'Non CPS'
     if src.lower() == 'whatsapp':
+        src = 'WhatsApp'
+    # Business rule: Facebook is only valid for LT 1105 and 1106.
+    # All other lead types with Source=Facebook are WhatsApp misclassifications.
+    if src == 'Facebook' and lt not in ('1105', '1106'):
         src = 'WhatsApp'
     return src
 
@@ -3942,8 +3948,9 @@ def _simulate_agg(leads: list) -> dict:
     src_set, lm_set, mdl_set, lt_set = set(), set(), set(), set()
 
     for row in leads:
-        src = _norm_src_test(row['src'])
-        lm  = row['lm'];  mdl = row['mdl'];  lt = str(row['lt'])
+        lt  = str(row['lt'])
+        src = _norm_src_test(row['src'], lt)   # lt required for Facebook rule
+        lm  = row['lm'];  mdl = row['mdl']
         is_ret = row.get('is_ret', False)
         src_set.add(src); lm_set.add(lm); mdl_set.add(mdl); lt_set.add(lt)
         k_sm  = (src, lm)
@@ -3984,12 +3991,16 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
         self.assertEqual(_norm_src_test(corrected_value), 'WhatsApp')
 
     def test_non_whatsapp_sources_unaffected(self):
-        self.assertEqual(_norm_src_test('Facebook'),   'Facebook')
-        self.assertEqual(_norm_src_test('Organic'),    'Organic')
-        self.assertEqual(_norm_src_test('Non CPS'),    'Non CPS')
-        self.assertEqual(_norm_src_test('Non-MS'),     'Non CPS')
-        self.assertEqual(_norm_src_test('Google Ads'), 'Google Ads')
-        self.assertEqual(_norm_src_test('IVR'),        'IVR')
+        # Facebook+LT1105 stays Facebook (valid combination)
+        self.assertEqual(_norm_src_test('Facebook', '1105'), 'Facebook')
+        # Facebook+non-1105 → WhatsApp (business rule)
+        self.assertEqual(_norm_src_test('Facebook', '69'),   'WhatsApp')
+        # Other sources pass through unchanged regardless of LT
+        self.assertEqual(_norm_src_test('Organic',    '69'), 'Organic')
+        self.assertEqual(_norm_src_test('Non CPS',    '69'), 'Non CPS')
+        self.assertEqual(_norm_src_test('Non-MS',     '69'), 'Non CPS')
+        self.assertEqual(_norm_src_test('Google Ads', '69'), 'Google Ads')
+        self.assertEqual(_norm_src_test('IVR',        '69'), 'IVR')
 
     # ── 3. WhatsApp reaches Model × Source aggregation ───────────────────────
     def test_whatsapp_reaches_mm_aggregation(self):
@@ -4030,7 +4041,8 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
         leads = [
             {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':True },
             {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
-            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+            # Google+LT69 is a genuinely different source that must NOT bleed into WhatsApp
+            {'lid':'L3','lm':"Aug'26",'src':'Google',  'mdl':'Jupiter','lt':'69','is_ret':False},
         ]
         agg = _simulate_agg(leads)
         lt69_wa = agg['ltm'].get(('69', 'WhatsApp', "Aug'26"), [0, 0])
@@ -4039,6 +4051,9 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
         self.assertEqual(lt69_wa[1], 1)
         self.assertEqual(lt70_wa[0], 1)
         self.assertEqual(lt70_wa[1], 0)
+        # Google must not appear as WhatsApp
+        lt69_google = agg['ltm'].get(('69', 'Google', "Aug'26"), [0, 0])
+        self.assertEqual(lt69_google[0], 1)  # L3 stayed as Google
 
     # ── 5 & 6. Source Analysis, Model × Source, LT × Source reconcile ────────
     def test_sm_mm_ltm_whatsapp_totals_reconcile(self):
@@ -4047,7 +4062,8 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
             {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
             {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'70','is_ret':True },
             {'lid':'L3','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'69','is_ret':False},
-            {'lid':'L4','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+            # Google is a genuinely different source (not converted to WhatsApp)
+            {'lid':'L4','lm':"Aug'26",'src':'Google',  'mdl':'Jupiter','lt':'69','is_ret':False},
         ]
         agg = _simulate_agg(leads)
         aug = "Aug'26"
@@ -4084,43 +4100,50 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
 
     # ── 7. Filtering Source = WhatsApp ───────────────────────────────────────
     def test_source_filter_whatsapp_excludes_others(self):
-        """After normalisation, source filter on 'WhatsApp' includes only WhatsApp rows."""
+        """After normalisation, source filter on 'WhatsApp' includes only WhatsApp rows.
+        Facebook+LT1105 stays Facebook and must NOT appear in WhatsApp filter.
+        """
         leads = [
-            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
-            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Raider', 'lt':'70','is_ret':False},
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Google',  'mdl':'Raider', 'lt':'70',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
         ]
         active_filter = {'WhatsApp'}
-        included = [r for r in leads if _norm_src_test(r['src']) in active_filter]
+        included = [r for r in leads if _norm_src_test(r['src'], r['lt']) in active_filter]
         self.assertEqual(len(included), 1)
-        self.assertEqual(_norm_src_test(included[0]['src']), 'WhatsApp')
+        self.assertEqual(_norm_src_test(included[0]['src'], included[0]['lt']), 'WhatsApp')
 
     # ── 8. Filtering Model + WhatsApp ────────────────────────────────────────
     def test_model_plus_whatsapp_filter(self):
-        """Model=Jupiter AND Source=WhatsApp must return only matching rows."""
+        """Model=Jupiter AND Source=WhatsApp must return only matching rows.
+        Facebook+LT1105 on Jupiter must NOT appear in WhatsApp filter.
+        """
         leads = [
-            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
-            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
-            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'1105','is_ret':False},
         ]
         active_src   = {'WhatsApp'}
         active_model = {'Jupiter'}
         included = [r for r in leads
-                    if _norm_src_test(r['src']) in active_src and r['mdl'] in active_model]
+                    if _norm_src_test(r['src'], r['lt']) in active_src and r['mdl'] in active_model]
         self.assertEqual(len(included), 1)
         self.assertEqual(included[0]['lid'], 'L1')
 
     # ── 9. Filtering Lead Type + WhatsApp ────────────────────────────────────
     def test_leadtype_plus_whatsapp_filter(self):
-        """LeadType=69 AND Source=WhatsApp must return only matching rows."""
+        """LeadType=69 AND Source=WhatsApp must return only matching rows.
+        Facebook+LT1105 (stays Facebook) on a different LT must be excluded.
+        """
         leads = [
-            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
-            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
-            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'1105','is_ret':False},
         ]
         active_src = {'WhatsApp'}
         active_lt  = {'69'}
         included = [r for r in leads
-                    if _norm_src_test(r['src']) in active_src and r['lt'] in active_lt]
+                    if _norm_src_test(r['src'], r['lt']) in active_src and r['lt'] in active_lt]
         self.assertEqual(len(included), 1)
         self.assertEqual(included[0]['lid'], 'L1')
 
@@ -4140,15 +4163,23 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
             self.assertNotIn((stale, "Aug'26"), agg['sm'],
                              f"Stale casing {stale!r} must not appear in sm after normalisation")
 
-    # ── 11. Other sources remain unchanged ───────────────────────────────────
+    # ── 11. Other sources remain unchanged (except Facebook which has its own rule) ──
     def test_other_sources_unchanged_by_normalisation(self):
-        """Facebook, Organic, Non CPS, Google are not affected by WhatsApp normalisation."""
-        for src in ('Facebook', 'Organic', 'Non CPS', 'Google', 'IVR', 'Non-MS'):
-            result = _norm_src_test(src)
-            if src == 'Non-MS':
-                self.assertEqual(result, 'Non CPS')
-            else:
-                self.assertEqual(result, src, f'{src!r} must pass through unchanged')
+        """Organic, Non CPS, Google, IVR pass through; Non-MS→Non CPS; Facebook→WhatsApp for non-1105."""
+        # Sources that always pass through unchanged
+        for src in ('Organic', 'Non CPS', 'Google', 'IVR'):
+            result = _norm_src_test(src, lt='69')
+            self.assertEqual(result, src, f'{src!r} must pass through unchanged')
+        # Non-MS always normalises to Non CPS
+        self.assertEqual(_norm_src_test('Non-MS', lt='69'), 'Non CPS')
+        # Facebook with LT 1105 stays Facebook
+        self.assertEqual(_norm_src_test('Facebook', lt='1105'), 'Facebook')
+        # Facebook with LT 1106 stays Facebook
+        self.assertEqual(_norm_src_test('Facebook', lt='1106'), 'Facebook')
+        # Facebook with any other LT → WhatsApp
+        for lt in ('69', '70', '80', '103', '73', 'Unknown', ''):
+            self.assertEqual(_norm_src_test('Facebook', lt=lt), 'WhatsApp',
+                             f'Facebook+LT{lt!r} must become WhatsApp')
 
     # ── 12. No double-counting ────────────────────────────────────────────────
     def test_no_duplicate_counting(self):
@@ -4285,8 +4316,9 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
             {'lid':'L4','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
             {'lid':'L5','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':True },
             # Non-WhatsApp leads — must not bleed into WhatsApp totals
-            {'lid':'L6','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
-            {'lid':'L7','lm':"Aug'26",'src':'Non CPS', 'mdl':'Raider', 'lt':'70','is_ret':False},
+            # Facebook is only valid for LT 1105/1106; use LT1105 to keep it as Facebook
+            {'lid':'L6','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'1105','is_ret':False},
+            {'lid':'L7','lm':"Aug'26",'src':'Non CPS', 'mdl':'Raider', 'lt':'70', 'is_ret':False},
         ]
         agg = _simulate_agg(leads)
         aug = "Aug'26"
@@ -4303,6 +4335,309 @@ class TestWhatsAppSourcePopulation(unittest.TestCase):
         self.assertEqual(sm_wa_r,  2, 'sm: 2 WhatsApp retails')
         self.assertEqual(mm_wa_r,  2, 'mm WhatsApp retails must equal sm')
         self.assertEqual(ltm_wa_r, 2, 'ltm WhatsApp retails must equal sm')
+
+
+# ---------------------------------------------------------------------------
+# FACEBOOK LEAD TYPE × SOURCE BUG — regression tests
+# Bug: Facebook source was appearing in LT × Source for LTs like 69, 70, 80
+# because the pipeline never enforced the business rule that Facebook is only
+# valid for LT 1105 and 1106. All other LTs with Source=Facebook are
+# WhatsApp misclassifications in the Lead Master.
+# Fix: aggregation loop applies src='WhatsApp' whenever src=='Facebook'
+#      and lt not in ('1105', '1106'), universally across all months.
+# ---------------------------------------------------------------------------
+
+# ── Minimal simulation used in this class (same _norm_src_test / _simulate_agg) ──
+#    _norm_src_test and _simulate_agg already updated to include the Facebook rule.
+
+class TestFacebookLeadTypeMappingBug(unittest.TestCase):
+    """
+    16 regression tests preventing the LT × Source cross-product bug from
+    returning. Every test uses explicit row-level Lead Master data as input.
+    """
+
+    # ── 1. Facebook + non-1105 LT → WhatsApp in normalisation ───────────────
+    def test_facebook_non_1105_normalised_to_whatsapp(self):
+        """Facebook+LT non-1105/1106 must be reclassified as WhatsApp."""
+        for lt in ('69', '70', '80', '103', '73', '113', '75', '20', '48', 'Unknown', ''):
+            result = _norm_src_test('Facebook', lt)
+            self.assertEqual(result, 'WhatsApp',
+                             f'Facebook+LT{lt!r} must be WhatsApp, got {result!r}')
+
+    # ── 2. Facebook + LT 1105 stays Facebook ─────────────────────────────────
+    def test_facebook_lt1105_remains_facebook(self):
+        """Facebook+LT1105 is valid and must NOT be converted to WhatsApp."""
+        self.assertEqual(_norm_src_test('Facebook', '1105'), 'Facebook')
+
+    # ── 3. Facebook + LT 1106 stays Facebook ─────────────────────────────────
+    def test_facebook_lt1106_remains_facebook(self):
+        """Facebook+LT1106 is valid and must NOT be converted to WhatsApp."""
+        self.assertEqual(_norm_src_test('Facebook', '1106'), 'Facebook')
+
+    # ── 4. Zero combinations must stay zero in aggregation ───────────────────
+    def test_zero_lt_source_combinations_remain_zero(self):
+        """
+        If no Lead Master row has LT=69 AND Source=Facebook,
+        the LT × Source cell for (LT69, Facebook) must be 0.
+        """
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache','lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69', 'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Organic', 'mdl':'Raider', 'lt':'70', 'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        # LT 69 must have zero Facebook
+        lt69_fb = agg['ltm'].get(('69', 'Facebook', "Aug'26"), [0, 0])
+        self.assertEqual(lt69_fb[0], 0, 'LT69 × Facebook must be 0')
+        # LT 70 must have zero Facebook
+        lt70_fb = agg['ltm'].get(('70', 'Facebook', "Aug'26"), [0, 0])
+        self.assertEqual(lt70_fb[0], 0, 'LT70 × Facebook must be 0')
+        # LT 1105 has 1 Facebook lead
+        lt1105_fb = agg['ltm'].get(('1105', 'Facebook', "Aug'26"), [0, 0])
+        self.assertEqual(lt1105_fb[0], 1, 'LT1105 × Facebook must be 1')
+
+    # ── 5. LT 1105 isolation: gets Facebook, LT 69 gets WhatsApp ─────────────
+    def test_lt1105_facebook_and_lt69_whatsapp_isolated(self):
+        """
+        Row-level: LT1105+Facebook stays Facebook, LT69+Facebook→WhatsApp.
+        After aggregation, LT1105 appears in Facebook column, LT69 in WhatsApp.
+        """
+        leads = [
+            {'lid':'A1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'A2','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':True },
+            # These Facebook leads are misclassified; they should be WhatsApp
+            {'lid':'B1','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'B2','lm':"Aug'26",'src':'Facebook','mdl':'Raider', 'lt':'70',  'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        # LT 1105 → Facebook bucket
+        self.assertEqual(agg['ltm'].get(('1105', 'Facebook', aug), [0,0])[0], 2)
+        self.assertEqual(agg['ltm'].get(('1105', 'WhatsApp', aug), [0,0])[0], 0,
+                         'LT1105 must have zero WhatsApp leads')
+        # LT 69 → WhatsApp bucket (converted from Facebook)
+        self.assertEqual(agg['ltm'].get(('69', 'WhatsApp', aug), [0,0])[0], 1)
+        self.assertEqual(agg['ltm'].get(('69', 'Facebook', aug), [0,0])[0], 0,
+                         'LT69 must have zero Facebook leads')
+        # LT 70 → WhatsApp bucket (converted from Facebook)
+        self.assertEqual(agg['ltm'].get(('70', 'WhatsApp', aug), [0,0])[0], 1)
+        self.assertEqual(agg['ltm'].get(('70', 'Facebook', aug), [0,0])[0], 0,
+                         'LT70 must have zero Facebook leads')
+
+    # ── 6. Row-level aggregation: no cross-product manufacturing ─────────────
+    def test_lt_source_aggregation_is_row_level(self):
+        """
+        Aggregation must ONLY create LT × Source cells for combinations that
+        exist in the input rows. It must NOT generate cross-products.
+        """
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Organic',  'mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Google',   'mdl':'Raider', 'lt':'70',  'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        # Only 3 ltm keys should exist (one per row)
+        aug_keys = [(lt, src) for (lt, src, lm) in agg['ltm'] if lm == aug]
+        self.assertEqual(len(aug_keys), 3, f'Expected 3 ltm rows, got {len(aug_keys)}: {aug_keys}')
+        # Exact expected combinations
+        self.assertIn(('1105', 'Facebook'), aug_keys)
+        self.assertIn(('69',   'Organic'),  aug_keys)
+        self.assertIn(('70',   'Google'),   aug_keys)
+        # Cross-product combinations must NOT exist
+        self.assertNotIn(('69',   'Facebook'), aug_keys, 'LT69×Facebook cross-product must not exist')
+        self.assertNotIn(('70',   'Facebook'), aug_keys, 'LT70×Facebook cross-product must not exist')
+        self.assertNotIn(('1105', 'Organic'),  aug_keys, 'LT1105×Organic cross-product must not exist')
+        self.assertNotIn(('1105', 'Google'),   aug_keys, 'LT1105×Google cross-product must not exist')
+
+    # ── 7. Model × Source row-level (no cross-product) ───────────────────────
+    def test_model_source_aggregation_is_row_level(self):
+        """Model × Source cells must only exist for row-level combinations."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Organic',  'mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Google',   'mdl':'Raider', 'lt':'70',  'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        mm_keys = [(mdl, src) for (mdl, src, lm) in agg['mm'] if lm == aug]
+        self.assertEqual(len(mm_keys), 3)
+        self.assertIn(('Apache',  'Facebook'), mm_keys)
+        self.assertIn(('Jupiter', 'Organic'),  mm_keys)
+        self.assertIn(('Raider',  'Google'),   mm_keys)
+        # Cross-products must not exist
+        self.assertNotIn(('Apache',  'Organic'), mm_keys, 'Apache×Organic cross-product')
+        self.assertNotIn(('Jupiter', 'Google'),  mm_keys, 'Jupiter×Google cross-product')
+
+    # ── 8. MS FB filter: LT69 × Facebook = 0 ────────────────────────────────
+    def test_source_filter_msfb_lt69_is_zero(self):
+        """With Source=Facebook filter active, LT69 must contribute 0 leads."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        # After normalisation, L2 is WhatsApp+LT69, NOT Facebook+LT69
+        lt69_fb = agg['ltm'].get(('69', 'Facebook', aug), [0,0])
+        self.assertEqual(lt69_fb[0], 0, 'LT69 must have 0 Facebook leads after fix')
+        # L2 appears as WhatsApp
+        lt69_wa = agg['ltm'].get(('69', 'WhatsApp', aug), [0,0])
+        self.assertEqual(lt69_wa[0], 1, 'L2 must appear as WhatsApp for LT69')
+
+    # ── 9. Combined LT + Source filter: LT69 + Facebook = 0 ─────────────────
+    def test_lt69_and_facebook_filter_is_zero(self):
+        """Source=Facebook AND LeadType=69 filter must return 0 leads (no such rows exist)."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69',  'is_ret':False},
+        ]
+        active_src = {'Facebook'}
+        active_lt  = {'69'}
+        # Apply both normalisation and filter
+        included = [
+            r for r in leads
+            if _norm_src_test(r['src'], r['lt']) in active_src and r['lt'] in active_lt
+        ]
+        self.assertEqual(len(included), 0,
+                         'LT69 AND Source=Facebook must return 0 rows — Facebook+LT69 is WhatsApp')
+
+    # ── 10. Reconciliation: sum(ltm by src) == sum(sm by src) ────────────────
+    def test_reconciliation_ltm_by_source_equals_sm(self):
+        """Sum of ltm leads by source must equal sm leads for each source."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69',  'is_ret':True },
+            {'lid':'L4','lm':"Aug'26",'src':'Organic',  'mdl':'Raider', 'lt':'70',  'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        all_srcs = set(src for (src, lm) in agg['sm'] if lm == aug)
+        for src in all_srcs:
+            sm_l  = agg['sm'].get((src, aug), [0,0])[0]
+            ltm_l = sum(v[0] for (lt, s, lm), v in agg['ltm'].items() if s == src and lm == aug)
+            self.assertEqual(ltm_l, sm_l, f'Source={src}: ltm total != sm total')
+
+    # ── 11. Reconciliation: sum(ltm by lt) == lt totals ──────────────────────
+    def test_reconciliation_ltm_by_leadtype_equals_lt_totals(self):
+        """Sum of ltm leads by lead type must equal per-LT totals."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69',  'is_ret':True },
+            {'lid':'L4','lm':"Aug'26",'src':'Organic',  'mdl':'Raider', 'lt':'70',  'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        # Expected per-LT totals: 1105→1, 69→2 (L2+L3), 70→1
+        lt_expected = {'1105': 1, '69': 2, '70': 1}
+        for lt, expected in lt_expected.items():
+            ltm_l = sum(v[0] for (t, s, lm), v in agg['ltm'].items() if t == lt and lm == aug)
+            self.assertEqual(ltm_l, expected, f'LT={lt}: ltm total={ltm_l}, expected={expected}')
+
+    # ── 12. Grand total reconciles ────────────────────────────────────────────
+    def test_grand_total_ltm_equals_sm_equals_mm(self):
+        """Sum of ALL ltm cells == sum of ALL sm cells == sum of ALL mm cells."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':True },
+            {'lid':'L3','lm':"Aug'26",'src':'Organic',  'mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L4','lm':"Sep'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70',  'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        sm_total  = sum(v[0] for v in agg['sm'].values())
+        mm_total  = sum(v[0] for v in agg['mm'].values())
+        ltm_total = sum(v[0] for v in agg['ltm'].values())
+        self.assertEqual(sm_total, 4)
+        self.assertEqual(mm_total,  sm_total, 'mm grand total must equal sm')
+        self.assertEqual(ltm_total, sm_total, 'ltm grand total must equal sm')
+
+    # ── 13. MS FB only appears for LT 1105/1106 in aggregation result ────────
+    def test_msfb_only_for_lt1105_and_lt1106(self):
+        """After normalisation, Facebook source must only appear for LT 1105 and LT 1106."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Apache', 'lt':'1106','is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'L4','lm':"Aug'26",'src':'Facebook','mdl':'Raider', 'lt':'70',  'is_ret':False},
+            {'lid':'L5','lm':"Aug'26",'src':'Facebook','mdl':'Ntorq',  'lt':'80',  'is_ret':False},
+            {'lid':'L6','lm':"Aug'26",'src':'Organic',  'mdl':'Jupiter','lt':'103', 'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        # All ltm keys with source=Facebook must have lt in ('1105', '1106')
+        fb_lts = [lt for (lt, src, lm) in agg['ltm'] if src == 'Facebook' and lm == aug]
+        for lt in fb_lts:
+            self.assertIn(lt, ('1105', '1106'),
+                          f'Facebook must not appear for LT {lt} — only 1105/1106 allowed')
+        # LT 69, 70, 80 must appear as WhatsApp (not Facebook)
+        for lt in ('69', '70', '80'):
+            self.assertEqual(agg['ltm'].get((lt, 'Facebook', aug), [0,0])[0], 0,
+                             f'LT{lt} × Facebook must be 0')
+            self.assertEqual(agg['ltm'].get((lt, 'WhatsApp', aug), [0,0])[0], 1,
+                             f'LT{lt} × WhatsApp must be 1 (converted from Facebook)')
+
+    # ── 14. WhatsApp true leads preserved alongside converted FB leads ────────
+    def test_whatsapp_true_leads_preserved(self):
+        """Genuine WhatsApp leads must remain as WhatsApp after the Facebook rule is applied."""
+        leads = [
+            {'lid':'W1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':True },
+            {'lid':'W2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
+            # These Facebook leads also become WhatsApp — but are separate rows in ltm/mm
+            {'lid':'F1','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        # All 3 leads end up as WhatsApp; sm total = 3
+        sm_wa = agg['sm'].get(('WhatsApp', aug), [0,0])[0]
+        self.assertEqual(sm_wa, 3, 'All 3 WhatsApp leads (incl. converted FB) must be in sm')
+        # LT 69 has 2 WhatsApp leads (W1 genuine + F1 converted)
+        lt69_wa = agg['ltm'].get(('69', 'WhatsApp', aug), [0,0])
+        self.assertEqual(lt69_wa[0], 2)
+        self.assertEqual(lt69_wa[1], 1, 'Only W1 is a retail')
+        # Reconcile: ltm total == sm total
+        ltm_wa = sum(v[0] for (lt,s,lm),v in agg['ltm'].items() if s=='WhatsApp' and lm==aug)
+        self.assertEqual(ltm_wa, sm_wa)
+
+    # ── 15. On Create: Facebook→WhatsApp conversion preserves lead month ──────
+    def test_on_create_facebook_converted_to_whatsapp_uses_lead_month(self):
+        """After conversion, the lead month attribution (On Create) is unchanged."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Sep'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        # L1 → WhatsApp in Aug'26
+        self.assertEqual(agg['sm'].get(('WhatsApp', "Aug'26"), [0,0])[0], 1)
+        # L2 → WhatsApp in Sep'26
+        self.assertEqual(agg['sm'].get(('WhatsApp', "Sep'26"), [0,0])[0], 1)
+        # Facebook must appear in neither month
+        self.assertEqual(agg['sm'].get(('Facebook', "Aug'26"), [0,0])[0], 0)
+        self.assertEqual(agg['sm'].get(('Facebook', "Sep'26"), [0,0])[0], 0)
+
+    # ── 16. Historical months: same rule applies (not just live months) ───────
+    def test_historical_months_facebook_rule_applies(self):
+        """The Facebook→WhatsApp rule must apply to historical months (Apr'25-May'26) too."""
+        leads = [
+            {'lid':'H1','lm':"Apr'25",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':False},
+            {'lid':'H2','lm':"Apr'25",'src':'Facebook','mdl':'Jupiter','lt':'69',  'is_ret':False},
+            {'lid':'H3','lm':"Jun'25",'src':'Facebook','mdl':'Raider', 'lt':'70',  'is_ret':False},
+            {'lid':'H4','lm':"May'26",'src':'Facebook','mdl':'Apache', 'lt':'1105','is_ret':True },
+            {'lid':'H5','lm':"May'26",'src':'Facebook','mdl':'Jupiter','lt':'103', 'is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        # Facebook must only appear for LT 1105
+        fb_lts = {lt for (lt, src, lm) in agg['ltm'] if src == 'Facebook'}
+        self.assertEqual(fb_lts, {'1105'},
+                         f'Facebook must only appear for LT 1105, found {fb_lts}')
+        # LT 69, 70, 103 must be WhatsApp
+        for lt, mon in (('69', "Apr'25"), ('70', "Jun'25"), ('103', "May'26")):
+            wa = agg['ltm'].get((lt, 'WhatsApp', mon), [0,0])
+            self.assertEqual(wa[0], 1, f'LT{lt}/{mon}: must be 1 WhatsApp lead (converted from FB)')
+            fb = agg['ltm'].get((lt, 'Facebook', mon), [0,0])
+            self.assertEqual(fb[0], 0, f'LT{lt}/{mon}: must be 0 Facebook leads')
 
 
 # ---------------------------------------------------------------------------

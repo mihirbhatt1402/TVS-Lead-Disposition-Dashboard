@@ -2058,6 +2058,9 @@ def build_payload(all_leads, retail_map):
         if src in ('Non-MS', 'Non MS', 'Non- MS'): src = 'Non CPS'
         if src.lower() == 'whatsapp': src = 'WhatsApp'
         lt   = _lts[i].strip() or 'Unknown'
+        # Business rule: Facebook source is only valid for LT 1105 and 1106.
+        # All other LTs with Source=Facebook are misclassified WhatsApp leads.
+        if src == 'Facebook' and lt not in ('1105', '1106'): src = 'WhatsApp'
         mdl  = normalize_lead_model(_mdls[i])
         st   = _sts[i].strip().title() or 'Unknown'
         zone = _zones[i].strip() or 'Unknown'
