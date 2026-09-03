@@ -289,12 +289,14 @@ function classifySrc(s) {
   const n = (s || '').toLowerCase();
   if (['adword','google','sem','ppc'].some(p => n.includes(p))) return 'adwords';
   if (['facebook','fb','meta','msfb'].some(p => n.includes(p))) return 'msfb';
+  if (n === 'whatsapp') return 'whatsapp';
   if (['organic'].some(p => n.includes(p))) return 'organic';
   return 'nonms';
 }
 function buildSrcGroups(srcList) {
   const adw = srcList.filter(s => classifySrc(s) === 'adwords');
   const fb  = srcList.filter(s => classifySrc(s) === 'msfb');
+  const wa  = srcList.filter(s => classifySrc(s) === 'whatsapp');
   const org = srcList.filter(s => classifySrc(s) === 'organic');
   const nms = srcList.filter(s => classifySrc(s) === 'nonms');
   const groups = [];
@@ -306,6 +308,10 @@ function buildSrcGroups(srcList) {
       ...(adw.length ? [{ id:'adwords', label:'ADWORDS', color:'#7C3AED', lightColor:'#F3F0FF', srcs: adw }] : []),
       ...(fb.length  ? [{ id:'msfb',    label:'MS FB',   color:'#2563EB', lightColor:'#EFF6FF', srcs: fb  }] : []),
     ]
+  });
+  if (wa.length) groups.push({
+    id:'whatsapp', label:'WHATSAPP', color:'#25D366', lightColor:'#DCFCE7', srcs: wa,
+    subGroups: []
   });
   if (orgSrcs.length) groups.push({
     id:'organic', label:'ORG+NON MS', color:'#059669', lightColor:'#D1FAE5', srcs: orgSrcs,

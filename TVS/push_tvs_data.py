@@ -2056,6 +2056,7 @@ def build_payload(all_leads, retail_map):
         lm   = _lms[i].strip()
         src  = _srcs[i].strip() or 'Unknown'
         if src in ('Non-MS', 'Non MS', 'Non- MS'): src = 'Non CPS'
+        if src.lower() == 'whatsapp': src = 'WhatsApp'
         lt   = _lts[i].strip() or 'Unknown'
         mdl  = normalize_lead_model(_mdls[i])
         st   = _sts[i].strip().title() or 'Unknown'
@@ -2805,8 +2806,8 @@ if len(hist_leads) > 0 and 'Source' in hist_leads.columns and 'LeadType' in hist
     )
     _jun26_corrected = int(_jun26_correct_mask.sum())
     if _jun26_corrected:
-        hist_leads.loc[_jun26_correct_mask, 'Source'] = 'Whatsapp'
-        print(f"  Jun'26 source correction: {_jun26_corrected:,} Facebook (non-LT1105) → Whatsapp", flush=True)
+        hist_leads.loc[_jun26_correct_mask, 'Source'] = 'WhatsApp'
+        print(f"  Jun'26 source correction: {_jun26_corrected:,} Facebook (non-LT1105) → WhatsApp", flush=True)
 
 # ── [3/5] Historical leads ────────────────────────────────────────────────────
 print(f"\n[3/5] Historical leads: {len(hist_leads):,} rows", flush=True)

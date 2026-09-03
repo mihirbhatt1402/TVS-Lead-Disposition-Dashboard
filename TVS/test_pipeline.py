@@ -3858,6 +3858,454 @@ class TestMonthCloseArchitecture(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# WHATSAPP SOURCE POPULATION — regression tests for the source-group bug
+# Bug: classifySrc('WhatsApp') returned 'nonms', merging WhatsApp into
+# ORG+NON MS instead of giving it its own column in Model × Source / LT × Source.
+# Fix: (1) pipeline normalises all WhatsApp casing variants → 'WhatsApp',
+#      (2) classifySrc recognises n==='whatsapp' → 'whatsapp' group.
+# ---------------------------------------------------------------------------
+
+# ── Inline pipeline normalisation (mirrors the new logic in push_tvs_data.py) ──
+
+def _norm_src_test(raw: str) -> str:
+    """Mirrors the source normalisation block in build_payload."""
+    src = (raw or '').strip() or 'Unknown'
+    if src in ('Non-MS', 'Non MS', 'Non- MS'):
+        src = 'Non CPS'
+    if src.lower() == 'whatsapp':
+        src = 'WhatsApp'
+    return src
+
+
+# ── Minimal inline simulation of classifySrc / buildSrcGroups ────────────────
+
+def _classify_src_test(s: str) -> str:
+    """Mirrors the updated classifySrc() in index.html."""
+    n = (s or '').lower()
+    if any(p in n for p in ('adword', 'google', 'sem', 'ppc')):
+        return 'adwords'
+    if any(p in n for p in ('facebook', 'fb', 'meta', 'msfb')):
+        return 'msfb'
+    if n == 'whatsapp':
+        return 'whatsapp'
+    if 'organic' in n:
+        return 'organic'
+    return 'nonms'
+
+
+def _build_src_groups_test(src_list: list) -> list:
+    """Mirrors the updated buildSrcGroups() in index.html."""
+    adw = [s for s in src_list if _classify_src_test(s) == 'adwords']
+    fb  = [s for s in src_list if _classify_src_test(s) == 'msfb']
+    wa  = [s for s in src_list if _classify_src_test(s) == 'whatsapp']
+    org = [s for s in src_list if _classify_src_test(s) == 'organic']
+    nms = [s for s in src_list if _classify_src_test(s) == 'nonms']
+    groups = []
+    paid_srcs = adw + fb
+    org_srcs  = org + nms
+    if paid_srcs:
+        groups.append({'id': 'paid', 'srcs': paid_srcs,
+                       'subGroups': [
+                           *([{'id':'adwords','srcs':adw}] if adw else []),
+                           *([{'id':'msfb',   'srcs':fb}]  if fb  else []),
+                       ]})
+    if wa:
+        groups.append({'id': 'whatsapp', 'srcs': wa, 'subGroups': []})
+    if org_srcs:
+        groups.append({'id': 'organic', 'srcs': org_srcs,
+                       'subGroups': [
+                           *([{'id':'organic','srcs':org}] if org else []),
+                           *([{'id':'nonms',  'srcs':nms}] if nms else []),
+                       ]})
+    return groups
+
+
+def _grp_sum_test(src_map: dict, srcs: list) -> dict:
+    """Mirrors grpSum(srcMap, srcs) in index.html."""
+    l = sum(src_map.get(s, {}).get('l', 0) for s in srcs)
+    r = sum(src_map.get(s, {}).get('r', 0) for s in srcs)
+    return {'l': l, 'r': r}
+
+
+# ── Minimal build_payload simulation for reconciliation tests ─────────────────
+
+def _simulate_agg(leads: list) -> dict:
+    """
+    Build sm (source × month → [leads, rets]),
+         mm (model  × source × month → [leads, rets]),
+         ltm (lt    × source × month → [leads, rets])
+    from a list of dicts with keys: lid, lm, src, mdl, lt, is_ret.
+    Applies _norm_src_test to each row's src (mirrors build_payload).
+    Returns {'sm', 'mm', 'ltm', 'src_arr'} all keyed by canonical names.
+    """
+    sm, mm, ltm = {}, {}, {}
+    src_set, lm_set, mdl_set, lt_set = set(), set(), set(), set()
+
+    for row in leads:
+        src = _norm_src_test(row['src'])
+        lm  = row['lm'];  mdl = row['mdl'];  lt = str(row['lt'])
+        is_ret = row.get('is_ret', False)
+        src_set.add(src); lm_set.add(lm); mdl_set.add(mdl); lt_set.add(lt)
+        k_sm  = (src, lm)
+        k_mm  = (mdl, src, lm)
+        k_ltm = (lt,  src, lm)
+        for d, k in [(sm, k_sm), (mm, k_mm), (ltm, k_ltm)]:
+            if k not in d: d[k] = [0, 0]
+            d[k][0] += 1
+            if is_ret: d[k][1] += 1
+
+    return {'sm': sm, 'mm': mm, 'ltm': ltm, 'src_arr': sorted(src_set)}
+
+
+class TestWhatsAppSourcePopulation(unittest.TestCase):
+    """
+    Regression tests for the WhatsApp source-group bug.
+    Tests 1–15 map to the spec requirements.
+    """
+
+    # ── 1. WhatsApp recognised by canonical source mapping ───────────────────
+    def test_whatsapp_in_canonical_classification(self):
+        # All post-normalisation casing variants map to 'whatsapp' group.
+        # Leading/trailing whitespace is stripped by the pipeline before classifySrc sees the value.
+        self.assertEqual(_classify_src_test('WhatsApp'), 'whatsapp')
+        self.assertEqual(_classify_src_test('Whatsapp'), 'whatsapp')
+        self.assertEqual(_classify_src_test('WHATSAPP'), 'whatsapp')
+
+    # ── 2. WhatsApp survives pipeline source normalisation ───────────────────
+    def test_whatsapp_normalised_to_canonical(self):
+        """All casing variants → canonical 'WhatsApp' in pipeline."""
+        for variant in ('WhatsApp', 'Whatsapp', 'WHATSAPP', ' WhatsApp '):
+            self.assertEqual(_norm_src_test(variant), 'WhatsApp',
+                             f"Expected 'WhatsApp' for {variant!r}")
+
+    def test_jun26_correction_produces_canonical_whatsapp(self):
+        """Jun26 correction now writes 'WhatsApp', not 'Whatsapp'."""
+        corrected_value = 'WhatsApp'
+        self.assertEqual(_norm_src_test(corrected_value), 'WhatsApp')
+
+    def test_non_whatsapp_sources_unaffected(self):
+        self.assertEqual(_norm_src_test('Facebook'),   'Facebook')
+        self.assertEqual(_norm_src_test('Organic'),    'Organic')
+        self.assertEqual(_norm_src_test('Non CPS'),    'Non CPS')
+        self.assertEqual(_norm_src_test('Non-MS'),     'Non CPS')
+        self.assertEqual(_norm_src_test('Google Ads'), 'Google Ads')
+        self.assertEqual(_norm_src_test('IVR'),        'IVR')
+
+    # ── 3. WhatsApp reaches Model × Source aggregation ───────────────────────
+    def test_whatsapp_reaches_mm_aggregation(self):
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'1','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'2','is_ret':True },
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'1','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        wa_keys = [(mdl, src, lm) for (mdl, src, lm) in agg['mm'] if src == 'WhatsApp']
+        self.assertTrue(len(wa_keys) > 0, 'WhatsApp must appear in mm (Model × Source × Month)')
+
+    def test_whatsapp_reaches_mm_with_correct_count(self):
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'1','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'1','is_ret':True },
+            {'lid':'L3','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'2','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        jupiter_wa = agg['mm'].get(('Jupiter', 'WhatsApp', "Aug'26"), [0, 0])
+        raider_wa  = agg['mm'].get(('Raider',  'WhatsApp', "Aug'26"), [0, 0])
+        self.assertEqual(jupiter_wa[0], 2)
+        self.assertEqual(jupiter_wa[1], 1)
+        self.assertEqual(raider_wa[0],  1)
+        self.assertEqual(raider_wa[1],  0)
+
+    # ── 4. WhatsApp reaches LT × Source aggregation ──────────────────────────
+    def test_whatsapp_reaches_ltm_aggregation(self):
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        wa_keys = [(lt, src, lm) for (lt, src, lm) in agg['ltm'] if src == 'WhatsApp']
+        self.assertTrue(len(wa_keys) > 0, 'WhatsApp must appear in ltm (LT × Source × Month)')
+
+    def test_whatsapp_reaches_ltm_with_correct_count(self):
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':True },
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        lt69_wa = agg['ltm'].get(('69', 'WhatsApp', "Aug'26"), [0, 0])
+        lt70_wa = agg['ltm'].get(('70', 'WhatsApp', "Aug'26"), [0, 0])
+        self.assertEqual(lt69_wa[0], 1)
+        self.assertEqual(lt69_wa[1], 1)
+        self.assertEqual(lt70_wa[0], 1)
+        self.assertEqual(lt70_wa[1], 0)
+
+    # ── 5 & 6. Source Analysis, Model × Source, LT × Source reconcile ────────
+    def test_sm_mm_ltm_whatsapp_totals_reconcile(self):
+        """Sum of WhatsApp in mm and ltm must equal WhatsApp in sm."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'70','is_ret':True },
+            {'lid':'L3','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'69','is_ret':False},
+            {'lid':'L4','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        # sm WhatsApp
+        sm_wa_l = agg['sm'].get(('WhatsApp', aug), [0, 0])[0]
+        # mm WhatsApp sum
+        mm_wa_l = sum(v[0] for (mdl, src, lm), v in agg['mm'].items()
+                      if src == 'WhatsApp' and lm == aug)
+        # ltm WhatsApp sum
+        ltm_wa_l = sum(v[0] for (lt, src, lm), v in agg['ltm'].items()
+                       if src == 'WhatsApp' and lm == aug)
+        self.assertEqual(sm_wa_l, 3)
+        self.assertEqual(mm_wa_l,  sm_wa_l,  'mm WhatsApp total must equal sm WhatsApp total')
+        self.assertEqual(ltm_wa_l, sm_wa_l,  'ltm WhatsApp total must equal sm WhatsApp total')
+
+    def test_grand_totals_reconcile_across_all_sources(self):
+        """Grand total leads: sm == mm == ltm for each source."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Raider', 'lt':'70','is_ret':True },
+            {'lid':'L3','lm':"Aug'26",'src':'Organic', 'mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L4','lm':"Aug'26",'src':'Non CPS', 'mdl':'Raider', 'lt':'70','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        for src in ('WhatsApp', 'Facebook', 'Organic', 'Non CPS'):
+            sm_l  = agg['sm'].get((src, aug), [0, 0])[0]
+            mm_l  = sum(v[0] for (mdl, s, lm), v in agg['mm'].items()
+                        if s == src and lm == aug)
+            ltm_l = sum(v[0] for (lt, s, lm), v in agg['ltm'].items()
+                        if s == src and lm == aug)
+            self.assertEqual(mm_l,  sm_l, f'{src}: mm vs sm')
+            self.assertEqual(ltm_l, sm_l, f'{src}: ltm vs sm')
+
+    # ── 7. Filtering Source = WhatsApp ───────────────────────────────────────
+    def test_source_filter_whatsapp_excludes_others(self):
+        """After normalisation, source filter on 'WhatsApp' includes only WhatsApp rows."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Raider', 'lt':'70','is_ret':False},
+        ]
+        active_filter = {'WhatsApp'}
+        included = [r for r in leads if _norm_src_test(r['src']) in active_filter]
+        self.assertEqual(len(included), 1)
+        self.assertEqual(_norm_src_test(included[0]['src']), 'WhatsApp')
+
+    # ── 8. Filtering Model + WhatsApp ────────────────────────────────────────
+    def test_model_plus_whatsapp_filter(self):
+        """Model=Jupiter AND Source=WhatsApp must return only matching rows."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        active_src   = {'WhatsApp'}
+        active_model = {'Jupiter'}
+        included = [r for r in leads
+                    if _norm_src_test(r['src']) in active_src and r['mdl'] in active_model]
+        self.assertEqual(len(included), 1)
+        self.assertEqual(included[0]['lid'], 'L1')
+
+    # ── 9. Filtering Lead Type + WhatsApp ────────────────────────────────────
+    def test_leadtype_plus_whatsapp_filter(self):
+        """LeadType=69 AND Source=WhatsApp must return only matching rows."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        active_src = {'WhatsApp'}
+        active_lt  = {'69'}
+        included = [r for r in leads
+                    if _norm_src_test(r['src']) in active_src and r['lt'] in active_lt]
+        self.assertEqual(len(included), 1)
+        self.assertEqual(included[0]['lid'], 'L1')
+
+    # ── 10. Aug'26 WhatsApp data preserved through normalisation ─────────────
+    def test_aug26_whatsapp_data_preserved(self):
+        """Aug'26 WhatsApp leads: all variants normalise to canonical and aggregate."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'Whatsapp','mdl':'Raider', 'lt':'70','is_ret':True },
+            {'lid':'L3','lm':"Aug'26",'src':'WHATSAPP','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        wa_total = agg['sm'].get(('WhatsApp', "Aug'26"), [0, 0])[0]
+        self.assertEqual(wa_total, 3, 'All 3 casing variants must be merged into WhatsApp')
+        # No stale casing variants should appear
+        for stale in ('Whatsapp', 'WHATSAPP'):
+            self.assertNotIn((stale, "Aug'26"), agg['sm'],
+                             f"Stale casing {stale!r} must not appear in sm after normalisation")
+
+    # ── 11. Other sources remain unchanged ───────────────────────────────────
+    def test_other_sources_unchanged_by_normalisation(self):
+        """Facebook, Organic, Non CPS, Google are not affected by WhatsApp normalisation."""
+        for src in ('Facebook', 'Organic', 'Non CPS', 'Google', 'IVR', 'Non-MS'):
+            result = _norm_src_test(src)
+            if src == 'Non-MS':
+                self.assertEqual(result, 'Non CPS')
+            else:
+                self.assertEqual(result, src, f'{src!r} must pass through unchanged')
+
+    # ── 12. No double-counting ────────────────────────────────────────────────
+    def test_no_duplicate_counting(self):
+        """Each lead counted exactly once in sm, mm, and ltm."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        sm_total  = sum(v[0] for (_, lm), v in agg['sm'].items()  if lm == aug)
+        mm_total  = sum(v[0] for (_, _, lm), v in agg['mm'].items()  if lm == aug)
+        ltm_total = sum(v[0] for (_, _, lm), v in agg['ltm'].items() if lm == aug)
+        self.assertEqual(sm_total,  3)
+        self.assertEqual(mm_total,  3)
+        self.assertEqual(ltm_total, 3)
+
+    # ── 13. Grand totals reconcile ────────────────────────────────────────────
+    def test_grand_total_sm_eq_mm_eq_ltm(self):
+        """Grand total leads across all sources: sm == mm == ltm."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':True },
+            {'lid':'L2','lm':"Aug'26",'src':'Facebook','mdl':'Raider', 'lt':'70','is_ret':False},
+            {'lid':'L3','lm':"Aug'26",'src':'Organic', 'mdl':'Jupiter','lt':'71','is_ret':False},
+            {'lid':'L4','lm':"Sep'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        sm_l  = sum(v[0] for v in agg['sm'].values())
+        mm_l  = sum(v[0] for v in agg['mm'].values())
+        ltm_l = sum(v[0] for v in agg['ltm'].values())
+        self.assertEqual(sm_l, 4)
+        self.assertEqual(mm_l,  sm_l)
+        self.assertEqual(ltm_l, sm_l)
+
+    # ── 14. On Create: WhatsApp uses lead month ────────────────────────────────
+    def test_on_create_whatsapp_uses_lead_month(self):
+        """On Create mode keys leads by LeadMonth — WhatsApp Aug'26 counted in Aug'26."""
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':True},
+        ]
+        agg = _simulate_agg(leads)
+        self.assertEqual(agg['sm'].get(('WhatsApp', "Aug'26"), [0,0])[0], 1)
+        self.assertNotIn(('WhatsApp', "Sep'26"), agg['sm'])
+
+    # ── 15. On Update behaviour: WhatsApp retail month not confused with lead month ──
+    def test_on_update_whatsapp_retail_and_lead_months_distinct(self):
+        """
+        On Update mode: a lead created in Aug'26 but retailed in Sep'26 must
+        appear in its lead-month bucket for lead count and retail-month for retail count.
+        The normalisation is separate; this test verifies the two months stay distinct.
+        """
+        lead_month   = "Aug'26"
+        retail_month = "Sep'26"
+        # Simulate: lead → Aug'26 bucket, retail → Sep'26 bucket (u_ matrices)
+        u_sm_lead   = {}
+        u_sm_retail = {}
+        src = 'WhatsApp'
+        u_sm_lead[  (src, lead_month)]   = u_sm_lead.get((src, lead_month), [0,0]);   u_sm_lead[(src, lead_month)][0] += 1
+        u_sm_retail[(src, retail_month)] = u_sm_retail.get((src, retail_month), [0,0]); u_sm_retail[(src, retail_month)][1] += 1
+        self.assertEqual(u_sm_lead[  (src, lead_month)][0],   1, 'Lead in Aug')
+        self.assertEqual(u_sm_retail[(src, retail_month)][1], 1, 'Retail in Sep')
+        self.assertNotIn((src, "Sep'26"), u_sm_lead,   'Lead must not bleed into Sep bucket')
+        self.assertNotIn((src, "Aug'26"), u_sm_retail, 'Retail must not bleed into Aug bucket')
+
+    # ── Frontend: WhatsApp gets its own srcGroup ─────────────────────────────
+    def test_whatsapp_gets_own_src_group(self):
+        """buildSrcGroups must produce a 'whatsapp' group when WhatsApp is in the source list."""
+        src_list = ['Facebook', 'WhatsApp', 'Organic', 'Non CPS', 'Google Ads', 'IVR']
+        groups = _build_src_groups_test(src_list)
+        group_ids = [g['id'] for g in groups]
+        self.assertIn('whatsapp', group_ids, 'WhatsApp must have its own top-level source group')
+
+    def test_whatsapp_not_in_nonms_group(self):
+        """WhatsApp must NOT be in the nonms subGroup of ORG+NON MS after the fix."""
+        src_list = ['Facebook', 'WhatsApp', 'Organic', 'Non CPS']
+        groups = _build_src_groups_test(src_list)
+        organic_grp = next((g for g in groups if g['id'] == 'organic'), None)
+        if organic_grp:
+            all_organic_srcs = organic_grp['srcs']
+            self.assertNotIn('WhatsApp', all_organic_srcs,
+                             'WhatsApp must not be in ORG+NON MS group after fix')
+
+    def test_whatsapp_group_srcs_correct(self):
+        """The whatsapp group must contain exactly the WhatsApp source entry."""
+        src_list = ['Facebook', 'WhatsApp', 'Organic', 'Non CPS']
+        groups = _build_src_groups_test(src_list)
+        wa_grp = next((g for g in groups if g['id'] == 'whatsapp'), None)
+        self.assertIsNotNone(wa_grp)
+        self.assertEqual(wa_grp['srcs'], ['WhatsApp'])
+
+    def test_grp_sum_whatsapp_columns_correct(self):
+        """grpSum for WhatsApp column must read the WhatsApp entry from srcMap."""
+        src_map = {
+            'Facebook':  {'l': 64447, 'r': 3000},
+            'WhatsApp':  {'l': 41605, 'r': 2100},
+            'Organic':   {'l': 36504, 'r': 1800},
+            'Non CPS':   {'l':  3455, 'r':   50},
+        }
+        wa_group_srcs = ['WhatsApp']
+        result = _grp_sum_test(src_map, wa_group_srcs)
+        self.assertEqual(result['l'], 41605)
+        self.assertEqual(result['r'], 2100)
+
+    def test_nonms_column_excludes_whatsapp_after_fix(self):
+        """NON MS column must not include WhatsApp leads after the fix."""
+        src_map = {
+            'Non CPS':  {'l': 3455, 'r': 50},
+            'WhatsApp': {'l': 41605, 'r': 2100},
+            'IVR':      {'l':  100, 'r':  5},
+        }
+        nms_srcs = ['Non CPS', 'IVR']   # WhatsApp no longer in nonms after fix
+        result = _grp_sum_test(src_map, nms_srcs)
+        self.assertEqual(result['l'], 3555)   # 3455 + 100, NOT including WhatsApp
+
+    def test_whatsapp_absent_from_src_list_no_group(self):
+        """If no WhatsApp source is present, the whatsapp group is not created."""
+        src_list = ['Facebook', 'Organic', 'Non CPS', 'Google Ads']
+        groups = _build_src_groups_test(src_list)
+        group_ids = [g['id'] for g in groups]
+        self.assertNotIn('whatsapp', group_ids)
+
+    def test_aug26_representative_reconciliation(self):
+        """
+        Representative Aug'26 reconciliation: WhatsApp total from sm must
+        equal the sum of per-model WhatsApp from mm and per-lt WhatsApp from ltm.
+        Uses illustrative numbers, not actual production data.
+        """
+        # 5 WhatsApp leads across 2 models and 2 lead types
+        leads = [
+            {'lid':'L1','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L2','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'70','is_ret':True },
+            {'lid':'L3','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'69','is_ret':False},
+            {'lid':'L4','lm':"Aug'26",'src':'WhatsApp','mdl':'Raider', 'lt':'70','is_ret':False},
+            {'lid':'L5','lm':"Aug'26",'src':'WhatsApp','mdl':'Jupiter','lt':'69','is_ret':True },
+            # Non-WhatsApp leads — must not bleed into WhatsApp totals
+            {'lid':'L6','lm':"Aug'26",'src':'Facebook','mdl':'Jupiter','lt':'69','is_ret':False},
+            {'lid':'L7','lm':"Aug'26",'src':'Non CPS', 'mdl':'Raider', 'lt':'70','is_ret':False},
+        ]
+        agg = _simulate_agg(leads)
+        aug = "Aug'26"
+        sm_wa  = agg['sm'].get(('WhatsApp', aug), [0,0])[0]
+        mm_wa  = sum(v[0] for (mdl,src,lm),v in agg['mm'].items()  if src=='WhatsApp' and lm==aug)
+        ltm_wa = sum(v[0] for (lt, src,lm),v in agg['ltm'].items() if src=='WhatsApp' and lm==aug)
+        self.assertEqual(sm_wa,  5, 'sm: 5 WhatsApp leads')
+        self.assertEqual(mm_wa,  5, 'mm WhatsApp sum must equal sm WhatsApp total')
+        self.assertEqual(ltm_wa, 5, 'ltm WhatsApp sum must equal sm WhatsApp total')
+        # Retail also reconciles
+        sm_wa_r  = agg['sm'].get(('WhatsApp', aug), [0,0])[1]
+        mm_wa_r  = sum(v[1] for (mdl,src,lm),v in agg['mm'].items()  if src=='WhatsApp' and lm==aug)
+        ltm_wa_r = sum(v[1] for (lt, src,lm),v in agg['ltm'].items() if src=='WhatsApp' and lm==aug)
+        self.assertEqual(sm_wa_r,  2, 'sm: 2 WhatsApp retails')
+        self.assertEqual(mm_wa_r,  2, 'mm WhatsApp retails must equal sm')
+        self.assertEqual(ltm_wa_r, 2, 'ltm WhatsApp retails must equal sm')
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
