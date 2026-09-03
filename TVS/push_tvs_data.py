@@ -2794,9 +2794,9 @@ retail_map  = {lid: info for lid, info in retail_map.items()
 print(f"  Combined total after {LEAD_MASTER_START} filter: {len(retail_map):,}"
       f"  (removed {_pre_filter - len(retail_map):,} pre-{LEAD_MASTER_START} entries)", flush=True)
 
-# ── Jun'26 source correction: Facebook (non-LT1105) → Whatsapp ───────────────
+# ── Jun'26 source correction: Facebook (non-LT1105) → WhatsApp ───────────────
 # Business rule: Jun'26 leads from Facebook that are NOT LeadType 1105 are
-# misclassified — they should be Whatsapp. LT 1105 Facebook rows are correct.
+# misclassified — they should be WhatsApp. LT 1105 Facebook rows are correct.
 # Applied here once, after all hist_leads loading paths, before any aggregation.
 if len(hist_leads) > 0 and 'Source' in hist_leads.columns and 'LeadType' in hist_leads.columns:
     _jun26_correct_mask = (
