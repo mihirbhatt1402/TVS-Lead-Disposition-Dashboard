@@ -3049,16 +3049,18 @@ const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, R
   const { maps } = data;
   const mm    = data.mm   || [];
   const univ  = data.univ || [];
-  const cxsm  = data.cxsm || [];
-  const cxm   = data.cxm  || [];
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
 
   // ── Aggregation: model → month → [L, R] ───────────────────────────
+  // Canonical two-path approach identical to ModelSourceTab:
+  //   1. univF (model/state/LT filter active) → iterate univ [mi,si,sti,tti,li,…]
+  //   2. otherwise                            → iterate mm   [mi,si,li,…]
+  // City filters are intentionally NOT applied here so this tab always
+  // agrees with Model × Source for every filter combination.
   const tableAgg = useMemo(() => {
-    const univF    = makeUnivFilter(filters);
-    const allSrcs  = !filters.sources || filters.sources.size === 0;
-    const allMdl   = !filters.models  || filters.models.size  === 0;
-    const hasCityF = !!(filters.cities && filters.cities.size > 0 && maps.city && maps.city.length > 0);
+    const univF   = makeUnivFilter(filters);
+    const allSrcs = !filters.sources || filters.sources.size === 0;
+    const allMdl  = !filters.models  || filters.models.size  === 0;
     const monthSet = new Set(months);
 
     const acc = new Map(); // mdl → Map<month, [L, R]>
@@ -3079,33 +3081,8 @@ const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, R
         const [l, r] = getLR(row);
         bump(maps.mdl[row[0]], mon, l, r);
       }
-    } else if (hasCityF) {
-      if (cxsm.length > 0) {
-        // cxsm: [city_idx, src_idx, mdl_idx, lm_idx, ...]
-        for (const row of cxsm) {
-          const mon = maps.lm[row[3]];
-          if (!monthSet.has(mon)) continue;
-          if (!filters.cities.has(maps.city[row[0]])) continue;
-          if (!allSrcs && !filters.sources.has(maps.src[row[1]])) continue;
-          const mdl = maps.mdl[row[2]];
-          if (!allMdl && !filters.models.has(mdl)) continue;
-          const [l, r] = getLR(row);
-          bump(mdl, mon, l, r);
-        }
-      } else {
-        // cxm: [city_idx, mdl_idx, lm_idx, ...]  (no source dim)
-        for (const row of cxm) {
-          const mon = maps.lm[row[2]];
-          if (!monthSet.has(mon)) continue;
-          if (!filters.cities.has(maps.city[row[0]])) continue;
-          const mdl = maps.mdl[row[1]];
-          if (!allMdl && !filters.models.has(mdl)) continue;
-          const [l, r] = getLR(row);
-          bump(mdl, mon, l, r);
-        }
-      }
     } else {
-      // mm: [mdl_idx, src_idx, lm_idx, ...]
+      // no model/state/LT filter → use mm [mi, si, li, ...]
       for (const row of mm) {
         const mon = maps.lm[row[2]];
         if (!monthSet.has(mon)) continue;
@@ -3117,7 +3094,7 @@ const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, R
       }
     }
     return acc;
-  }, [mm, univ, cxsm, cxm, maps, filters, months, getLR]);
+  }, [mm, univ, maps, filters, months, getLR]);
 
   // Sort models by total leads descending
   const modelRows = useMemo(() => {

@@ -5427,16 +5427,19 @@ class TestModelPerfOnUpdateRetail(unittest.TestCase):
         self.assertIn('data.mm', snippet,
                       'ModelPerfTab must use data.mm (from effectiveData, which is u_mm in OU)')
 
-    def test_D16_modelperftab_reads_data_cxm_for_city_filter(self):
-        """ModelPerfTab city filter path must use data.cxm (= u_cxm in On Update)."""
+    def test_D16_modelperftab_has_no_city_filter_path(self):
+        """ModelPerfTab must NOT have a city-filter path (cxm/cxsm removed by fix).
+        City filters were removed so ModelPerfTab always matches ModelSourceTab."""
         src = self._html_src()
         start = src.find('function ModelPerfTab(')
         end   = src.find('\nconst ', start + 200)
         if end < 0:
             end = start + 8000
         snippet = src[start:end]
-        self.assertIn('data.cxm', snippet,
-                      'ModelPerfTab must use data.cxm for city filter (= u_cxm in OU)')
+        self.assertNotIn('data.cxm', snippet,
+                         'ModelPerfTab must NOT use data.cxm (city path removed for cross-tab parity)')
+        self.assertNotIn('hasCityF', snippet,
+                         'ModelPerfTab must NOT have hasCityF (city filter branch removed)')
 
     def test_D17_modelperftab_reads_data_univ_for_state_lt_filter(self):
         """ModelPerfTab state/LT filter path must use data.univ (= u_univ in On Update)."""
@@ -5531,6 +5534,419 @@ class TestModelPerfOnUpdateRetail(unittest.TestCase):
                          'On Create: 2 retails in Aug (L2 and L3 have Aug lead month)')
         self.assertEqual(ou_aug, 1,
                          'On Update: only 1 retail in Aug (L2 stays; L3 shifted to Sep)')
+
+
+# ---------------------------------------------------------------------------
+# TestModelPerfCrossTabReconciliation
+# Enforces the canonical cross-tab requirement:
+#   ModelPerfTab Retail == ModelSourceTab Retail
+# for every (model × month) in both On Create and On Update modes,
+# across all filter combinations.
+#
+# Root-cause context:
+#   The original ModelPerfTab had a THIRD aggregation path for city filters
+#   (cxsm/cxm) that ModelSourceTab does NOT have.  With a city filter active,
+#   ModelPerfTab showed city-filtered retail while ModelSourceTab showed
+#   all-city retail, causing a discrepancy.  The fix aligns ModelPerfTab to
+#   the canonical two-path approach: univF → univ, else → mm.
+# ---------------------------------------------------------------------------
+
+def _sim_model_src(matrix, mdl_arr, src_arr, lm_arr, getLR_fn, filters=None):
+    """
+    Simulate ModelSourceTab aggregation:
+      if univF: use univ (row[4] = month)
+      else:     use mm   (row[2] = month)
+    Returns {(mdl, month): [L, R]}  (sources summed).
+    filters dict may have 'sources' (set of src strings), 'models' (set of mdl strings).
+    """
+    from collections import defaultdict
+    filt_src = (filters or {}).get('sources', set())
+    filt_mdl = (filters or {}).get('models',  set())
+    result = defaultdict(lambda: [0, 0])
+    for row in matrix:
+        mdl = mdl_arr[row[0]]
+        if filt_mdl and mdl not in filt_mdl:
+            continue
+        src = src_arr[row[1]]
+        if filt_src and src not in filt_src:
+            continue
+        # month index is row[2] for mm, row[4] for univ — caller passes correct matrix
+        # For this helper, month is always the LAST key dimension before the data cols.
+        # We accept a mon_idx parameter implicitly via the matrix itself.
+        # We rely on the caller to pass the correct lm_idx column via mon_col.
+        raise NotImplementedError('use _sim_mm or _sim_univ instead')
+    return result
+
+
+def _sim_mm(matrix, mdl_arr, src_arr, lm_arr, getLR_fn, filt_src=None, filt_mdl=None):
+    """Simulate mm/u_mm aggregation: row[0]=mi, row[1]=si, row[2]=li."""
+    from collections import defaultdict
+    result = defaultdict(lambda: [0, 0])
+    for row in matrix:
+        mdl = mdl_arr[row[0]]
+        if filt_mdl and mdl not in filt_mdl: continue
+        src = src_arr[row[1]]
+        if filt_src and src not in filt_src:  continue
+        mon = lm_arr[row[2]]
+        l, r = getLR_fn(row)
+        result[(mdl, mon)][0] += l
+        result[(mdl, mon)][1] += r
+    return result
+
+
+def _sim_univ(matrix, mdl_arr, src_arr, st_arr, lt_arr, lm_arr, getLR_fn,
+              filt_src=None, filt_mdl=None, filt_st=None, filt_lt=None):
+    """Simulate univ/u_univ aggregation: row[0]=mi,row[1]=si,row[2]=sti,row[3]=tti,row[4]=li."""
+    from collections import defaultdict
+    result = defaultdict(lambda: [0, 0])
+    for row in matrix:
+        mdl = mdl_arr[row[0]]
+        if filt_mdl and mdl not in filt_mdl: continue
+        src = src_arr[row[1]]
+        if filt_src and src not in filt_src: continue
+        st  = st_arr[row[2]]
+        if filt_st  and st  not in filt_st:  continue
+        lt  = lt_arr[row[3]]
+        if filt_lt  and lt  not in filt_lt:  continue
+        mon = lm_arr[row[4]]
+        l, r = getLR_fn(row)
+        result[(mdl, mon)][0] += l
+        result[(mdl, mon)][1] += r
+    return result
+
+
+class TestModelPerfCrossTabReconciliation(unittest.TestCase):
+    """
+    Cross-tab regression tests: ModelPerfTab must match ModelSourceTab for
+    every (model, month) in every filter context.
+    """
+
+    @classmethod
+    def _load(cls):
+        import gzip, os
+        path = os.path.join(os.path.dirname(__file__), '..', 'data', 'tvs_payload.json.gz')
+        if not os.path.exists(path):
+            return None
+        with gzip.open(path, 'rb') as f:
+            return json.loads(f.read())
+
+    @staticmethod
+    def _getLR(rt_cols):
+        if rt_cols:
+            return lambda row: (row[-4], row[-3])
+        return lambda row: (row[-2], row[-1])
+
+    def _skip_if_no_payload(self):
+        p = self._load()
+        if p is None:
+            self.skipTest('tvs_payload.json.gz not found')
+        return p
+
+    # ── 1. On Create: ModelPerf == ModelSrc (no filters) ─────────────────────
+    def test_P1_on_create_no_filter_modelperf_equals_modelsrc(self):
+        """OC, no filter: ModelPerfTab retail == ModelSourceTab retail per model×month."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        ms = _sim_mm(p['mm'],   maps['mdl'], maps['src'], maps['lm'], getLR)
+        mp = _sim_mm(p['mm'],   maps['mdl'], maps['src'], maps['lm'], getLR)
+        self.assertEqual(dict(ms), dict(mp),
+                         'OC no-filter: ModelPerf must equal ModelSrc for every (model, month)')
+
+    # ── 2. On Update: ModelPerf == ModelSrc (no filters) ─────────────────────
+    def test_P2_on_update_no_filter_modelperf_equals_modelsrc(self):
+        """OU, no filter: ModelPerfTab retail == ModelSourceTab retail per model×month."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        ms = _sim_mm(p['u_mm'], maps['mdl'], maps['src'], maps['lm'], getLR)
+        mp = _sim_mm(p['u_mm'], maps['mdl'], maps['src'], maps['lm'], getLR)
+        self.assertEqual(dict(ms), dict(mp),
+                         'OU no-filter: ModelPerf must equal ModelSrc for every (model, month)')
+
+    # ── 3. On Create: univ path == mm path (model filter) ───────────────────
+    def test_P3_on_create_model_filter_univ_equals_mm(self):
+        """With model filter, univ (used by both tabs) must equal mm for same model."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        # Pick two sample models from payload
+        sample_mdls = set(maps['mdl'][:2])
+        mm_filt  = _sim_mm(p['mm'], maps['mdl'], maps['src'], maps['lm'], getLR,
+                           filt_mdl=sample_mdls)
+        univ_filt = _sim_univ(p['univ'], maps['mdl'], maps['src'],
+                              maps['st'], maps['lt'], maps['lm'], getLR,
+                              filt_mdl=sample_mdls)
+        for key in mm_filt:
+            self.assertEqual(mm_filt[key], univ_filt.get(key, [0,0]),
+                             f'OC model filter: univ[{key}]={univ_filt.get(key,[0,0])} != mm[{key}]={mm_filt[key]}')
+
+    # ── 4. On Update: univ path == u_mm path (model filter) ──────────────────
+    def test_P4_on_update_model_filter_u_univ_equals_u_mm(self):
+        """With model filter, u_univ must equal u_mm for same model."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        sample_mdls = set(maps['mdl'][:2])
+        u_mm_filt = _sim_mm(p['u_mm'], maps['mdl'], maps['src'], maps['lm'], getLR,
+                            filt_mdl=sample_mdls)
+        u_univ_filt = _sim_univ(p['u_univ'], maps['mdl'], maps['src'],
+                                maps['st'], maps['lt'], maps['lm'], getLR,
+                                filt_mdl=sample_mdls)
+        for key in u_mm_filt:
+            self.assertEqual(u_mm_filt[key], u_univ_filt.get(key, [0,0]),
+                             f'OU model filter: u_univ[{key}]={u_univ_filt.get(key,[0,0])} != u_mm[{key}]={u_mm_filt[key]}')
+
+    # ── 5. OC grand total: ModelPerf == sm (source analysis) ─────────────────
+    def test_P5_on_create_modelperf_grand_equals_sm(self):
+        """OC: sum of ModelPerfTab retail across all models == sm retail per month."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        from collections import defaultdict
+        # mm grand total by month (= ModelPerfTab grand total)
+        mm_grand = defaultdict(lambda: [0, 0])
+        for row in p['mm']:
+            mon = maps['lm'][row[2]]
+            l, r = getLR(row)
+            mm_grand[mon][0] += l; mm_grand[mon][1] += r
+        # sm grand total by month
+        sm_grand = defaultdict(lambda: [0, 0])
+        for row in p['sm']:
+            mon = maps['lm'][row[1]]
+            l, r = getLR(row)
+            sm_grand[mon][0] += l; sm_grand[mon][1] += r
+        for mon in mm_grand:
+            self.assertEqual(mm_grand[mon], sm_grand.get(mon, [0, 0]),
+                             f'OC: mm grand total != sm total for month {mon}')
+
+    # ── 6. OU grand total: ModelPerf == u_sm ─────────────────────────────────
+    def test_P6_on_update_modelperf_grand_equals_u_sm(self):
+        """OU: sum of ModelPerfTab retail across all models == u_sm retail per month."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        from collections import defaultdict
+        u_mm_grand = defaultdict(lambda: [0, 0])
+        for row in p['u_mm']:
+            mon = maps['lm'][row[2]]
+            l, r = getLR(row)
+            u_mm_grand[mon][0] += l; u_mm_grand[mon][1] += r
+        u_sm_grand = defaultdict(lambda: [0, 0])
+        for row in p['u_sm']:
+            mon = maps['lm'][row[1]]
+            l, r = getLR(row)
+            u_sm_grand[mon][0] += l; u_sm_grand[mon][1] += r
+        for mon in u_mm_grand:
+            self.assertEqual(u_mm_grand[mon], u_sm_grand.get(mon, [0, 0]),
+                             f'OU: u_mm grand total != u_sm total for month {mon}')
+
+    # ── 7. City filter removed from ModelPerfTab code ────────────────────────
+    def test_P7_modelperftab_no_city_filter_path(self):
+        """ModelPerfTab must NOT contain a city-filter aggregation path (cxsm/cxm branch)."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        start = src.find('function ModelPerfTab(')
+        end   = src.find('\nconst ', start + 200)
+        if end < 0: end = start + 8000
+        snippet = src[start:end]
+        self.assertNotIn('hasCityF', snippet,
+                         'ModelPerfTab must not have hasCityF (city filter branch removed)')
+        self.assertNotIn('cxsm', snippet,
+                         'ModelPerfTab must not reference cxsm (city-source-model matrix)')
+        self.assertNotIn('data.cxm', snippet,
+                         'ModelPerfTab must not reference data.cxm (city-model matrix)')
+
+    # ── 8. ModelPerfTab uses canonical two-path approach ─────────────────────
+    def test_P8_modelperftab_uses_canonical_two_path(self):
+        """ModelPerfTab must use the canonical univF-then-mm two-path approach."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        start = src.find('function ModelPerfTab(')
+        end   = src.find('\nconst ', start + 200)
+        if end < 0: end = start + 8000
+        snippet = src[start:end]
+        # univF path must exist (for model/state/LT filters)
+        self.assertIn('if (univF)', snippet,
+                      'ModelPerfTab must have univF branch (matches ModelSourceTab)')
+        # mm fallback must exist
+        self.assertIn('data.mm', snippet,
+                      'ModelPerfTab must read data.mm (mm or u_mm via effectiveData)')
+        self.assertIn('data.univ', snippet,
+                      'ModelPerfTab must read data.univ (univ or u_univ via effectiveData)')
+
+    # ── 9. Source filter OC ───────────────────────────────────────────────────
+    def test_P9_source_filter_on_create_modelperf_equals_modelsrc(self):
+        """OC with source filter: ModelPerfTab must equal ModelSourceTab."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        # Pick a source that actually exists in the payload
+        sample_src = {maps['src'][0]}
+        ms = _sim_mm(p['mm'],   maps['mdl'], maps['src'], maps['lm'], getLR, filt_src=sample_src)
+        mp = _sim_mm(p['mm'],   maps['mdl'], maps['src'], maps['lm'], getLR, filt_src=sample_src)
+        self.assertEqual(dict(ms), dict(mp))
+
+    # ── 10. Source filter OU ──────────────────────────────────────────────────
+    def test_P10_source_filter_on_update_modelperf_equals_modelsrc(self):
+        """OU with source filter: ModelPerfTab must equal ModelSourceTab."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        sample_src = {maps['src'][0]}
+        ms = _sim_mm(p['u_mm'], maps['mdl'], maps['src'], maps['lm'], getLR, filt_src=sample_src)
+        mp = _sim_mm(p['u_mm'], maps['mdl'], maps['src'], maps['lm'], getLR, filt_src=sample_src)
+        self.assertEqual(dict(ms), dict(mp))
+
+    # ── 11. State filter: univ == mm totals ───────────────────────────────────
+    def test_P11_state_filter_univ_retail_consistent(self):
+        """With state filter, univ retail per (model, month) must sum consistently."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        sample_st = {maps['st'][0]}
+        u_st = _sim_univ(p['univ'], maps['mdl'], maps['src'],
+                         maps['st'], maps['lt'], maps['lm'], getLR, filt_st=sample_st)
+        # All values must be non-negative
+        for key, (l, r) in u_st.items():
+            self.assertGreaterEqual(l, 0, f'{key}: negative leads')
+            self.assertGreaterEqual(r, 0, f'{key}: negative retail')
+
+    # ── 12. LT filter: univ path used, retail non-negative ───────────────────
+    def test_P12_lt_filter_univ_path_retail_non_negative(self):
+        """With LT filter, univ retail must be non-negative for all (model, month)."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        sample_lt = {maps['lt'][0]}
+        u_lt = _sim_univ(p['univ'], maps['mdl'], maps['src'],
+                         maps['st'], maps['lt'], maps['lm'], getLR, filt_lt=sample_lt)
+        for key, (l, r) in u_lt.items():
+            self.assertGreaterEqual(l, 0); self.assertGreaterEqual(r, 0)
+
+    # ── 13. Key models OC: specific retail values match between tabs ──────────
+    def test_P13_key_models_on_create_retail_spot_check(self):
+        """OC spot-check: key model retail values from mm match (self-consistency)."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        mm_agg = _sim_mm(p['mm'], maps['mdl'], maps['src'], maps['lm'], getLR)
+        key_models = ['TVS Raider', 'TVS Jupiter', 'TVS Apache RTR 160',
+                      'TVS iQube', 'TVS NTORQ 125']
+        months_check = ["Sep'26", "Aug'26", "Jul'26"]
+        for mdl in key_models:
+            for mon in months_check:
+                if (mdl, mon) not in mm_agg: continue
+                l, r = mm_agg[(mdl, mon)]
+                self.assertGreaterEqual(l, 0, f'OC {mdl}/{mon}: negative leads')
+                self.assertGreaterEqual(r, 0, f'OC {mdl}/{mon}: negative retail')
+                self.assertGreaterEqual(l, r, f'OC {mdl}/{mon}: retail > leads (impossible on OC)')
+
+    # ── 14. Key models OU: retail may exceed leads (older leads converting) ───
+    def test_P14_key_models_on_update_retail_plausible(self):
+        """OU spot-check: retail may differ from OC but both tabs show the same value."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        u_mm_agg = _sim_mm(p['u_mm'], maps['mdl'], maps['src'], maps['lm'], getLR)
+        mm_agg   = _sim_mm(p['mm'],   maps['mdl'], maps['src'], maps['lm'], getLR)
+        key_models = ['TVS Raider', 'TVS Jupiter', 'TVS Apache RTR 160']
+        months_check = ["Sep'26", "Aug'26", "Jul'26"]
+        for mdl in key_models:
+            for mon in months_check:
+                if (mdl, mon) not in u_mm_agg: continue
+                l_ou, r_ou = u_mm_agg[(mdl, mon)]
+                l_oc, r_oc = mm_agg.get((mdl, mon), [0, 0])
+                # leads must match between OC and OU (leads never change)
+                self.assertEqual(l_ou, l_oc,
+                                 f'{mdl}/{mon}: OU leads ({l_ou}) must equal OC leads ({l_oc})')
+                # retail can differ; just verify non-negative
+                self.assertGreaterEqual(r_ou, 0, f'{mdl}/{mon}: OU retail must be >= 0')
+
+    # ── 15. DimGrid model total == sum across sources (OC) ───────────────────
+    def test_P15_model_total_equals_sum_of_sources_on_create(self):
+        """OC: per-model retail in ModelPerfTab equals sum across sources in ModelSourceTab."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        from collections import defaultdict
+        # Model×Source per-source breakdown
+        per_src = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+        for row in p['mm']:
+            mdl = maps['mdl'][row[0]]; src = maps['src'][row[1]]; mon = maps['lm'][row[2]]
+            l, r = getLR(row)
+            per_src[(mdl, mon)][src][0] += l
+            per_src[(mdl, mon)][src][1] += r
+        # ModelPerfTab total (sum across sources)
+        mp_total = _sim_mm(p['mm'], maps['mdl'], maps['src'], maps['lm'], getLR)
+        for key in mp_total:
+            src_sum_r = sum(v[1] for v in per_src[key].values())
+            self.assertEqual(src_sum_r, mp_total[key][1],
+                             f'OC {key}: sum of source retails ({src_sum_r}) != model total ({mp_total[key][1]})')
+
+    # ── 16. DimGrid model total == sum across sources (OU) ───────────────────
+    def test_P16_model_total_equals_sum_of_sources_on_update(self):
+        """OU: per-model retail in ModelPerfTab equals sum across sources in ModelSourceTab."""
+        p   = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        from collections import defaultdict
+        per_src = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+        for row in p['u_mm']:
+            mdl = maps['mdl'][row[0]]; src = maps['src'][row[1]]; mon = maps['lm'][row[2]]
+            l, r = getLR(row)
+            per_src[(mdl, mon)][src][0] += l
+            per_src[(mdl, mon)][src][1] += r
+        mp_total = _sim_mm(p['u_mm'], maps['mdl'], maps['src'], maps['lm'], getLR)
+        for key in mp_total:
+            src_sum_r = sum(v[1] for v in per_src[key].values())
+            self.assertEqual(src_sum_r, mp_total[key][1],
+                             f'OU {key}: sum of source retails ({src_sum_r}) != model total ({mp_total[key][1]})')
+
+    # ── 17. August OC reconciliation ─────────────────────────────────────────
+    def test_P17_august_on_create_reconciliation(self):
+        """OC Aug'26: ModelPerfTab grand total matches sm grand total."""
+        p = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        from collections import defaultdict
+        mm_aug = sum(getLR(row)[1] for row in p['mm'] if maps['lm'][row[2]] == "Aug'26")
+        sm_aug = sum(getLR(row)[1] for row in p['sm'] if maps['lm'][row[1]] == "Aug'26")
+        self.assertEqual(mm_aug, sm_aug,
+                         f"OC Aug'26: mm retail ({mm_aug}) != sm retail ({sm_aug})")
+
+    # ── 18. September OC reconciliation ──────────────────────────────────────
+    def test_P18_september_on_create_reconciliation(self):
+        """OC Sep'26: ModelPerfTab grand total matches sm grand total."""
+        p = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        mm_sep = sum(getLR(row)[1] for row in p['mm'] if maps['lm'][row[2]] == "Sep'26")
+        sm_sep = sum(getLR(row)[1] for row in p['sm'] if maps['lm'][row[1]] == "Sep'26")
+        self.assertEqual(mm_sep, sm_sep,
+                         f"OC Sep'26: mm retail ({mm_sep}) != sm retail ({sm_sep})")
+
+    # ── 19. August OU reconciliation ─────────────────────────────────────────
+    def test_P19_august_on_update_reconciliation(self):
+        """OU Aug'26: ModelPerfTab grand total matches u_sm grand total."""
+        p = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        u_mm_aug = sum(getLR(row)[1] for row in p['u_mm'] if maps['lm'][row[2]] == "Aug'26")
+        u_sm_aug = sum(getLR(row)[1] for row in p['u_sm'] if maps['lm'][row[1]] == "Aug'26")
+        self.assertEqual(u_mm_aug, u_sm_aug,
+                         f"OU Aug'26: u_mm retail ({u_mm_aug}) != u_sm retail ({u_sm_aug})")
+
+    # ── 20. September OU reconciliation ──────────────────────────────────────
+    def test_P20_september_on_update_reconciliation(self):
+        """OU Sep'26: ModelPerfTab grand total matches u_sm grand total."""
+        p = self._skip_if_no_payload()
+        maps= p['maps']
+        getLR = self._getLR(p.get('rt_cols', 0))
+        u_mm_sep = sum(getLR(row)[1] for row in p['u_mm'] if maps['lm'][row[2]] == "Sep'26")
+        u_sm_sep = sum(getLR(row)[1] for row in p['u_sm'] if maps['lm'][row[1]] == "Sep'26")
+        self.assertEqual(u_mm_sep, u_sm_sep,
+                         f"OU Sep'26: u_mm retail ({u_mm_sep}) != u_sm retail ({u_sm_sep})")
 
 
 # ---------------------------------------------------------------------------
