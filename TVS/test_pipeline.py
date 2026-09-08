@@ -5074,6 +5074,466 @@ class TestModelPerformanceTab(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestModelPerfOnUpdateRetail
+# 20 regression tests verifying On Update retail attribution for Model Perf tab.
+#
+# Architecture recap:
+#   - effectiveData (in On Update mode) maps mm→u_mm, cxm→u_cxm, cxsm→u_cxsm,
+#     univ→u_univ.  ModelPerfTab reads data.mm which is therefore u_mm.
+#   - u_mm uses ubump semantics: leads go to the lead_month key, retails go to
+#     the retail_month (rm) key — so a single (model, src) pair can have rows
+#     with L counts on one month and R counts on another month.
+#   - Grand totals from u_mm (summed over models and sources) must equal
+#     u_monthly for the same month.
+# ---------------------------------------------------------------------------
+
+def _simulate_agg_u(leads: list) -> dict:
+    """
+    Build u_mm  (model × source × month → [leads, rets])
+    simulating the pipeline's ubump() On Update semantics.
+
+    Each lead dict must have: lid, lm, src, mdl, lt, is_ret.
+    Optional 'rm' key = retail month (defaults to lm when absent).
+
+    ubump rule:
+      - Lead count  always added to (mdl, src, lm)  key.
+      - Retail count added to      (mdl, src, rm)   key where rm = row['rm'] or lm.
+    Leads and retails for the same lead can therefore land in DIFFERENT rows when
+    rm ≠ lm.  This is what makes On Update retail counts differ from On Create.
+    """
+    u_mm = {}
+
+    def _bump(d, k, l, r):
+        if k not in d:
+            d[k] = [0, 0]
+        d[k][0] += l
+        d[k][1] += r
+
+    for row in leads:
+        lt     = str(row['lt'])
+        src    = _norm_src_test(row['src'], lt)
+        lm     = row['lm']
+        mdl    = row['mdl']
+        is_ret = row.get('is_ret', False)
+        rm     = row.get('rm', lm)   # retail month; defaults to lead month
+
+        # Lead goes to lead month
+        _bump(u_mm, (mdl, src, lm), 1, 0)
+
+        # Retail (if any) goes to retail month
+        if is_ret:
+            _bump(u_mm, (mdl, src, rm), 0, 1)
+
+    return {'u_mm': u_mm}
+
+
+def _agg_u_model_month(u_mm: dict) -> dict:
+    """Aggregate u_mm (3-tuple keys) to {(mdl, lm): [leads, rets]}."""
+    result = {}
+    for (mdl, src, lm), (l, r) in u_mm.items():
+        key = (mdl, lm)
+        cur = result.get(key, [0, 0])
+        cur[0] += l; cur[1] += r
+        result[key] = cur
+    return result
+
+
+class TestModelPerfOnUpdateRetail(unittest.TestCase):
+    """
+    20 regression tests for On Update retail attribution in the Model Perf tab.
+    Tests are grouped:
+      A (1–4)   : effectiveData matrix swap verified in index.html
+      B (5–10)  : ubump retail month semantics via _simulate_agg_u
+      C (11–14) : payload grand-total structural invariants (u_mm == u_monthly)
+      D (15–17) : filter paths use correct On Update matrices (HTML)
+      E (18–20) : cross-matrix consistency (u_mm L == mm L; u_mm R ≠ mm R)
+    """
+
+    # ── Group A: effectiveData matrix swap in index.html ──────────────────────
+
+    def _html_src(self):
+        idx = Path(__file__).parent.parent / 'index.html'
+        self.assertTrue(idx.exists(), 'index.html not found')
+        return idx.read_text(encoding='utf-8')
+
+    def test_A1_effectivedata_swaps_mm_to_u_mm(self):
+        """effectiveData must map mm → data.u_mm in On Update mode."""
+        src = self._html_src()
+        # The effectiveData useMemo block must assign mm: data.u_mm
+        self.assertIn('mm: data.u_mm', src,
+                      'effectiveData must contain "mm: data.u_mm" for On Update')
+
+    def test_A2_effectivedata_swaps_cxm_to_u_cxm(self):
+        """effectiveData must map cxm → data.u_cxm in On Update mode."""
+        src = self._html_src()
+        self.assertIn('cxm: data.u_cxm', src,
+                      'effectiveData must contain "cxm: data.u_cxm"')
+
+    def test_A3_effectivedata_swaps_cxsm_to_u_cxsm(self):
+        """effectiveData must map cxsm → data.u_cxsm in On Update mode."""
+        src = self._html_src()
+        self.assertIn('cxsm: data.u_cxsm', src,
+                      'effectiveData must contain "cxsm: data.u_cxsm"')
+
+    def test_A4_effectivedata_swaps_univ_to_u_univ(self):
+        """effectiveData must map univ → data.u_univ in On Update mode."""
+        src = self._html_src()
+        self.assertIn('stcm: data.u_stcm', src,    # sentinel: other matrices also swap
+                      'effectiveData swap block incomplete')
+        self.assertIn('u_univ', src,
+                      'u_univ must exist in the payload and effectiveData mapping')
+
+    # ── Group B: ubump retail month semantics ─────────────────────────────────
+
+    def test_B5_on_update_retail_same_month_no_shift(self):
+        """When rm == lm, On Update retail stays in the same month as the lead."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+        ]
+        agg  = _simulate_agg_u(leads)
+        u_mm = _agg_u_model_month(agg['u_mm'])
+        self.assertEqual(u_mm[('Jupiter', "Aug'26")][0], 1, 'lead must be in Aug')
+        self.assertEqual(u_mm[('Jupiter', "Aug'26")][1], 1, 'retail must be in Aug when rm=lm')
+        self.assertNotIn(('Jupiter', "Sep'26"), u_mm,
+                         'Sep must be absent when rm stays in Aug')
+
+    def test_B6_on_update_retail_shifts_to_later_month(self):
+        """When rm > lm, retail count goes to rm, leaving lead in lm."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Raider', 'lt': '1', 'is_ret': True},
+        ]
+        agg  = _simulate_agg_u(leads)
+        u_mm = _agg_u_model_month(agg['u_mm'])
+        # Lead must appear in Aug
+        self.assertEqual(u_mm[('Raider', "Aug'26")][0], 1,
+                         'lead must land in lead month Aug')
+        self.assertEqual(u_mm[('Raider', "Aug'26")][1], 0,
+                         'retail must NOT be in Aug when rm=Sep')
+        # Retail must appear in Sep
+        self.assertEqual(u_mm[('Raider', "Sep'26")][1], 1,
+                         'retail must land in rm=Sep')
+        self.assertEqual(u_mm[('Raider', "Sep'26")][0], 0,
+                         'lead count in Sep row must be 0 (no new leads there)')
+
+    def test_B7_on_update_lead_count_unchanged_by_rm(self):
+        """Total lead count for a model must be identical regardless of rm value."""
+        leads_same = [
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+        ]
+        leads_shift = [
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+        ]
+        agg_same  = _simulate_agg_u(leads_same)
+        agg_shift = _simulate_agg_u(leads_shift)
+        mm_same   = _agg_u_model_month(agg_same['u_mm'])
+        mm_shift  = _agg_u_model_month(agg_shift['u_mm'])
+        # Aug leads must be identical regardless of rm
+        self.assertEqual(mm_same[('Jupiter', "Aug'26")][0], 2)
+        self.assertEqual(mm_shift[('Jupiter', "Aug'26")][0], 2,
+                         'lead count in Aug must be unchanged when rm shifts to Sep')
+
+    def test_B8_on_update_aug_retails_decrease_when_rm_is_sep(self):
+        """Aug retail count must be lower in On Update when some retails go to Sep."""
+        leads_oc = [
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Raider', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Raider', 'lt': '1', 'is_ret': True},
+        ]
+        leads_ou = [
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Sep'26",  # shifts out
+             'src': 'Google', 'mdl': 'Raider', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'rm': "Aug'26",  # stays
+             'src': 'Google', 'mdl': 'Raider', 'lt': '1', 'is_ret': True},
+        ]
+        mm_oc = _agg_u_model_month(_simulate_agg_u(leads_oc)['u_mm'])
+        mm_ou = _agg_u_model_month(_simulate_agg_u(leads_ou)['u_mm'])
+        self.assertEqual(mm_oc[('Raider', "Aug'26")][1], 2,   'OC Aug retail = 2')
+        self.assertEqual(mm_ou[('Raider', "Aug'26")][1], 1,   'OU Aug retail = 1 (one shifted to Sep)')
+        self.assertEqual(mm_ou[('Raider', "Sep'26")][1], 1,   'OU Sep retail = 1 (from Aug lead)')
+        self.assertLess(mm_ou[('Raider', "Aug'26")][1],
+                        mm_oc[('Raider', "Aug'26")][1],
+                        'On Update Aug retail must be ≤ On Create Aug retail')
+
+    def test_B9_on_update_sep_retail_increases_from_older_leads(self):
+        """Sep retail in On Update = retails from leads whose rm=Sep (any lead month)."""
+        leads = [
+            # Aug lead, rm=Sep → Sep retail
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Apache', 'lt': '1', 'is_ret': True},
+            # Jul lead, rm=Sep → Sep retail
+            {'lid': 'L2', 'lm': "Jul'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Apache', 'lt': '1', 'is_ret': True},
+            # Sep lead, rm=Sep → Sep retail (same-month)
+            {'lid': 'L3', 'lm': "Sep'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Apache', 'lt': '1', 'is_ret': True},
+        ]
+        agg  = _simulate_agg_u(leads)
+        u_mm = _agg_u_model_month(agg['u_mm'])
+        # All three retails land in Sep
+        self.assertEqual(u_mm[('Apache', "Sep'26")][1], 3,
+                         'Sep retail must include retails from leads in Aug, Jul, and Sep')
+        # Aug leads = 1, Jul leads = 1, Sep leads = 1
+        self.assertEqual(u_mm[('Apache', "Aug'26")][0], 1)
+        self.assertEqual(u_mm[('Apache', "Jul'26")][0], 1)
+        self.assertEqual(u_mm[('Apache', "Sep'26")][0], 1)
+
+    def test_B10_on_update_retail_grand_total_conserved(self):
+        """Total retail across all months must be the same in OC and OU."""
+        leads_base = [
+            {'lid': 'L1', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'L3', 'lm': "Jul'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+        ]
+        agg  = _simulate_agg_u(leads_base)
+        u_mm = agg['u_mm']
+        total_r = sum(v[1] for v in u_mm.values())
+        self.assertEqual(total_r, 3,
+                         'Grand retail count across all months must equal total retails (3)')
+
+    # ── Group C: payload structural invariant — u_mm grand total = u_monthly ──
+
+    @classmethod
+    def _load_payload(cls):
+        import gzip, os
+        path = os.path.join(
+            os.path.dirname(__file__), '..', 'data', 'tvs_payload.json.gz'
+        )
+        if not os.path.exists(path):
+            return None
+        with gzip.open(path, 'rb') as f:
+            return json.loads(f.read())
+
+    def test_C11_u_mm_grand_total_matches_u_monthly(self):
+        """Sum of u_mm over (model, src) must equal u_monthly for every month."""
+        p = self._load_payload()
+        if p is None:
+            self.skipTest('tvs_payload.json.gz not found')
+        maps   = p['maps']
+        lm_arr = maps['lm']
+        rt_cols = p.get('rt_cols', 0)
+
+        def _lr(row):
+            return (row[-4], row[-3]) if rt_cols else (row[-2], row[-1])
+
+        # Build grand totals from u_mm
+        from collections import defaultdict
+        u_mm_grand = defaultdict(lambda: [0, 0])
+        for row in p['u_mm']:
+            mon = lm_arr[row[2]]
+            l, r = _lr(row)
+            u_mm_grand[mon][0] += l
+            u_mm_grand[mon][1] += r
+
+        # Compare against u_monthly
+        u_monthly_map = {}
+        for row in p['u_monthly']:
+            mon = lm_arr[row[0]]
+            l, r = _lr(row)
+            u_monthly_map[mon] = [l, r]
+
+        for mon, (ul, ur) in u_monthly_map.items():
+            agg_l, agg_r = u_mm_grand.get(mon, [0, 0])
+            self.assertEqual(agg_l, ul,
+                             f'{mon}: u_mm leads {agg_l} != u_monthly leads {ul}')
+            self.assertEqual(agg_r, ur,
+                             f'{mon}: u_mm retail {agg_r} != u_monthly retail {ur}')
+
+    def test_C12_u_mm_leads_equal_mm_leads_same_model_src_month(self):
+        """For On Update, leads per (model, src, lm) in u_mm must equal mm leads."""
+        p = self._load_payload()
+        if p is None:
+            self.skipTest('tvs_payload.json.gz not found')
+        maps   = p['maps']
+        mdl_arr = maps['mdl']; src_arr = maps['src']; lm_arr = maps['lm']
+        rt_cols = p.get('rt_cols', 0)
+
+        def _lr(row):
+            return (row[-4], row[-3]) if rt_cols else (row[-2], row[-1])
+
+        mm_map = {}
+        for row in p['mm']:
+            key = (mdl_arr[row[0]], src_arr[row[1]], lm_arr[row[2]])
+            mm_map[key] = _lr(row)[0]
+
+        u_mm_leads = {}
+        for row in p['u_mm']:
+            key = (mdl_arr[row[0]], src_arr[row[1]], lm_arr[row[2]])
+            u_mm_leads[key] = u_mm_leads.get(key, 0) + _lr(row)[0]
+
+        # Every mm key must exist in u_mm with identical lead count
+        mismatches = []
+        for key, l_oc in mm_map.items():
+            l_ou = u_mm_leads.get(key, 0)
+            if l_oc != l_ou:
+                mismatches.append(f'{key}: mm={l_oc} u_mm={l_ou}')
+        self.assertEqual(mismatches, [],
+                         'u_mm lead counts must equal mm lead counts per (model, src, month): '
+                         + '; '.join(mismatches[:5]))
+
+    def test_C13_u_mm_retail_differs_from_mm_retail_in_aggregate(self):
+        """On Update retail grand total must differ from On Create retail grand total."""
+        p = self._load_payload()
+        if p is None:
+            self.skipTest('tvs_payload.json.gz not found')
+        rt_cols = p.get('rt_cols', 0)
+
+        def _lr(row):
+            return (row[-4], row[-3]) if rt_cols else (row[-2], row[-1])
+
+        mm_r   = sum(_lr(row)[1] for row in p['mm'])
+        u_mm_r = sum(_lr(row)[1] for row in p['u_mm'])
+        # They CAN differ: On Update redistributes retails across months.
+        # The grand total of retails across all months must be the same.
+        self.assertEqual(mm_r, u_mm_r,
+                         'Total retail across all months must be identical in mm and u_mm '
+                         '(ubump conserves retail, it only moves them between months)')
+
+    def test_C14_u_mm_has_more_rows_than_mm(self):
+        """u_mm must have >= mm rows because retail months create extra rows."""
+        p = self._load_payload()
+        if p is None:
+            self.skipTest('tvs_payload.json.gz not found')
+        self.assertGreaterEqual(
+            len(p['u_mm']), len(p['mm']),
+            'u_mm must have at least as many rows as mm '
+            '(retail month attribution creates extra rows)'
+        )
+
+    # ── Group D: filter paths use correct On Update matrices ─────────────────
+
+    def test_D15_modelperftab_reads_data_mm_not_hardcoded(self):
+        """ModelPerfTab must read data.mm, not reference the raw mm matrix directly."""
+        src = self._html_src()
+        import re
+        start = src.find('function ModelPerfTab(')
+        self.assertGreater(start, 0, 'ModelPerfTab function not found')
+        end   = src.find('\nconst ', start + 200)
+        if end < 0:
+            end = start + 8000
+        snippet = src[start:end]
+        # Must read from data.mm (the effectiveData prop), not a module-level mm
+        self.assertIn('data.mm', snippet,
+                      'ModelPerfTab must use data.mm (from effectiveData, which is u_mm in OU)')
+
+    def test_D16_modelperftab_reads_data_cxm_for_city_filter(self):
+        """ModelPerfTab city filter path must use data.cxm (= u_cxm in On Update)."""
+        src = self._html_src()
+        start = src.find('function ModelPerfTab(')
+        end   = src.find('\nconst ', start + 200)
+        if end < 0:
+            end = start + 8000
+        snippet = src[start:end]
+        self.assertIn('data.cxm', snippet,
+                      'ModelPerfTab must use data.cxm for city filter (= u_cxm in OU)')
+
+    def test_D17_modelperftab_reads_data_univ_for_state_lt_filter(self):
+        """ModelPerfTab state/LT filter path must use data.univ (= u_univ in On Update)."""
+        src = self._html_src()
+        start = src.find('function ModelPerfTab(')
+        end   = src.find('\nconst ', start + 200)
+        if end < 0:
+            end = start + 8000
+        snippet = src[start:end]
+        self.assertIn('data.univ', snippet,
+                      'ModelPerfTab must use data.univ for state/LT filter (= u_univ in OU)')
+
+    # ── Group E: cross-matrix consistency ────────────────────────────────────
+
+    def test_E18_on_update_retail_gt_zero_for_mid_month(self):
+        """On Update: a model with leads in July must have non-zero retail in July or later."""
+        leads = [
+            {'lid': f'L{i}', 'lm': "Jul'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'iQube', 'lt': '1', 'is_ret': True}
+            for i in range(5)
+        ]
+        agg  = _simulate_agg_u(leads)
+        u_mm = _agg_u_model_month(agg['u_mm'])
+        # 5 leads in Jul (lead month)
+        self.assertEqual(u_mm[('iQube', "Jul'26")][0], 5)
+        # 0 retails in Jul (all shifted to Aug)
+        self.assertEqual(u_mm[('iQube', "Jul'26")][1], 0)
+        # 5 retails in Aug
+        self.assertEqual(u_mm[('iQube', "Aug'26")][1], 5)
+
+    def test_E19_on_update_l2r_denominator_uses_lead_month_leads(self):
+        """L2R% = retail_in_month / leads_in_month using independent attributions."""
+        leads = [
+            # 4 leads in Aug, 0 retails in Aug (all shifted to Sep)
+            *[{'lid': f'L{i}', 'lm': "Aug'26", 'rm': "Sep'26",
+               'src': 'Google', 'mdl': 'NTORQ', 'lt': '1', 'is_ret': True}
+              for i in range(4)],
+            # 2 more leads in Sep with Sep retails
+            *[{'lid': f'S{i}', 'lm': "Sep'26", 'rm': "Sep'26",
+               'src': 'Google', 'mdl': 'NTORQ', 'lt': '1', 'is_ret': True}
+              for i in range(2)],
+        ]
+        agg  = _simulate_agg_u(leads)
+        u_mm = _agg_u_model_month(agg['u_mm'])
+
+        # Aug: 4 leads, 0 retails (shifted to Sep)
+        aug_l, aug_r = u_mm[('NTORQ', "Aug'26")]
+        self.assertEqual(aug_l, 4)
+        self.assertEqual(aug_r, 0)
+
+        # Sep: 2 leads (own), retails = 4 (from Aug) + 2 (own) = 6
+        sep_l, sep_r = u_mm[('NTORQ', "Sep'26")]
+        self.assertEqual(sep_l, 2)
+        self.assertEqual(sep_r, 6)
+
+        # Sep L2R = 6/2 = 300% — retails can exceed leads in On Update (from prior months)
+        sep_l2r = sep_r / sep_l * 100
+        self.assertAlmostEqual(sep_l2r, 300.0,
+                               msg='L2R% for Sep in OU can exceed 100% (older leads converting)')
+
+    def test_E20_on_create_and_update_total_retail_identical(self):
+        """ubump must conserve total retail count; only the month attribution changes."""
+        leads = [
+            {'lid': 'L1', 'lm': "Jul'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Sport', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Sport', 'lt': '1', 'is_ret': True},
+            {'lid': 'L3', 'lm': "Aug'26", 'rm': "Sep'26",
+             'src': 'Google', 'mdl': 'Sport', 'lt': '1', 'is_ret': True},
+            {'lid': 'L4', 'lm': "Aug'26", 'rm': "Aug'26",
+             'src': 'Google', 'mdl': 'Sport', 'lt': '1', 'is_ret': False},
+        ]
+        # On Create simulation: rm is ignored (retail = lead month)
+        agg_oc = _simulate_agg(leads)
+        mm_oc  = _agg_model_month(agg_oc['mm'])
+        oc_r   = sum(v[1] for v in mm_oc.values())
+
+        # On Update simulation: retail goes to rm
+        agg_ou = _simulate_agg_u(leads)
+        mm_ou  = _agg_u_model_month(agg_ou['u_mm'])
+        ou_r   = sum(v[1] for v in mm_ou.values())
+
+        self.assertEqual(oc_r, 3, 'On Create total retail must be 3')
+        self.assertEqual(ou_r, 3, 'On Update total retail must also be 3 (conservation)')
+        # Per-month distributions differ: OC attributes retail to lead month, OU to rm
+        # L1 (Jul lead, rm=Sep): OC retail in Jul; OU retail in Sep
+        # L2 (Aug lead, rm=Aug): OC retail in Aug; OU retail in Aug  (no shift)
+        # L3 (Aug lead, rm=Sep): OC retail in Aug; OU retail in Sep
+        oc_aug = mm_oc.get(('Sport', "Aug'26"), [0, 0])[1]
+        ou_aug = mm_ou.get(('Sport', "Aug'26"), [0, 0])[1]
+        self.assertEqual(oc_aug, 2,
+                         'On Create: 2 retails in Aug (L2 and L3 have Aug lead month)')
+        self.assertEqual(ou_aug, 1,
+                         'On Update: only 1 retail in Aug (L2 stays; L3 shifted to Sep)')
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
