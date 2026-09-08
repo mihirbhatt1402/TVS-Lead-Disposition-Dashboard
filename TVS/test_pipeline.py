@@ -5775,6 +5775,24 @@ class TestModelPerfCrossTabReconciliation(unittest.TestCase):
         self.assertIn('data.univ', snippet,
                       'ModelPerfTab must read data.univ (univ or u_univ via effectiveData)')
 
+    # ── 8b. ModelSourceTab also has no city filter path (architectural parity) ─
+    def test_P8b_modelsrctab_also_no_city_filter_path(self):
+        """ModelSourceTab must NOT have a city-filter path — same rule as ModelPerfTab.
+        Both model-dimension tabs are intentionally all-India views:
+          - City filter scopes: OverviewTab KPIs, SourceTab, StateSourceTab (geography).
+          - City filter does NOT scope: ModelSourceTab, ModelPerfTab, OverviewTab heatmap.
+        cxm (city×model×month) is used only in StateSourceTab for geographic drill-down."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        start = src.find('function ModelSourceTab(')
+        end   = src.find('function StateSourceTab(', start)
+        self.assertGreater(start, 0, 'ModelSourceTab function not found')
+        snippet = src[start:end]
+        self.assertNotIn('hasCityF',  snippet, 'ModelSourceTab must not have city filter path')
+        self.assertNotIn('cxsm',      snippet, 'ModelSourceTab must not reference cxsm')
+        self.assertNotIn('data.cxm',  snippet, 'ModelSourceTab must not reference data.cxm')
+        self.assertNotIn('cities',    snippet, 'ModelSourceTab must not filter by cities')
+
     # ── 9. Source filter OC ───────────────────────────────────────────────────
     def test_P9_source_filter_on_create_modelperf_equals_modelsrc(self):
         """OC with source filter: ModelPerfTab must equal ModelSourceTab."""
