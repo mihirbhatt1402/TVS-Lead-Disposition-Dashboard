@@ -3040,6 +3040,205 @@ const GeoDealerTab = React.memo(function GeoDealerTab({ data, filters, months, R
 });
 
 /* ════════════════════════════════════════════════════════════════════
+   MODEL PERFORMANCE TAB
+   Month-on-month Leads × Retail × L2R% for every model.
+   Columns: months sorted latest → oldest; Rows: models by total leads.
+   Accessible to all roles including Viewer.
+   ════════════════════════════════════════════════════════════════════ */
+const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, RT }) {
+  const { maps } = data;
+  const mm    = data.mm   || [];
+  const univ  = data.univ || [];
+  const cxsm  = data.cxsm || [];
+  const cxm   = data.cxm  || [];
+  const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
+
+  // ── Aggregation: model → month → [L, R] ───────────────────────────
+  const tableAgg = useMemo(() => {
+    const univF    = makeUnivFilter(filters);
+    const allSrcs  = !filters.sources || filters.sources.size === 0;
+    const allMdl   = !filters.models  || filters.models.size  === 0;
+    const hasCityF = !!(filters.cities && filters.cities.size > 0 && maps.city && maps.city.length > 0);
+    const monthSet = new Set(months);
+
+    const acc = new Map(); // mdl → Map<month, [L, R]>
+    function bump(mdl, mon, l, r) {
+      if (!acc.has(mdl)) acc.set(mdl, new Map());
+      const mmap = acc.get(mdl);
+      const cur  = mmap.get(mon) || [0, 0];
+      cur[0] += l; cur[1] += r; mmap.set(mon, cur);
+    }
+
+    if (univF) {
+      // model/state/LT filter active → use univ [mi, si, sti, tti, li, ...]
+      for (const row of univ) {
+        const mon = maps.lm[row[4]];
+        if (!monthSet.has(mon)) continue;
+        if (!allSrcs && !filters.sources.has(maps.src[row[1]])) continue;
+        if (!univF(row, maps)) continue;
+        const [l, r] = getLR(row);
+        bump(maps.mdl[row[0]], mon, l, r);
+      }
+    } else if (hasCityF) {
+      if (cxsm.length > 0) {
+        // cxsm: [city_idx, src_idx, mdl_idx, lm_idx, ...]
+        for (const row of cxsm) {
+          const mon = maps.lm[row[3]];
+          if (!monthSet.has(mon)) continue;
+          if (!filters.cities.has(maps.city[row[0]])) continue;
+          if (!allSrcs && !filters.sources.has(maps.src[row[1]])) continue;
+          const mdl = maps.mdl[row[2]];
+          if (!allMdl && !filters.models.has(mdl)) continue;
+          const [l, r] = getLR(row);
+          bump(mdl, mon, l, r);
+        }
+      } else {
+        // cxm: [city_idx, mdl_idx, lm_idx, ...]  (no source dim)
+        for (const row of cxm) {
+          const mon = maps.lm[row[2]];
+          if (!monthSet.has(mon)) continue;
+          if (!filters.cities.has(maps.city[row[0]])) continue;
+          const mdl = maps.mdl[row[1]];
+          if (!allMdl && !filters.models.has(mdl)) continue;
+          const [l, r] = getLR(row);
+          bump(mdl, mon, l, r);
+        }
+      }
+    } else {
+      // mm: [mdl_idx, src_idx, lm_idx, ...]
+      for (const row of mm) {
+        const mon = maps.lm[row[2]];
+        if (!monthSet.has(mon)) continue;
+        const mdl = maps.mdl[row[0]];
+        if (!allMdl && !filters.models.has(mdl)) continue;
+        if (!allSrcs && !filters.sources.has(maps.src[row[1]])) continue;
+        const [l, r] = getLR(row);
+        bump(mdl, mon, l, r);
+      }
+    }
+    return acc;
+  }, [mm, univ, cxsm, cxm, maps, filters, months, getLR]);
+
+  // Sort models by total leads descending
+  const modelRows = useMemo(() => {
+    const rows = [];
+    for (const [mdl, mmap] of tableAgg) {
+      let tL = 0;
+      for (const [, v] of mmap) tL += v[0];
+      rows.push({ mdl, mmap, tL });
+    }
+    rows.sort((a, b) => b.tL - a.tL);
+    return rows;
+  }, [tableAgg]);
+
+  // Grand totals per month (sum across all models)
+  const grandByMonth = useMemo(() => {
+    const g = new Map();
+    for (const { mmap } of modelRows) {
+      for (const [mon, v] of mmap) {
+        const cur = g.get(mon) || [0, 0];
+        cur[0] += v[0]; cur[1] += v[1]; g.set(mon, cur);
+      }
+    }
+    return g;
+  }, [modelRows]);
+
+  if (months.length === 0 || months[0] === '\x00')
+    return ce('div', { className:'fs-13', style:{ textAlign:'center', padding:40, color:'#94A3B8' } }, 'No months to display.');
+  if (modelRows.length === 0)
+    return ce('div', { className:'fs-13', style:{ textAlign:'center', padding:40, color:'#94A3B8' } }, 'No data for the selected filters.');
+
+  // ── L2R% badge cell ──────────────────────────────────────────────
+  function cellL2R(l, r) {
+    if (!l || l === 0) return ce('span', { className:'badge-gray' }, '—');
+    const pct = r / l * 100;
+    const cls = pct >= 15 ? 'badge-green' : pct >= 8 ? 'badge-amber' : 'badge-red';
+    return ce('span', { className:'badge ' + cls }, pct.toFixed(1) + '%');
+  }
+
+  // ── Overall summary numbers ───────────────────────────────────────
+  let totalL = 0, totalR = 0;
+  for (const [, v] of grandByMonth) { totalL += v[0]; totalR += v[1]; }
+
+  // ── Table header rows ─────────────────────────────────────────────
+  // Row 1: Model (rowSpan=2) + month group headers (colSpan=3 each)
+  const headerRow1 = [
+    ce('th', {
+      key: 'mdl', rowSpan: 2, className: 'left',
+      style: { minWidth: 150, zIndex: 3, background: '#E8EAF6', color: '#1A237E',
+               position: 'sticky', left: 0, verticalAlign: 'middle', borderRight: '2px solid #9FA8DA' }
+    }, 'Model'),
+    ...months.map(m =>
+      ce('th', {
+        key: m, colSpan: 3,
+        style: { background: '#E8EAF6', color: '#1A237E', textAlign: 'center',
+                 borderLeft: '2px solid #9FA8DA' }
+      }, m.toUpperCase())
+    )
+  ];
+  // Row 2: sub-column headers (Leads / Retail / L2R% per month)
+  const headerRow2 = months.flatMap(m => [
+    ce('th', { key: m + 'l',   className: 'sub', style: { borderLeft: '2px solid #9FA8DA' } }, 'Leads'),
+    ce('th', { key: m + 'r',   className: 'sub' }, 'Retail'),
+    ce('th', { key: m + 'l2r', className: 'sub' }, 'L2R%'),
+  ]);
+
+  // ── Per-model cells for a given month-map ────────────────────────
+  function monthCells(mmap) {
+    return months.flatMap(m => {
+      const [l, r] = mmap.get(m) || [0, 0];
+      return [
+        ce('td', { key: m + 'l', style: { borderLeft: '2px solid #E2E8F0' } }, l > 0 ? Nf(l) : '—'),
+        ce('td', { key: m + 'r', style: { color: '#E31837', fontWeight: 700  } }, r > 0 ? Nf(r) : '—'),
+        ce('td', { key: m + 'l2r' }, cellL2R(l, r)),
+      ];
+    });
+  }
+
+  // ── Grand Total cells ────────────────────────────────────────────
+  const grandCells = months.flatMap(m => {
+    const [l, r] = grandByMonth.get(m) || [0, 0];
+    return [
+      ce('td', { key: m + 'l', style: { fontWeight: 700, borderLeft: '2px solid #CFD8DC' } }, l > 0 ? Nf(l) : '—'),
+      ce('td', { key: m + 'r', style: { color: '#E31837', fontWeight: 800 } }, r > 0 ? Nf(r) : '—'),
+      ce('td', { key: m + 'l2r' }, cellL2R(l, r)),
+    ];
+  });
+
+  return ce('div', { className: 'fade-up' },
+    ce(SummaryBar, { kpis: [
+      { label: 'Total Leads',  value: Nf(totalL) },
+      { label: 'Total Retail', value: Nf(totalR),  accent: '#E31837' },
+      { label: 'Overall L2R%', value: totalL > 0 ? (totalR / totalL * 100).toFixed(1) + '%' : '—', accent: '#D97706' },
+      { label: 'Models',       value: modelRows.length },
+      { label: 'Months',       value: months.length },
+    ]}),
+    ce('div', { className: 'card', style: { padding: '16px 18px' } },
+      ce('div', { className: 'scroll-x' },
+        ce('table', null,
+          ce('thead', null,
+            ce('tr', null, ...headerRow1),
+            ce('tr', null, ...headerRow2),
+          ),
+          ce('tbody', null,
+            ...modelRows.map(({ mdl, mmap }) =>
+              ce('tr', { key: mdl },
+                ce('td', { className: 'label' }, mdl),
+                ...monthCells(mmap)
+              )
+            ),
+            ce('tr', { className: 'total-row' },
+              ce('td', { className: 'label', style: { color: '#1A237E' } }, '∑ Grand Total'),
+              ...grandCells
+            )
+          )
+        )
+      )
+    )
+  );
+});
+
+/* ════════════════════════════════════════════════════════════════════
    APP ROOT
    ════════════════════════════════════════════════════════════════════ */
 const TABS = [
@@ -3047,6 +3246,7 @@ const TABS = [
   { id:'source',      label:'Source Analysis' },
   { id:'ltxsrc',      label:'LT × Source' },
   { id:'modelxsrc',   label:'Model × Source' },
+  { id:'modelperf',   label:'Model Performance' },
   { id:'statexmodel', label:'Geo & Model' },
   { id:'geodealer',   label:'Geo & Dealer' },
   { id:'dispersion',  label:'Retail Dispersion' },
@@ -3162,7 +3362,7 @@ function App() {
   const role       = auth ? auth.role : null;
   const viewerMode = role === 'viewer';
   const visibleTabs = viewerMode
-    ? TABS.filter(t => ['modelxsrc','statexmodel','geodealer'].includes(t.id))
+    ? TABS.filter(t => ['modelxsrc','modelperf','statexmodel','geodealer'].includes(t.id))
     : TABS;
 
   const tabContent = useMemo(() => {
@@ -3173,6 +3373,7 @@ function App() {
       case 'source':      return ce(SourceTab,         props);
       case 'ltxsrc':      return ce(LTSourceTab,       props);
       case 'modelxsrc':   return ce(ModelSourceTab,    props);
+      case 'modelperf':   return ce(ModelPerfTab,      props);
       case 'statexmodel': return ce(StateModelTab,     props);
       case 'geodealer':   return ce(GeoDealerTab,       props);
       case 'dispersion':  return ce(DispersionTab,     props);

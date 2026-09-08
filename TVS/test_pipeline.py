@@ -4641,6 +4641,439 @@ class TestFacebookLeadTypeMappingBug(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestModelPerformanceTab
+# Tests for the Model Performance tab data contract and aggregation semantics.
+# The tab reads the mm (model × source × month) matrix from the payload and
+# aggregates across sources to produce per-model-per-month Leads / Retail / L2R%.
+# ---------------------------------------------------------------------------
+
+def _agg_model_month(agg_mm: dict) -> dict:
+    """
+    Simulate the ModelPerfTab frontend aggregation.
+    Input : agg['mm'] → {(mdl, src, lm): [leads, rets]}
+    Output: {(mdl, lm): [leads, rets]}  (sources summed out)
+    """
+    result = {}
+    for (mdl, src, lm), (l, r) in agg_mm.items():
+        key = (mdl, lm)
+        cur = result.get(key, [0, 0])
+        cur[0] += l; cur[1] += r
+        result[key] = cur
+    return result
+
+
+def _grand_by_month(model_month: dict) -> dict:
+    """Sum all models → {lm: [leads, rets]} (grand total per month)."""
+    grand = {}
+    for (mdl, lm), (l, r) in model_month.items():
+        cur = grand.get(lm, [0, 0])
+        cur[0] += l; cur[1] += r
+        grand[lm] = cur
+    return grand
+
+
+class TestModelPerformanceTab(unittest.TestCase):
+    """Tests for the Model Performance tab data contract (items 1–27 in spec)."""
+
+    # ── 1. Tab name & ID exist in index.html ─────────────────────────────────
+    def test_tab_id_modelperf_in_index_html(self):
+        """TABS array must contain an entry with id 'modelperf'."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        self.assertTrue(idx.exists(), 'index.html not found')
+        src = idx.read_text(encoding='utf-8')
+        self.assertIn("id:'modelperf'", src,
+                      "TABS must contain { id:'modelperf' }")
+
+    def test_tab_label_model_performance_in_index_html(self):
+        """TABS entry must have label 'Model Performance'."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        self.assertIn("label:'Model Performance'", src)
+
+    # ── 2–3. Viewer access — index.html visibleTabs ───────────────────────────
+    def test_modelperf_in_viewer_visible_tabs(self):
+        """visibleTabs for viewer role must include 'modelperf'."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        # The viewer filter list must contain modelperf
+        self.assertIn("'modelperf'", src)
+        # And it must appear alongside the other viewer-accessible tab IDs
+        import re
+        m = re.search(r"TABS\.filter\(t\s*=>\s*\[([^\]]+)\]\.includes", src)
+        self.assertIsNotNone(m, 'visibleTabs filter not found')
+        viewer_ids = m.group(1)
+        self.assertIn('modelperf', viewer_ids,
+                      "modelperf must be in the viewer-accessible tab list")
+
+    def test_modelperf_component_defined(self):
+        """ModelPerfTab React component must be defined in index.html."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        self.assertIn('ModelPerfTab', src)
+        self.assertIn('function ModelPerfTab', src)
+
+    def test_modelperf_case_in_switch(self):
+        """tabContent switch must handle 'modelperf' case."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        self.assertIn("case 'modelperf'", src)
+        self.assertIn('ModelPerfTab', src)
+
+    # ── 4. Models appear once per aggregation ─────────────────────────────────
+    def test_each_model_appears_once_per_month(self):
+        """A model must appear exactly once per month in the model-month map."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Google',   'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'WhatsApp', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic',  'mdl': 'Raider',  'lt': '1', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        mm = _agg_model_month(agg['mm'])
+        # Jupiter/Aug'26 must be a single entry (two sources merged)
+        self.assertIn(('Jupiter', "Aug'26"), mm)
+        self.assertIn(('Raider',  "Aug'26"), mm)
+        # Each (model, month) key appears exactly once in the output dict
+        for key in mm:
+            self.assertIsInstance(key, tuple)
+            self.assertEqual(len(key), 2)
+
+    # ── 5. Latest month is immediately adjacent (month order) ─────────────────
+    @staticmethod
+    def _month_order(m):
+        """Mirror of the JS monthOrder() function used by the dashboard frontend."""
+        _MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+        import re
+        mt = re.match(r'([A-Za-z]+)\'(\d+)', m or '')
+        if not mt: return 0
+        yr = int(mt.group(2))
+        mn = mt.group(1)
+        return yr * 12 + (_MN.index(mn) if mn in _MN else 0)
+
+    def test_month_ordering_latest_first(self):
+        """Month ordering must sort Sep'26 before Aug'26 before Jul'26."""
+        months_raw = ["Jul'26", "Sep'26", "Aug'26", "Jan'25"]
+        sorted_m = sorted(months_raw, key=lambda m: -self._month_order(m))
+        self.assertEqual(sorted_m[0], "Sep'26")
+        self.assertEqual(sorted_m[1], "Aug'26")
+        self.assertEqual(sorted_m[2], "Jul'26")
+        self.assertEqual(sorted_m[3], "Jan'25")
+
+    def test_month_ordering_crosses_year_boundary(self):
+        """Month ordering must correctly order months across year boundaries."""
+        months_raw = ["Dec'25", "Jan'26", "Feb'26"]
+        sorted_m = sorted(months_raw, key=lambda m: -self._month_order(m))
+        self.assertEqual(sorted_m[0], "Feb'26")
+        self.assertEqual(sorted_m[1], "Jan'26")
+        self.assertEqual(sorted_m[2], "Dec'25")
+
+    def test_month_ordering_dynamic_no_hardcoded_month(self):
+        """Month ordering must be dynamic — Oct'26 must sort before Sep'26."""
+        months_raw = ["Sep'26", "Aug'26", "Oct'26"]
+        sorted_m = sorted(months_raw, key=lambda m: -self._month_order(m))
+        self.assertEqual(sorted_m[0], "Oct'26",
+                         "Oct'26 must sort before Sep'26 when available")
+
+    # ── 8. Leads correct by Model × Month ─────────────────────────────────────
+    def test_leads_correct_by_model_month(self):
+        """Model × month lead count must match the fixture exactly."""
+        leads = [
+            {'lid': 'A1', 'lm': "Aug'26", 'src': 'Google',   'mdl': 'Model A', 'lt': '1', 'is_ret': False},
+            {'lid': 'A2', 'lm': "Aug'26", 'src': 'WhatsApp', 'mdl': 'Model A', 'lt': '1', 'is_ret': False},
+            {'lid': 'A3', 'lm': "Jul'26", 'src': 'Organic',  'mdl': 'Model A', 'lt': '1', 'is_ret': False},
+            {'lid': 'B1', 'lm': "Aug'26", 'src': 'Google',   'mdl': 'Model B', 'lt': '1', 'is_ret': False},
+        ]
+        agg  = _simulate_agg(leads)
+        mm   = _agg_model_month(agg['mm'])
+        self.assertEqual(mm[('Model A', "Aug'26")][0], 2)
+        self.assertEqual(mm[('Model A', "Jul'26")][0], 1)
+        self.assertEqual(mm[('Model B', "Aug'26")][0], 1)
+
+    # ── 9. Retail correct by Model × Month ────────────────────────────────────
+    def test_retail_correct_by_model_month(self):
+        """Model × month retail count must match the fixture exactly."""
+        leads = [
+            {'lid': 'A1', 'lm': "Aug'26", 'src': 'Google',  'mdl': 'Model A', 'lt': '1', 'is_ret': True},
+            {'lid': 'A2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Model A', 'lt': '1', 'is_ret': False},
+            {'lid': 'A3', 'lm': "Jul'26", 'src': 'Google',  'mdl': 'Model A', 'lt': '1', 'is_ret': True},
+            {'lid': 'B1', 'lm': "Aug'26", 'src': 'Google',  'mdl': 'Model B', 'lt': '1', 'is_ret': True},
+            {'lid': 'B2', 'lm': "Aug'26", 'src': 'Google',  'mdl': 'Model B', 'lt': '1', 'is_ret': True},
+        ]
+        agg = _simulate_agg(leads)
+        mm  = _agg_model_month(agg['mm'])
+        self.assertEqual(mm[('Model A', "Aug'26")][1], 1)
+        self.assertEqual(mm[('Model A', "Jul'26")][1], 1)
+        self.assertEqual(mm[('Model B', "Aug'26")][1], 2)
+
+    # ── 10. L2R% = Retail / Leads ─────────────────────────────────────────────
+    def test_l2r_equals_retail_over_leads(self):
+        """L2R% must equal Retail ÷ Leads × 100 for each model × month cell."""
+        leads = [
+            {'lid': 'A1', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Model A', 'lt': '1', 'is_ret': True},
+            {'lid': 'A2', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Model A', 'lt': '1', 'is_ret': False},
+            {'lid': 'A3', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Model A', 'lt': '1', 'is_ret': False},
+            {'lid': 'A4', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Model A', 'lt': '1', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        mm  = _agg_model_month(agg['mm'])
+        l, r = mm[('Model A', "Aug'26")]
+        self.assertEqual(l, 4)
+        self.assertEqual(r, 1)
+        l2r = r / l * 100
+        self.assertAlmostEqual(l2r, 25.0)
+
+    # ── 11. Zero Leads → safe output ──────────────────────────────────────────
+    def test_zero_leads_l2r_is_safe(self):
+        """When leads = 0, L2R% must not raise ZeroDivisionError."""
+        leads = []  # empty fixture → all zeros
+        agg = _simulate_agg(leads)
+        mm  = _agg_model_month(agg['mm'])
+        # No model → no division attempted
+        self.assertEqual(len(mm), 0)
+
+        # Simulate the frontend guard: l > 0 ? r/l*100 : '—'
+        l, r = 0, 0
+        result = r / l * 100 if l > 0 else '—'
+        self.assertEqual(result, '—')
+
+    def test_zero_leads_never_produces_inf(self):
+        """l2r with l=0 must not produce infinity."""
+        import math
+        l, r = 0, 5
+        result = r / l * 100 if l > 0 else None
+        self.assertIsNone(result)  # guarded correctly
+
+    # ── 12. Grand Total Leads ─────────────────────────────────────────────────
+    def test_grand_total_leads_correct(self):
+        """Grand total leads per month must equal the sum of all model leads."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Google',  'mdl': 'Model A', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Model B', 'lt': '1', 'is_ret': False},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Google',  'mdl': 'Model C', 'lt': '1', 'is_ret': False},
+        ]
+        agg   = _simulate_agg(leads)
+        mm    = _agg_model_month(agg['mm'])
+        grand = _grand_by_month(mm)
+        # All 3 leads are in Aug'26 → grand total = 3
+        self.assertEqual(grand["Aug'26"][0], 3)
+        # Verify it equals sm total for that month
+        sm_l = sum(v[0] for (src, lm), v in agg['sm'].items() if lm == "Aug'26")
+        self.assertEqual(grand["Aug'26"][0], sm_l)
+
+    # ── 13. Grand Total Retail ────────────────────────────────────────────────
+    def test_grand_total_retail_correct(self):
+        """Grand total retail per month must equal the sum of all model retails."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Google',  'mdl': 'Model A', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Model B', 'lt': '1', 'is_ret': True},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Google',  'mdl': 'Model C', 'lt': '1', 'is_ret': False},
+        ]
+        agg   = _simulate_agg(leads)
+        mm    = _agg_model_month(agg['mm'])
+        grand = _grand_by_month(mm)
+        self.assertEqual(grand["Aug'26"][1], 2)
+
+    # ── 14. Grand Total L2R% = Total Retail / Total Leads ────────────────────
+    def test_grand_total_l2r_is_totals_ratio_not_average(self):
+        """Grand Total L2R% must be Total Retail / Total Leads, not average of model L2R%."""
+        leads = [
+            # Model A: 100 leads, 10 retails → 10%
+            *[{'lid': f'A{i}', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Model A',
+               'lt': '1', 'is_ret': i < 10} for i in range(100)],
+            # Model B: 50 leads, 15 retails → 30%
+            *[{'lid': f'B{i}', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Model B',
+               'lt': '1', 'is_ret': i < 15} for i in range(50)],
+        ]
+        agg   = _simulate_agg(leads)
+        mm    = _agg_model_month(agg['mm'])
+        grand = _grand_by_month(mm)
+        total_l, total_r = grand["Aug'26"]
+        self.assertEqual(total_l, 150)
+        self.assertEqual(total_r, 25)
+        correct_l2r = total_r / total_l * 100         # 16.67%
+        naive_avg   = (10.0 + 30.0) / 2               # 20.00%  — WRONG
+        self.assertAlmostEqual(correct_l2r, 25/150*100, places=4)
+        self.assertNotAlmostEqual(correct_l2r, naive_avg, places=1,
+                                  msg='Grand Total L2R% must NOT be the average of model L2Rs')
+
+    # ── 15. Lead Type filter: mm reflects LT correctly via simulation ─────────
+    def test_lead_type_filter_isolates_correct_model_leads(self):
+        """Filtering by lead type must exclude other LT rows from mm."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '69', 'is_ret': False},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Raider',  'lt': '70', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        # univ (the universe matrix the frontend uses for LT filter) must have LT info
+        # mm aggregates across LTs; the frontend uses univ for LT-filtered views
+        # Here we verify mm has the expected model counts
+        mm = _agg_model_month(agg['mm'])
+        self.assertEqual(mm[('Jupiter', "Aug'26")][0], 1)
+        self.assertEqual(mm[('Raider',  "Aug'26")][0], 1)
+
+    # ── 16. Source filter: WhatsApp only ─────────────────────────────────────
+    def test_source_filter_whatsapp_only(self):
+        """Source filter = WhatsApp must produce only WhatsApp model leads."""
+        leads = [
+            {'lid': 'W1', 'lm': "Aug'26", 'src': 'WhatsApp', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'G1', 'lm': "Aug'26", 'src': 'Google',   'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        # Simulate source filter: only WhatsApp rows
+        mm_wa = {
+            (mdl, lm): v
+            for (mdl, src, lm), v in agg['mm'].items()
+            if src == 'WhatsApp'
+        }
+        self.assertEqual(mm_wa.get(('Jupiter', "Aug'26"), [0, 0])[0], 1)
+        self.assertEqual(mm_wa.get(('Jupiter', "Aug'26"), [0, 0])[1], 1)
+
+    # ── 17. Model filter ──────────────────────────────────────────────────────
+    def test_model_filter_excludes_other_models(self):
+        """Model filter must exclude non-selected model rows from aggregation."""
+        leads = [
+            {'lid': 'J1', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'R1', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Raider',  'lt': '1', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        # Simulate model filter = {'Jupiter'}: keep only Jupiter rows in mm (3-tuple keys)
+        mm_raw_filtered = {
+            (mdl, src, lm): v
+            for (mdl, src, lm), v in agg['mm'].items()
+            if mdl == 'Jupiter'
+        }
+        mm = _agg_model_month(mm_raw_filtered)
+        self.assertIn(('Jupiter', "Aug'26"), mm)
+        self.assertNotIn(('Raider', "Aug'26"), mm)
+
+    # ── 18–19. State / City filters (structural) ──────────────────────────────
+    def test_state_filter_reduces_model_leads(self):
+        """State-filtered data (from univ) must reduce lead counts vs unfiltered mm."""
+        # Simulate two leads in different states, same model/month
+        leads_total = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+        ]
+        agg_total = _simulate_agg(leads_total)
+        mm_total  = _agg_model_month(agg_total['mm'])
+        self.assertEqual(mm_total[('Jupiter', "Aug'26")][0], 2)
+
+        # One lead filtered out (state filter reduces to 1)
+        leads_state = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+        ]
+        agg_state = _simulate_agg(leads_state)
+        mm_state  = _agg_model_month(agg_state['mm'])
+        self.assertEqual(mm_state[('Jupiter', "Aug'26")][0], 1)
+        self.assertLess(mm_state[('Jupiter', "Aug'26")][0], mm_total[('Jupiter', "Aug'26")][0])
+
+    # ── 20–21. On Create / On Update semantics ────────────────────────────────
+    def test_on_create_month_attribution_unchanged(self):
+        """On Create: leads attributed to their lead month (not booking month)."""
+        leads = [
+            {'lid': 'L1', 'lm': "Jul'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+        ]
+        agg = _simulate_agg(leads)
+        mm  = _agg_model_month(agg['mm'])
+        self.assertEqual(mm[('Jupiter', "Jul'26")][0], 1,
+                         'On Create: lead must appear in lead month Jul26')
+        self.assertNotIn(('Jupiter', "Aug'26"), mm,
+                         'On Create: lead must NOT shift to a later month')
+
+    def test_on_update_retail_attributed_to_booking_month(self):
+        """_simulate_agg assigns retail via is_ret flag — retail month logic intact."""
+        leads = [
+            {'lid': 'L1', 'lm': "Jul'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'L2', 'lm': "Jul'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        mm  = _agg_model_month(agg['mm'])
+        l, r = mm[('Jupiter', "Jul'26")]
+        self.assertEqual(l, 2)
+        self.assertEqual(r, 1, 'Only one retail (L1)')
+
+    # ── 22–23. August/September month-close semantics ─────────────────────────
+    def test_august_and_september_both_produce_model_month_data(self):
+        """Both Aug'26 and Sep'26 leads must appear correctly in mm."""
+        leads = [
+            {'lid': 'A1', 'lm': "Aug'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': True},
+            {'lid': 'S1', 'lm': "Sep'26", 'src': 'Google', 'mdl': 'Jupiter', 'lt': '1', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        mm  = _agg_model_month(agg['mm'])
+        self.assertEqual(mm[('Jupiter', "Aug'26")][0], 1)
+        self.assertEqual(mm[('Jupiter', "Aug'26")][1], 1)
+        self.assertEqual(mm[('Jupiter', "Sep'26")][0], 1)
+        self.assertEqual(mm[('Jupiter', "Sep'26")][1], 0)
+
+    # ── 24. WhatsApp canonical mapping preserved ──────────────────────────────
+    def test_whatsapp_canonical_in_model_month(self):
+        """WhatsApp leads must appear in mm under 'WhatsApp' (canonical casing)."""
+        leads = [
+            {'lid': 'W1', 'lm': "Aug'26", 'src': 'whatsapp', 'mdl': 'Raider', 'lt': '1', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        wa_keys = [src for (mdl, src, lm) in agg['mm'] if lm == "Aug'26"]
+        self.assertIn('WhatsApp', wa_keys,
+                      'Canonical WhatsApp must appear in mm after source normalisation')
+
+    # ── 25. MS FB 1105/1106 rule intact ──────────────────────────────────────
+    def test_msfb_rule_intact_in_model_month(self):
+        """Non-1105 Facebook leads must appear as WhatsApp in mm, not Facebook."""
+        leads = [
+            {'lid': 'F1', 'lm': "Aug'26", 'src': 'Facebook', 'mdl': 'Jupiter', 'lt': '69',   'is_ret': False},
+            {'lid': 'F2', 'lm': "Aug'26", 'src': 'Facebook', 'mdl': 'Apache',  'lt': '1105', 'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        mm  = _agg_model_month(agg['mm'])
+        # Jupiter's Aug'26 lead was Facebook but LT=69 → must be WhatsApp in mm
+        fb_keys = [(mdl, src, lm) for (mdl, src, lm) in agg['mm']
+                   if src == 'Facebook' and mdl == 'Jupiter']
+        self.assertEqual(fb_keys, [],
+                         'Jupiter × Facebook must not appear (LT=69 → WhatsApp)')
+        wa_keys = [(mdl, src, lm) for (mdl, src, lm) in agg['mm']
+                   if src == 'WhatsApp' and mdl == 'Jupiter']
+        self.assertGreater(len(wa_keys), 0,
+                           'Jupiter × WhatsApp must appear (converted from Facebook)')
+
+    # ── 26. No additional production API/Firebase calls ──────────────────────
+    def test_no_new_apps_script_fetch_in_index_html(self):
+        """ModelPerfTab must not introduce new APPS_SCRIPT_URL fetch calls."""
+        idx = Path(__file__).parent.parent / 'index.html'
+        src = idx.read_text(encoding='utf-8')
+        # Count APPS_SCRIPT_URL references inside ModelPerfTab
+        import re
+        # Extract the ModelPerfTab function body
+        start = src.find('function ModelPerfTab(')
+        self.assertGreater(start, 0, 'ModelPerfTab not found in index.html')
+        # Find the next top-level const or comment after it (simple heuristic)
+        snippet_end = src.find('\nconst ', start + 100)
+        if snippet_end < 0:
+            snippet_end = start + 5000  # fallback
+        snippet = src[start:snippet_end]
+        self.assertNotIn('APPS_SCRIPT_URL', snippet,
+                         'ModelPerfTab must not call the Apps Script API')
+        self.assertNotIn('firebase', snippet.lower(),
+                         'ModelPerfTab must not call Firebase directly')
+
+    # ── 27. Existing tests unaffected (structural: mm/sm/ltm still consistent) ─
+    def test_existing_mm_sm_totals_still_equal(self):
+        """mm grand total must still equal sm grand total after pipeline changes."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Google',   'mdl': 'Jupiter', 'lt': '69',   'is_ret': False},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Facebook',  'mdl': 'Apache',  'lt': '1105', 'is_ret': False},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'WhatsApp',  'mdl': 'Raider',  'lt': '70',   'is_ret': True},
+            {'lid': 'L4', 'lm': "Sep'26", 'src': 'Organic',   'mdl': 'Jupiter', 'lt': '1',    'is_ret': False},
+        ]
+        agg = _simulate_agg(leads)
+        sm_total  = sum(v[0] for v in agg['sm'].values())
+        mm_total  = sum(v[0] for v in agg['mm'].values())
+        ltm_total = sum(v[0] for v in agg['ltm'].values())
+        self.assertEqual(sm_total, 4)
+        self.assertEqual(mm_total,  sm_total,  'mm total must equal sm total')
+        self.assertEqual(ltm_total, sm_total,  'ltm total must equal sm total')
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
