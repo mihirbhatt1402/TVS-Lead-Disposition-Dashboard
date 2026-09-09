@@ -587,6 +587,22 @@ function pmOverrideLR(getLR, pmMap, ri, keyFn) {
   return row => { const [l] = getLR(row); const v = pmMap.get(keyFn(row)); return [l, v ? v[ri] : 0]; };
 }
 
+/* Like pmOverrideLR but deduplicates by key so each (mi,si,li) contributes
+   PM retail exactly once per aggregation call — fixes double-counting in the
+   univ path where multiple rows share the same (mi,si,li) key (different sti/tti). */
+function pmOverrideLRDedup(getLR, pmMap, ri, keyFn) {
+  if (!pmMap) return getLR;
+  const seen = new Set();
+  return row => {
+    const [l] = getLR(row);
+    const key = keyFn(row);
+    if (seen.has(key)) return [l, 0];
+    seen.add(key);
+    const v = pmMap.get(key);
+    return [l, v ? v[ri] : 0];
+  };
+}
+
 /* ════════════════════════════════════════════════════════════════════
    FORMATTERS
    ════════════════════════════════════════════════════════════════════ */
@@ -971,6 +987,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
         if (data.rt_cols) { dL+=row[row.length-2]; coL+=row[row.length-1]; }
       }
     } else if (univF) {
+      const seenRT = new Set();
       for (const row of univ) {
         const m = maps.lm[row[4]];
         if (!allM && !filters.months.has(m)) continue;
@@ -978,8 +995,12 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
         if (!allS && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
         const [l, r_raw] = getLR(row);
-        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
-        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        let r = 0, pmOv = null;
+        if (pmMaps) {
+          const rtKey = row[0]+'|'+row[1]+'|'+row[4];
+          if (!seenRT.has(rtKey)) { seenRT.add(rtKey); pmOv = pmMaps.miSiLi.get(rtKey); }
+          r = pmOv ? pmOv[pmRI] : 0;
+        } else { r = r_raw; }
         gL+=l; gR+=r;
         if (data.rt_cols) { dL += pmOv ? pmOv[1] : (pmMaps ? 0 : row[row.length-2]); coL += pmOv ? pmOv[2] : (pmMaps ? 0 : row[row.length-1]); }
         if (paidGrp && paidGrp.srcs.includes(src)) { pL+=l; pR+=r; }
@@ -1019,6 +1040,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
     } else if (univF) {
       const allM = !filters.months || filters.months.size === 0;
       const allS = !filters.sources || filters.sources.size === 0;
+      const seenRT = new Set();
       for (const row of univ) {
         const m = maps.lm[row[4]];
         if (!allM && !filters.months.has(m)) continue;
@@ -1026,8 +1048,11 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
         if (!univF(row, maps)) continue;
         const cur = byMonth.get(m) || [0,0];
         const [l, r_raw] = getLR(row);
-        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
-        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        let r = 0;
+        if (pmMaps) {
+          const rtKey = row[0]+'|'+row[1]+'|'+row[4];
+          if (!seenRT.has(rtKey)) { seenRT.add(rtKey); const v = pmMaps.miSiLi.get(rtKey); r = v ? v[pmRI] : 0; }
+        } else { r = r_raw; }
         cur[0]+=l; cur[1]+=r; byMonth.set(m, cur);
       }
     } else {
@@ -1066,6 +1091,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
       const table  = univF ? univ : sm;
       const getSrc = univF ? (row => maps.src[row[1]]) : (row => maps.src[row[0]]);
       const getM   = univF ? (row => maps.lm[row[4]])  : (row => maps.lm[row[1]]);
+      const seenRT = univF ? new Set() : null;
       for (const row of table) {
         const m = getM(row);
         if (!allM && !filters.months.has(m)) continue;
@@ -1075,10 +1101,13 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
         const [l, r_raw] = getLR(row);
         let r = r_raw;
         if (pmMaps) {
-          const pmOv = univF
-            ? pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4])
-            : pmMaps.siLi.get(row[0]+'|'+row[1]);
-          r = pmOv ? pmOv[pmRI] : 0;
+          if (univF) {
+            const rtKey = row[0]+'|'+row[1]+'|'+row[4];
+            if (seenRT.has(rtKey)) { r = 0; } else { seenRT.add(rtKey); const v = pmMaps.miSiLi.get(rtKey); r = v ? v[pmRI] : 0; }
+          } else {
+            const pmOv = pmMaps.siLi.get(row[0]+'|'+row[1]);
+            r = pmOv ? pmOv[pmRI] : 0;
+          }
         }
         const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
@@ -1302,14 +1331,18 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT, pmM
     const bySrc = new Map();
     let gL=0, gR=0;
     if (univF) {
+      const seenRT = new Set();
       for (const row of univ) {
         if (maps.lm[row[4]] !== M) continue;
         const src = maps.src[row[1]];
         if (!allS && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
         const [l, r_raw] = getLR(row);
-        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
-        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        let r = 0;
+        if (pmMaps) {
+          const rtKey = row[0]+'|'+row[1]+'|'+row[4];
+          if (!seenRT.has(rtKey)) { seenRT.add(rtKey); const v = pmMaps.miSiLi.get(rtKey); r = v ? v[pmRI] : 0; }
+        } else { r = r_raw; }
         gL+=l; gR+=r;
         const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
@@ -1470,8 +1503,8 @@ const LTSourceTab = React.memo(function LTSourceTab({ data, filters, months, RT,
     const univF = makeUnivFilter(filters);
     const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     if (univF) {
-      // univ path: mi=row[0], si=row[1], li=row[4]
-      const eff = pmOverrideLR(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[4]);
+      // univ path: mi=row[0], si=row[1], li=row[4]  — dedup to avoid sti/tti double-counting
+      const eff = pmOverrideLRDedup(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[4]);
       return aggMonth(
         univ, maps, M, filters.sources,
         (row,maps) => { const lt=maps.lt[row[3]]; return allLT||filters.leadTypes.has(lt) ? lt : null; },
@@ -1516,8 +1549,8 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
     const univF  = makeUnivFilter(filters);
     const pmRI   = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     if (univF) {
-      // univ path: mi=row[0], si=row[1], li=row[4]
-      const eff = pmOverrideLR(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[4]);
+      // univ path: mi=row[0], si=row[1], li=row[4]  — dedup to avoid sti/tti double-counting
+      const eff = pmOverrideLRDedup(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[4]);
       return aggMonth(
         univ, maps, M, filters.sources,
         (row,maps) => { const mdl=maps.mdl[row[0]]; return allMdl||filters.models.has(mdl) ? mdl : null; },
@@ -3145,14 +3178,18 @@ const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, R
     const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     if (univF) {
       // model/state/LT filter active → use univ [mi, si, sti, tti, li, ...]
+      const seenRT = new Set();
       for (const row of univ) {
         const mon = maps.lm[row[4]];
         if (!monthSet.has(mon)) continue;
         if (!allSrcs && !filters.sources.has(maps.src[row[1]])) continue;
         if (!univF(row, maps)) continue;
         const [l, r_raw] = getLR(row);
-        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
-        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        let r = 0;
+        if (pmMaps) {
+          const rtKey = row[0]+'|'+row[1]+'|'+row[4];
+          if (!seenRT.has(rtKey)) { seenRT.add(rtKey); const v = pmMaps.miSiLi.get(rtKey); r = v ? v[pmRI] : 0; }
+        } else { r = r_raw; }
         bump(maps.mdl[row[0]], mon, l, r);
       }
     } else {

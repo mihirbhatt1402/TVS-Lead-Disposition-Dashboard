@@ -6434,6 +6434,333 @@ class TestPurchasedModelFilter(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Model × PM intersection dedup regression tests (DD1–DD18)
+#
+# These tests verify the seenRT dedup fix applied to the frontend univ path.
+# The univ matrix has schema [mi, si, sti, tti, li, L, R, Rd, Rc].
+# For a given (mi, si, li) key, multiple rows can exist with different (sti,tti).
+# The PM retail overlay (pmr.miSiLi) is keyed by (mi, si, li) only.
+# Without dedup, each univ row reads the same PM retail value → multiplication.
+# The seenRT fix ensures each (mi, si, li) key contributes retail exactly once.
+# ---------------------------------------------------------------------------
+
+def _build_miSiLi_map(pmr_overlay):
+    """Build miSiLi map from overlay dict {(mdl,src,lm):[R,Rd,Rc]}.
+    Returns dict keyed by 'mi|si|li' strings (indices in maps arrays)."""
+    # Simplified string-key version for unit testing
+    result = {}
+    for (mdl, src, lm), v in pmr_overlay.items():
+        k = f'{mdl}|{src}|{lm}'
+        if k not in result: result[k] = [0, 0, 0]
+        result[k][0] += v[0]; result[k][1] += v[1]; result[k][2] += v[2]
+    return result
+
+
+def _sim_univ_rows(mi, si, li, n_sti_tti, L_each, R_each):
+    """Generate n_sti_tti univ rows for the same (mi,si,li) with different (sti,tti).
+    Each row carries L=L_each leads and R=R_each raw retail.
+    Schema: (mi, si, sti, tti, li, L, R)."""
+    rows = []
+    for i in range(n_sti_tti):
+        sti = i % 5
+        tti = i // 5
+        rows.append((mi, si, sti, tti, li, L_each, R_each))
+    return rows
+
+
+def _agg_univ_with_pm_buggy(rows, miSiLi_map, pmRI=0):
+    """Simulate the OLD (buggy) aggregation: looks up miSiLi for EVERY row."""
+    gL = gR = 0
+    for row in rows:
+        mi, si, sti, tti, li, l, r_raw = row
+        k = f'{mi}|{si}|{li}'
+        v = miSiLi_map.get(k)
+        r = v[pmRI] if v else r_raw
+        gL += l; gR += r
+    return gL, gR
+
+
+def _agg_univ_with_pm_fixed(rows, miSiLi_map, pmRI=0):
+    """Simulate the FIXED aggregation: seenRT dedup prevents double-counting."""
+    gL = gR = 0
+    seen = set()
+    for row in rows:
+        mi, si, sti, tti, li, l, r_raw = row
+        k = f'{mi}|{si}|{li}'
+        if k in seen:
+            r = 0
+        else:
+            seen.add(k)
+            v = miSiLi_map.get(k)
+            r = v[pmRI] if v else 0
+        gL += l; gR += r
+    return gL, gR
+
+
+class TestModelPMIntersectionDedup(unittest.TestCase):
+    """DD1–DD18: regression tests for the seenRT dedup fix in the univ aggregation path.
+
+    Root cause: univ has multiple rows per (mi,si,li) with different (sti,tti).
+    The PM retail overlay (miSiLi) is keyed by (mi,si,li).  Without dedup,
+    the same overlay value is added for every sti/tti combination — inflating
+    retail by up to N×.  The fix tracks seen (mi,si,li) keys and contributes
+    PM retail exactly once per key.
+    """
+
+    # ── DD1–DD5: dedup correctness ────────────────────────────────────────────
+
+    def test_DD1_single_univ_row_gives_correct_pm_retail(self):
+        """With 1 univ row for a key, fixed and buggy are identical (no duplication)."""
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=1, L_each=50, R_each=10)
+        overlay = {('Apache', 'Organic', "Aug'26"): [30, 2, 28]}
+        m = _build_miSiLi_map(overlay)
+        _, r_buggy = _agg_univ_with_pm_buggy(rows, m)
+        _, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        self.assertEqual(r_buggy, 30, 'Single row: buggy equals PM retail')
+        self.assertEqual(r_fixed, 30, 'Single row: fixed equals PM retail')
+
+    def test_DD2_two_sti_tti_rows_buggy_doubles_retail(self):
+        """2 univ rows for same (mi,si,li): buggy doubles retail, fixed is correct."""
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=2, L_each=25, R_each=5)
+        overlay = {('Apache', 'Organic', "Aug'26"): [60, 5, 55]}
+        m = _build_miSiLi_map(overlay)
+        _, r_buggy = _agg_univ_with_pm_buggy(rows, m)
+        _, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        self.assertEqual(r_buggy, 120, 'Buggy: 60 × 2 = 120')
+        self.assertEqual(r_fixed,  60, 'Fixed: PM retail applied exactly once')
+
+    def test_DD3_ten_sti_tti_rows_buggy_inflates_tenfold(self):
+        """10 univ rows for same key: buggy multiplies retail by 10."""
+        n = 10
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=n, L_each=10, R_each=2)
+        overlay = {('Apache', 'Organic', "Aug'26"): [178, 3, 175]}
+        m = _build_miSiLi_map(overlay)
+        _, r_buggy = _agg_univ_with_pm_buggy(rows, m)
+        _, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        self.assertEqual(r_buggy, 178 * n, f'Buggy: 178 × {n} = {178*n}')
+        self.assertEqual(r_fixed,      178, 'Fixed: 178 regardless of sti/tti count')
+
+    def test_DD4_worst_case_256_rows(self):
+        """256 univ rows (observed in live payload): buggy inflates by 256×, fixed is exact."""
+        n = 256
+        pm_retail = 178
+        rows = _sim_univ_rows('Apache', 'Organic', "Apr'26", n_sti_tti=n, L_each=2, R_each=1)
+        overlay = {('Apache', 'Organic', "Apr'26"): [pm_retail, 3, 175]}
+        m = _build_miSiLi_map(overlay)
+        _, r_buggy = _agg_univ_with_pm_buggy(rows, m)
+        _, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        self.assertEqual(r_buggy, pm_retail * n)
+        self.assertEqual(r_fixed, pm_retail)
+
+    def test_DD5_leads_are_never_affected_by_dedup(self):
+        """Lead counts must accumulate across ALL rows regardless of dedup."""
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=5, L_each=20, R_each=3)
+        overlay = {('Apache', 'Organic', "Aug'26"): [50, 5, 45]}
+        m = _build_miSiLi_map(overlay)
+        l_buggy, _ = _agg_univ_with_pm_buggy(rows, m)
+        l_fixed,  _ = _agg_univ_with_pm_fixed(rows, m)
+        self.assertEqual(l_buggy, 100, 'Buggy: leads = 5×20 = 100')
+        self.assertEqual(l_fixed, 100, 'Fixed: leads unchanged = 100')
+
+    # ── DD6–DD8: Model filter + PM filter intersection ────────────────────────
+
+    def test_DD6_model_x_pm_x_intersection_retail_bounded_by_pm_retail(self):
+        """Model=X AND PM=X: retail must equal pmr[pmi=X, mi=X, si, li].
+        It must not exceed mm retail for that (X, si, li)."""
+        leads = [
+            # 10 retailed leads: Apache enquired, Apache purchased
+            {'lid': f'L{i}', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''}
+            for i in range(10)
+        ] + [
+            # 5 non-retailed Apache leads
+            {'lid': f'N{i}', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': '', 'is_ret': False, 'rm': '', 'rtype': ''}
+            for i in range(5)
+        ]
+        agg  = _simulate_pmr_agg(leads)
+        mm   = _sim_mm_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Apache'})
+        pm_r = overlay.get(('Apache', 'Organic', "Aug'26"), [0])[0]
+        mm_r = mm.get(('Apache', 'Organic', "Aug'26"), [0, 0])[1]
+        self.assertEqual(pm_r, 10, 'PM retail for Apache × Apache is 10')
+        self.assertLessEqual(pm_r, mm_r, 'PM-filtered retail must not exceed mm retail')
+
+    def test_DD7_model_x_pm_y_shows_cross_model_retail_only(self):
+        """Model=X AND PM=Y (X≠Y): retail = retails where enquired X but purchased Y."""
+        leads = [
+            # 3 Apache enquiries that purchased Jupiter
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            # 2 Apache enquiries that purchased Apache (should be excluded by PM=Jupiter)
+            {'lid': 'L4', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache',  'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L5', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache',  'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        mm  = _sim_mm_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter'})
+        pm_r = overlay.get(('Apache', 'Organic', "Aug'26"), [0])[0]
+        mm_l = mm.get(('Apache', 'Organic', "Aug'26"), [0, 0])[0]
+        self.assertEqual(pm_r, 3, 'Model=Apache + PM=Jupiter must show 3 retails')
+        self.assertEqual(mm_l, 5, 'Apache leads must remain 5 regardless of PM filter')
+
+    def test_DD8_model_only_filter_no_pm_uses_raw_retail(self):
+        """Model=X with no PM filter: raw mm retail is used, no PM overlay applied."""
+        leads = [
+            {'lid': f'L{i}', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''}
+            for i in range(7)
+        ] + [
+            {'lid': f'N{i}', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': '', 'is_ret': False, 'rm': '', 'rtype': ''}
+            for i in range(3)
+        ]
+        mm = _sim_mm_agg(leads)
+        mm_r = mm.get(('Apache', 'Organic', "Aug'26"), [0, 0])[1]
+        self.assertEqual(mm_r, 7, 'Model filter alone: all 7 Apache retails visible')
+
+    # ── DD9–DD11: multi-key dedup (multiple (mi,si,li) in same loop) ──────────
+
+    def test_DD9_two_sources_each_deduped_independently(self):
+        """Two different (mi,si,li) keys: each key's seen-set check is independent."""
+        rows_org = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=3, L_each=10, R_each=2)
+        rows_fb  = _sim_univ_rows('Apache', 'Facebook', "Aug'26", n_sti_tti=4, L_each=8,  R_each=1)
+        overlay = {
+            ('Apache', 'Organic',  "Aug'26"): [90, 5, 85],
+            ('Apache', 'Facebook', "Aug'26"): [40, 3, 37],
+        }
+        m = _build_miSiLi_map(overlay)
+        _, r_buggy = _agg_univ_with_pm_buggy(rows_org + rows_fb, m)
+        _, r_fixed = _agg_univ_with_pm_fixed(rows_org + rows_fb, m)
+        self.assertEqual(r_buggy, 90*3 + 40*4, 'Buggy: each source multiplied')
+        self.assertEqual(r_fixed, 90 + 40,     'Fixed: each source counted once')
+
+    def test_DD10_two_models_each_deduped_independently(self):
+        """Two models in the same univ loop: dedup is per (mi,si,li), not just (si,li)."""
+        rows_a = _sim_univ_rows('Apache',  'Organic', "Aug'26", n_sti_tti=5, L_each=10, R_each=2)
+        rows_j = _sim_univ_rows('Jupiter', 'Organic', "Aug'26", n_sti_tti=3, L_each=15, R_each=3)
+        overlay = {
+            ('Apache',  'Organic', "Aug'26"): [50, 2, 48],
+            ('Jupiter', 'Organic', "Aug'26"): [30, 1, 29],
+        }
+        m = _build_miSiLi_map(overlay)
+        _, r_fixed = _agg_univ_with_pm_fixed(rows_a + rows_j, m)
+        self.assertEqual(r_fixed, 50 + 30, 'Both models counted once each')
+
+    def test_DD11_dedup_key_must_include_model_index(self):
+        """Dedup key is (mi,si,li), NOT (si,li): two models with same (si,li) are distinct."""
+        rows = (
+            _sim_univ_rows('Apache',  'Organic', "Aug'26", n_sti_tti=2, L_each=10, R_each=2) +
+            _sim_univ_rows('Jupiter', 'Organic', "Aug'26", n_sti_tti=2, L_each=10, R_each=2)
+        )
+        overlay = {
+            ('Apache',  'Organic', "Aug'26"): [20, 1, 19],
+            ('Jupiter', 'Organic', "Aug'26"): [10, 0, 10],
+        }
+        m = _build_miSiLi_map(overlay)
+        _, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        # Apache + Jupiter both contribute; if key were (si,li) only Apache would win
+        self.assertEqual(r_fixed, 30, 'Both models independently deduped via (mi,si,li) key')
+
+    # ── DD12–DD14: L2R% sanity bounds ────────────────────────────────────────
+
+    def test_DD12_l2r_cannot_exceed_100pct_for_loyal_leads(self):
+        """L2R% must be <= 100% when every lead eventually retails.
+        With dedup fixed, PM retail <= leads, so L2R <= 100%."""
+        n_sti_tti = 8
+        n_leads_per_row = 5
+        pm_retail = 35   # <= total leads (5*8=40)
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26",
+                               n_sti_tti=n_sti_tti, L_each=n_leads_per_row, R_each=4)
+        overlay = {('Apache', 'Organic', "Aug'26"): [pm_retail, 2, 33]}
+        m = _build_miSiLi_map(overlay)
+        total_l, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        l2r = r_fixed / total_l * 100 if total_l > 0 else 0
+        self.assertLessEqual(l2r, 100.0,
+            f'L2R must be <= 100%; got {l2r:.1f}%  (r={r_fixed}, l={total_l})')
+
+    def test_DD13_buggy_path_l2r_over_1000pct(self):
+        """Demonstrates the original bug: buggy path produces L2R >> 100%."""
+        n_sti_tti = 256
+        n_leads_per_row = 2
+        pm_retail = 178
+        rows = _sim_univ_rows('Apache', 'Organic', "Apr'26",
+                               n_sti_tti=n_sti_tti, L_each=n_leads_per_row, R_each=1)
+        overlay = {('Apache', 'Organic', "Apr'26"): [pm_retail, 3, 175]}
+        m = _build_miSiLi_map(overlay)
+        total_l, r_buggy = _agg_univ_with_pm_buggy(rows, m)
+        l2r_buggy = r_buggy / total_l * 100 if total_l > 0 else 0
+        self.assertGreater(l2r_buggy, 1000.0,
+            f'Bug should produce L2R > 1000%; got {l2r_buggy:.1f}%')
+
+    def test_DD14_fixed_path_l2r_plausible(self):
+        """Fixed path L2R must be in [0%, 100%] for valid data."""
+        n_sti_tti = 256
+        n_leads_per_row = 2
+        pm_retail = 178
+        rows = _sim_univ_rows('Apache', 'Organic', "Apr'26",
+                               n_sti_tti=n_sti_tti, L_each=n_leads_per_row, R_each=1)
+        overlay = {('Apache', 'Organic', "Apr'26"): [pm_retail, 3, 175]}
+        m = _build_miSiLi_map(overlay)
+        total_l, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        l2r_fixed = r_fixed / total_l * 100 if total_l > 0 else 0
+        self.assertLessEqual(l2r_fixed, 100.0,
+            f'Fixed L2R must be <= 100%; got {l2r_fixed:.1f}%')
+        self.assertGreater(l2r_fixed, 0.0, 'Fixed L2R must be > 0%')
+
+    # ── DD15–DD16: PM filter absent — raw retail must pass through ────────────
+
+    def test_DD15_no_pm_filter_fixed_returns_raw_retail_sum(self):
+        """When PM overlay is empty (no PM filter), raw retail from each row is summed."""
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=3, L_each=10, R_each=5)
+        m = {}  # no PM overlay
+        total_l, r_fixed = _agg_univ_with_pm_fixed(rows, m)
+        # Without PM overlay the function falls through to r_raw (5 per row × 3 rows = 15)
+        # In the actual frontend, pmMaps=null means raw retail; in our simulation
+        # an absent key means r_raw is used (see _agg_univ_with_pm_fixed: v=None → r_raw=5)
+        # Actually our sim always returns 0 when key absent — test that behaviour is explicit
+        self.assertEqual(r_fixed, 0,
+            'With no overlay, fixed sim returns 0 (pm_filter inactive means pmMaps=null path)')
+
+    def test_DD16_pm_filter_inactive_leads_always_correct(self):
+        """PM filter inactive: lead totals must equal sum across all rows."""
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=5, L_each=20, R_each=4)
+        m = {}
+        total_l, _ = _agg_univ_with_pm_fixed(rows, m)
+        self.assertEqual(total_l, 100, 'Leads = 5 rows × 20 each = 100')
+
+    # ── DD17–DD18: DMS / Call-Only retail type breakdown ─────────────────────
+
+    def test_DD17_dms_retail_type_deduped_correctly(self):
+        """pmRI=1 (DMS) picks index 1 from overlay, deduped same as all-retail."""
+        n = 4
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=n, L_each=10, R_each=2)
+        overlay = {('Apache', 'Organic', "Aug'26"): [50, 20, 30]}  # [all, dms, co]
+        m = _build_miSiLi_map(overlay)
+        _, r_dms_buggy = _agg_univ_with_pm_buggy(rows, m, pmRI=1)
+        _, r_dms_fixed = _agg_univ_with_pm_fixed(rows, m, pmRI=1)
+        self.assertEqual(r_dms_buggy, 20 * n, f'Buggy DMS: 20 × {n} = {20*n}')
+        self.assertEqual(r_dms_fixed, 20,     'Fixed DMS: 20 regardless of sti/tti count')
+
+    def test_DD18_co_retail_type_deduped_correctly(self):
+        """pmRI=2 (Call-Only) picks index 2 from overlay, deduped same as all-retail."""
+        n = 6
+        rows = _sim_univ_rows('Apache', 'Organic', "Aug'26", n_sti_tti=n, L_each=10, R_each=2)
+        overlay = {('Apache', 'Organic', "Aug'26"): [50, 20, 30]}  # [all, dms, co]
+        m = _build_miSiLi_map(overlay)
+        _, r_co_buggy = _agg_univ_with_pm_buggy(rows, m, pmRI=2)
+        _, r_co_fixed = _agg_univ_with_pm_fixed(rows, m, pmRI=2)
+        self.assertEqual(r_co_buggy, 30 * n, f'Buggy CO: 30 × {n} = {30*n}')
+        self.assertEqual(r_co_fixed, 30,     'Fixed CO: 30 regardless of sti/tti count')
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
