@@ -8492,6 +8492,381 @@ class TestUnivPathFilterCoverage(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# BUG-FIX REGRESSION TESTS  (Bugs 1, 2, 3 — source-filter audit)
+# ---------------------------------------------------------------------------
+
+def _sim_trend_monthly(monthly_rows, sm_rows, lm_arr, src_arr,
+                       filters_months, filters_sources, getLR):
+    """
+    Simulate OverviewTab.trendData else-branch (no city/univ filter).
+    Fixed version: uses sm when source filter active; applies month filter always.
+    Returns {month_label: [leads, retails]}.
+    """
+    byMonth = {}
+    allM = not filters_months or len(filters_months) == 0
+    allS = not filters_sources or len(filters_sources) == 0
+    if not allS:
+        # Use sm (src×month) rows: [si, li, L, R]
+        for row in sm_rows:
+            src = src_arr[row[0]]
+            if src not in filters_sources:
+                continue
+            m = lm_arr[row[1]]
+            if not allM and m not in filters_months:
+                continue
+            l, r = getLR(row)
+            cur = byMonth.get(m, [0, 0])
+            cur[0] += l; cur[1] += r
+            byMonth[m] = cur
+    else:
+        # Use monthly rows: [li, L, R]
+        for row in monthly_rows:
+            m = lm_arr[row[0]]
+            if not allM and m not in filters_months:
+                continue
+            l, r = getLR(row)
+            cur = byMonth.get(m, [0, 0])
+            cur[0] += l; cur[1] += r
+            byMonth[m] = cur
+    return byMonth
+
+
+def _sim_heat_data(mxst_rows, univ_rows, mdl_arr, src_arr, st_arr, lt_arr, lm_arr,
+                   filters_months, filters_models, filters_states, filters_lt, filters_sources,
+                   getLR):
+    """
+    Simulate OverviewTab.heatData.
+    Fixed version: uses univ path when LT OR source filter is active.
+    Returns (cell_map, model_tot, state_tot).
+    """
+    allM   = not filters_months  or len(filters_months)  == 0
+    allMdl = not filters_models  or len(filters_models)  == 0
+    allSt  = not filters_states  or len(filters_states)  == 0
+    allLT  = not filters_lt      or len(filters_lt)      == 0
+    allS   = not filters_sources or len(filters_sources) == 0
+    cell, modelTot, stateTot = {}, {}, {}
+    if not allLT or not allS:
+        # univ rows: [mi, si, sti, tti, li, L, R, ...]
+        for row in univ_rows:
+            mdl = mdl_arr[row[0]]
+            src = src_arr[row[1]]
+            st  = st_arr[row[2]]
+            lt  = lt_arr[row[3]]
+            m   = lm_arr[row[4]]
+            if not allM   and m   not in filters_months:  continue
+            if not allMdl and mdl not in filters_models:  continue
+            if not allSt  and st  not in filters_states:  continue
+            if not allLT  and lt  not in filters_lt:      continue
+            if not allS   and src not in filters_sources: continue
+            l = getLR(row)[0]
+            k = (mdl, st)
+            cell[k]     = cell.get(k, 0)     + l
+            modelTot[mdl] = modelTot.get(mdl, 0) + l
+            stateTot[st]  = stateTot.get(st, 0)  + l
+    else:
+        # mxst rows: [mi, sti, li, v]
+        for row in mxst_rows:
+            mdl = mdl_arr[row[0]]
+            st  = st_arr[row[1]]
+            m   = lm_arr[row[2]]
+            v   = row[3]
+            if not allM   and m   not in filters_months: continue
+            if not allMdl and mdl not in filters_models: continue
+            if not allSt  and st  not in filters_states: continue
+            k = (mdl, st)
+            cell[k]     = cell.get(k, 0)     + v
+            modelTot[mdl] = modelTot.get(mdl, 0) + v
+            stateTot[st]  = stateTot.get(st, 0)  + v
+    return cell, modelTot, stateTot
+
+
+def _sim_pivot_mat_config(ALL_MATS, row_dims, col_dims,
+                          filters_models, filters_states, filters_lt,
+                          filters_cities, filters_sources):
+    """Simulate PivotTab.matConfig — fixed version includes src in filterDims."""
+    needed = list(row_dims) + list(col_dims)
+    if len(set(needed)) < len(needed):
+        return None
+    filterDims = []
+    if filters_models  and len(filters_models)  > 0: filterDims.append('mdl')
+    if filters_states  and len(filters_states)  > 0: filterDims.append('st')
+    if filters_lt      and len(filters_lt)      > 0: filterDims.append('lt')
+    if filters_cities  and len(filters_cities)  > 0: filterDims.append('city')
+    if filters_sources and len(filters_sources) > 0: filterDims.append('src')  # BUG-3 fix
+    allNeeded = list(dict.fromkeys(needed + filterDims))
+    best, bestExtra = None, 99
+    for m in ALL_MATS:
+        if not all(d in m['dims'] for d in allNeeded):
+            continue
+        extra = sum(1 for d in m['dims'] if d not in needed and d != 'lm')
+        if extra < bestExtra or (extra == bestExtra and
+                                  len(m['dims']) < (len(best['dims']) if best else 99)):
+            bestExtra = extra
+            best = m
+    return best
+
+
+class TestBug1TrendDataSourceFilter(unittest.TestCase):
+    """Bug 1 regression: trendData else-path must honour source and month filters."""
+
+    LM  = ['Jan 2026', 'Feb 2026', 'Mar 2026']
+    SRC = ['Google', 'Facebook', 'WhatsApp']
+
+    # monthly rows: [li, L, R]
+    MONTHLY = [(0, 100, 10), (1, 200, 20), (2, 300, 30)]
+    # sm rows: [si, li, L, R]  (si=0→Google, si=1→Facebook, si=2→WhatsApp)
+    SM = [
+        (0, 0, 60, 6), (1, 0, 30, 3), (2, 0, 10, 1),   # Jan
+        (0, 1, 120, 12), (1, 1, 50, 5), (2, 1, 30, 3),  # Feb
+        (0, 2, 200, 20), (1, 2, 80, 8), (2, 2, 20, 2),  # Mar
+    ]
+
+    def getLR(self, row):
+        return row[-2], row[-1]
+
+    def test_B1_no_filter_uses_monthly(self):
+        """No filters → monthly matrix, all 3 months present."""
+        result = _sim_trend_monthly(
+            self.MONTHLY, self.SM, self.LM, self.SRC,
+            set(), set(), self.getLR
+        )
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result['Jan 2026'][0], 100)
+
+    def test_B1_month_filter_applied_to_monthly(self):
+        """Month filter with no source → monthly matrix, only matching months."""
+        result = _sim_trend_monthly(
+            self.MONTHLY, self.SM, self.LM, self.SRC,
+            {'Jan 2026', 'Feb 2026'}, set(), self.getLR
+        )
+        self.assertEqual(len(result), 2)
+        self.assertNotIn('Mar 2026', result)
+
+    def test_B1_source_filter_switches_to_sm(self):
+        """Source filter → sm matrix; only matching source rows counted."""
+        result = _sim_trend_monthly(
+            self.MONTHLY, self.SM, self.LM, self.SRC,
+            set(), {'Google'}, self.getLR
+        )
+        # Should see 3 months from Google rows only
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result['Jan 2026'][0], 60)    # Google Jan only
+        self.assertEqual(result['Feb 2026'][0], 120)   # Google Feb only
+
+    def test_B1_source_and_month_filter_combined(self):
+        """Source + month filter → sm matrix, only Jan Google."""
+        result = _sim_trend_monthly(
+            self.MONTHLY, self.SM, self.LM, self.SRC,
+            {'Jan 2026'}, {'Google'}, self.getLR
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIn('Jan 2026', result)
+        self.assertEqual(result['Jan 2026'][0], 60)
+
+    def test_B1_source_filter_accumulates_months(self):
+        """Multiple sources → sm rows accumulated by month correctly."""
+        result = _sim_trend_monthly(
+            self.MONTHLY, self.SM, self.LM, self.SRC,
+            set(), {'Google', 'Facebook'}, self.getLR
+        )
+        # Jan: Google(60) + Facebook(30) = 90
+        self.assertEqual(result['Jan 2026'][0], 90)
+
+    def test_B1_old_monthly_path_would_miss_source_filter(self):
+        """Demonstrate pre-fix behavior: monthly ignores source → all months returned."""
+        # Simulate buggy old path: always use monthly, no source check
+        def buggy_trend(monthly_rows, lm_arr, filters_months):
+            byMonth = {}
+            for row in monthly_rows:
+                m = lm_arr[row[0]]
+                byMonth[m] = [row[-2], row[-1]]  # SET not accumulate — old bug
+            return byMonth
+        result_buggy = buggy_trend(self.MONTHLY, self.LM, set())
+        # Old code returns 3 months even if source filter = {'Google'}; fix returns only sm rows
+        result_fixed = _sim_trend_monthly(
+            self.MONTHLY, self.SM, self.LM, self.SRC,
+            set(), {'Google'}, self.getLR
+        )
+        # Fixed: Google has data in all 3 months, totals differ from global monthly
+        self.assertNotEqual(result_fixed['Jan 2026'][0], result_buggy['Jan 2026'][0])
+
+
+class TestBug2HeatDataSourceFilter(unittest.TestCase):
+    """Bug 2 regression: heatData must use univ path when source filter is active."""
+
+    MDL = ['Apache', 'Jupiter', 'Raider']
+    SRC = ['Google', 'Facebook']
+    ST  = ['MH', 'DL', 'KA']
+    LT  = ['1105', '1106', '9999']
+    LM  = ['Jan 2026', 'Feb 2026']
+
+    # mxst rows: [mi, sti, li, v]
+    MXST = [
+        (0, 0, 0, 50), (0, 1, 0, 30), (1, 0, 0, 40),
+        (0, 0, 1, 60), (1, 1, 1, 20),
+    ]
+
+    # univ rows: [mi, si, sti, tti, li, L, R, ...]
+    # Apache/Google/MH/1105/Jan=20, Apache/Facebook/MH/1105/Jan=30, Jupiter/Google/DL/9999/Jan=40
+    UNIV = [
+        (0, 0, 0, 0, 0, 20, 2),   # Apache Google MH 1105 Jan
+        (0, 1, 0, 0, 0, 30, 3),   # Apache Facebook MH 1105 Jan
+        (1, 0, 1, 2, 0, 40, 4),   # Jupiter Google DL 9999 Jan
+        (0, 0, 2, 0, 1, 60, 6),   # Apache Google KA 1105 Feb
+    ]
+
+    def getLR(self, row):
+        return row[-2], row[-1]
+
+    def test_B2_no_filter_uses_mxst(self):
+        """No filters → mxst path; total model leads match mxst."""
+        _, modelTot, _ = _sim_heat_data(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), set(), set(), self.getLR
+        )
+        self.assertEqual(modelTot.get('Apache', 0), 50+30+60)
+
+    def test_B2_lt_filter_uses_univ(self):
+        """LT filter → univ path; only matching LT rows counted."""
+        _, modelTot, _ = _sim_heat_data(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), {'1105'}, set(), self.getLR
+        )
+        # Apache 1105 rows: Jan(20+30=50) + Feb(60) = 110; Jupiter 9999 excluded
+        self.assertEqual(modelTot.get('Apache', 0), 110)
+        self.assertEqual(modelTot.get('Jupiter', 0), 0)
+
+    def test_B2_source_filter_triggers_univ_path(self):
+        """Source filter alone → must use univ path (mxst has no src dim)."""
+        _, modelTot, _ = _sim_heat_data(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), set(), {'Google'}, self.getLR
+        )
+        # Google rows: Apache/Google/MH(20) + Jupiter/Google/DL(40) + Apache/Google/KA(60) = 120
+        self.assertEqual(modelTot.get('Apache', 0), 20 + 60)
+        self.assertEqual(modelTot.get('Jupiter', 0), 40)
+
+    def test_B2_source_filter_excludes_other_sources(self):
+        """Source filter → Facebook rows excluded from heatmap."""
+        _, modelTot, _ = _sim_heat_data(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), set(), {'Google'}, self.getLR
+        )
+        # Apache Google total = 20+60 = 80; without fix (mxst path) would be 50+30+60 = 140
+        self.assertEqual(modelTot.get('Apache', 0), 80)
+        self.assertNotEqual(modelTot.get('Apache', 0), 50+30+60)
+
+    def test_B2_old_mxst_path_ignores_source_filter(self):
+        """Show that old mxst path (allLT-only gate) would have ignored source filter."""
+        # Simulate old buggy path: always use mxst when allLT, even with source filter
+        def buggy_heat(mxst_rows, mdl_arr, st_arr, lm_arr):
+            modelTot = {}
+            for row in mxst_rows:
+                mdl = mdl_arr[row[0]]
+                modelTot[mdl] = modelTot.get(mdl, 0) + row[3]
+            return modelTot
+        buggy = buggy_heat(self.MXST, self.MDL, self.ST, self.LM)
+        fixed_cell, fixed_model, _ = _sim_heat_data(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), set(), {'Google'}, self.getLR
+        )
+        # Buggy gives Apache=140 (all mxst), fixed gives Apache=80 (Google only)
+        self.assertNotEqual(fixed_model.get('Apache', 0), buggy.get('Apache', 0))
+
+
+class TestBug3PivotMatConfigSourceFilter(unittest.TestCase):
+    """Bug 3 regression: matConfig must include src in filterDims when source active."""
+
+    ALL_MATS = [
+        {'key': 'sm',   'dims': ['src', 'lm']},
+        {'key': 'mm',   'dims': ['mdl', 'lm']},
+        {'key': 'mxst', 'dims': ['mdl', 'st', 'lm']},
+        {'key': 'univ', 'dims': ['mdl', 'src', 'st', 'lt', 'lm']},
+        {'key': 'stm',  'dims': ['st', 'lm']},
+        {'key': 'ltm',  'dims': ['lt', 'src', 'lm']},
+    ]
+
+    def test_B3_no_filter_selects_cheapest_matrix(self):
+        """No filters, rowDims=[mdl] → mm (only mdl+lm), not univ."""
+        result = _sim_pivot_mat_config(
+            self.ALL_MATS, ['mdl'], ['lm'],
+            set(), set(), set(), set(), set()
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result['key'], 'mm')
+
+    def test_B3_source_filter_forces_src_dim(self):
+        """Source filter active + rowDims=[mdl] → must select matrix with src dim."""
+        result = _sim_pivot_mat_config(
+            self.ALL_MATS, ['mdl'], ['lm'],
+            set(), set(), set(), set(), {'Google'}
+        )
+        self.assertIsNotNone(result)
+        self.assertIn('src', result['dims'])
+
+    def test_B3_source_filter_picks_univ_for_mdl_row(self):
+        """rowDims=[mdl] + source filter → univ (has mdl+src) selected over mm."""
+        result = _sim_pivot_mat_config(
+            self.ALL_MATS, ['mdl'], ['lm'],
+            set(), set(), set(), set(), {'Google'}
+        )
+        # mm lacks src dim; univ has both mdl and src
+        self.assertEqual(result['key'], 'univ')
+
+    def test_B3_source_filter_without_fix_would_pick_mm(self):
+        """Demonstrate pre-fix behavior: without src in filterDims, mm would be selected."""
+        def buggy_pivot_mat(ALL_MATS, row_dims, col_dims,
+                            filters_models, filters_states, filters_lt,
+                            filters_cities, filters_sources):
+            """Old code: filterDims omits src."""
+            needed = list(row_dims) + list(col_dims)
+            filterDims = []
+            if filters_models  and len(filters_models)  > 0: filterDims.append('mdl')
+            if filters_states  and len(filters_states)  > 0: filterDims.append('st')
+            if filters_lt      and len(filters_lt)      > 0: filterDims.append('lt')
+            if filters_cities  and len(filters_cities)  > 0: filterDims.append('city')
+            # NOTE: source NOT added — old bug
+            allNeeded = list(dict.fromkeys(needed + filterDims))
+            best, bestExtra = None, 99
+            for m in ALL_MATS:
+                if not all(d in m['dims'] for d in allNeeded): continue
+                extra = sum(1 for d in m['dims'] if d not in needed and d != 'lm')
+                if extra < bestExtra or (extra == bestExtra and
+                                          len(m['dims']) < (len(best['dims']) if best else 99)):
+                    bestExtra = extra; best = m
+            return best
+
+        buggy = buggy_pivot_mat(
+            self.ALL_MATS, ['mdl'], ['lm'],
+            set(), set(), set(), set(), {'Google'}
+        )
+        fixed = _sim_pivot_mat_config(
+            self.ALL_MATS, ['mdl'], ['lm'],
+            set(), set(), set(), set(), {'Google'}
+        )
+        # Old: mm (no src awareness). Fixed: univ (has src).
+        self.assertEqual(buggy['key'], 'mm')
+        self.assertEqual(fixed['key'], 'univ')
+
+    def test_B3_no_source_filter_still_picks_mm(self):
+        """No source filter + rowDims=[mdl] → mm still preferred (fix is non-breaking)."""
+        result = _sim_pivot_mat_config(
+            self.ALL_MATS, ['mdl'], ['lm'],
+            set(), set(), set(), set(), set()
+        )
+        self.assertEqual(result['key'], 'mm')
+
+    def test_B3_source_filter_with_lt_row_selects_ltm(self):
+        """rowDims=[lt] + source filter → ltm (has lt+src) preferred over univ."""
+        result = _sim_pivot_mat_config(
+            self.ALL_MATS, ['lt'], ['lm'],
+            set(), set(), set(), set(), {'Google'}
+        )
+        # ltm has ['lt', 'src', 'lm'] — fewer extra dims than univ
+        self.assertEqual(result['key'], 'ltm')
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':

@@ -1056,12 +1056,31 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
         cur[0]+=l; cur[1]+=r; byMonth.set(m, cur);
       }
     } else {
-      for (const row of monthly) {
-        const m = maps.lm[row[0]];
-        const [l, r_raw] = getLR(row);
-        const pmOv = pmMaps && pmMaps.byLi.get(''+row[0]);
-        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
-        byMonth.set(m, [l, r]);
+      const allM = !filters.months || filters.months.size === 0;
+      const allS = !filters.sources || filters.sources.size === 0;
+      if (!allS) {
+        // source filter active — monthly has no src dim, use sm (src×month)
+        for (const row of sm) {
+          const src = maps.src[row[0]];
+          if (!filters.sources.has(src)) continue;
+          const m = maps.lm[row[1]];
+          if (!allM && !filters.months.has(m)) continue;
+          const [l, r_raw] = getLR(row);
+          const pmOv = pmMaps && pmMaps.siLi.get(row[0]+'|'+row[1]);
+          const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+          const cur = byMonth.get(m) || [0, 0];
+          cur[0] += l; cur[1] += r; byMonth.set(m, cur);
+        }
+      } else {
+        for (const row of monthly) {
+          const m = maps.lm[row[0]];
+          if (!allM && !filters.months.has(m)) continue;
+          const [l, r_raw] = getLR(row);
+          const pmOv = pmMaps && pmMaps.byLi.get(''+row[0]);
+          const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+          const cur = byMonth.get(m) || [0, 0];
+          cur[0] += l; cur[1] += r; byMonth.set(m, cur);
+        }
       }
     }
     return [...byMonth.entries()]
@@ -1122,16 +1141,18 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
     const allMdl = !filters.models || filters.models.size === 0;
     const allSt  = !filters.states || filters.states.size === 0;
     const allLT  = !filters.leadTypes || filters.leadTypes.size === 0;
+    const allS   = !filters.sources || filters.sources.size === 0;
     const modelTot = new Map(), stateTot = new Map(), cell = new Map();
-    if (!allLT) {
-      // leadType filter active — derive from univ (has all 5 dims)
+    if (!allLT || !allS) {
+      // leadType or source filter active — derive from univ (has all 5 dims)
       for (const row of univ) {
         const mdl = maps.mdl[row[0]], st = maps.st[row[2]], m = maps.lm[row[4]];
-        const lt  = maps.lt[row[3]];
-        if (!allM   && !filters.months.has(m))    continue;
-        if (!allMdl && !filters.models.has(mdl))  continue;
-        if (!allSt  && !filters.states.has(st))   continue;
+        const lt  = maps.lt[row[3]], src = maps.src[row[1]];
+        if (!allM   && !filters.months.has(m))     continue;
+        if (!allMdl && !filters.models.has(mdl))   continue;
+        if (!allSt  && !filters.states.has(st))    continue;
         if (!allLT  && !filters.leadTypes.has(lt)) continue;
+        if (!allS   && !filters.sources.has(src))  continue;
         const l = getLR(row)[0];
         const k = mdl + '\x00' + st;
         cell.set(k, (cell.get(k) || 0) + l);
@@ -4237,6 +4258,7 @@ const PivotTab = React.memo(function PivotTab({ data, filters, months, RT }) {
     if (filters.states    && filters.states.size    > 0) filterDims.push('st');
     if (filters.leadTypes && filters.leadTypes.size > 0) filterDims.push('lt');
     if (filters.cities    && filters.cities.size    > 0) filterDims.push('city');
+    if (filters.sources   && filters.sources.size   > 0) filterDims.push('src');
     const allNeeded = [...new Set([...needed, ...filterDims])];
     let best = null, bestExtra = 99;
     for (const m of ALL_MATS) {
