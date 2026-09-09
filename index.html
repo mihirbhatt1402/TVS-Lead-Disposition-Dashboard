@@ -561,6 +561,32 @@ function makeUnivFilter(filters) {
   };
 }
 
+/* Build PM-retail overlay maps from pmr rows for selected purchased-model names.
+   pmr schema: [pmi, mi, si, li, R_all, R_dms, R_co]
+   Returns { miSiLi, siLi, byLi } or null when no PM filter is active. */
+function buildPmMaps(pmr, selPM, maps) {
+  if (!selPM || !selPM.size || !pmr || !pmr.length) return null;
+  const sel = new Set();
+  for (const pm of selPM) { const i = maps.mdl.indexOf(pm); if (i >= 0) sel.add(i); }
+  if (!sel.size) return null;
+  const m3 = new Map(), m2 = new Map(), m1 = new Map();
+  for (const row of pmr) {
+    const [pmi, mi, si, li, R, Rd, Rc] = row;
+    if (!sel.has(pmi)) continue;
+    const k3 = mi+'|'+si+'|'+li; const e3 = m3.get(k3)||[0,0,0]; e3[0]+=R; e3[1]+=Rd; e3[2]+=Rc; m3.set(k3,e3);
+    const k2 = si+'|'+li;        const e2 = m2.get(k2)||[0,0,0]; e2[0]+=R; e2[1]+=Rd; e2[2]+=Rc; m2.set(k2,e2);
+    const k1 = ''+li;            const e1 = m1.get(k1)||[0,0,0]; e1[0]+=R; e1[1]+=Rd; e1[2]+=Rc; m1.set(k1,e1);
+  }
+  return { miSiLi: m3, siLi: m2, byLi: m1 };
+}
+
+/* Wrap a getLR accessor with a PM retail overlay.
+   pmMap: Map<string,[R,Rd,Rc]>, ri: RT index (0=all,1=dms,2=co), keyFn(row)→key */
+function pmOverrideLR(getLR, pmMap, ri, keyFn) {
+  if (!pmMap) return getLR;
+  return row => { const [l] = getLR(row); const v = pmMap.get(keyFn(row)); return [l, v ? v[ri] : 0]; };
+}
+
 /* ════════════════════════════════════════════════════════════════════
    FORMATTERS
    ════════════════════════════════════════════════════════════════════ */
@@ -915,7 +941,7 @@ function MonthlyGrids({ title, months, renderAgg, srcGroups, dimLabel, expandedG
 /* ════════════════════════════════════════════════════════════════════
    OVERVIEW TAB
    ════════════════════════════════════════════════════════════════════ */
-const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
+const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps }) {
   const { maps, monthly, sm, cm, mxst, univ: univRaw, csm: csmRaw } = data;
   const csm = csmRaw || [];
   const univ = univRaw || [];
@@ -932,8 +958,10 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
     const allM = !filters.months || filters.months.size === 0;
     const allS = !filters.sources || filters.sources.size === 0;
     const univF = makeUnivFilter(filters);
+    const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     let gL=0,gR=0,pL=0,pR=0,oL=0,oR=0,dL=0,coL=0;
     if (hasCityFilter) {
+      // city matrix has no PM dimension — PM overlay not applied here
       for (const row of cm) {
         const city = maps.city[row[0]];
         if (!filters.cities.has(city)) continue;
@@ -949,8 +977,11 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
         const src = maps.src[row[1]];
         if (!allS && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
-        const [l,r] = getLR(row); gL+=l; gR+=r;
-        if (data.rt_cols) { dL+=row[row.length-2]; coL+=row[row.length-1]; }
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        gL+=l; gR+=r;
+        if (data.rt_cols) { dL += pmOv ? pmOv[1] : (pmMaps ? 0 : row[row.length-2]); coL += pmOv ? pmOv[2] : (pmMaps ? 0 : row[row.length-1]); }
         if (paidGrp && paidGrp.srcs.includes(src)) { pL+=l; pR+=r; }
         if (orgGrp  && orgGrp.srcs.includes(src))  { oL+=l; oR+=r; }
       }
@@ -960,19 +991,24 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
         if (!allM && !filters.months.has(m)) continue;
         const src = maps.src[row[0]];
         if (!allS && !filters.sources.has(src)) continue;
-        const [l,r] = getLR(row); gL+=l; gR+=r;
-        if (data.rt_cols) { dL+=row[row.length-2]; coL+=row[row.length-1]; }
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.siLi.get(row[0]+'|'+row[1]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        gL+=l; gR+=r;
+        if (data.rt_cols) { dL += pmOv ? pmOv[1] : (pmMaps ? 0 : row[row.length-2]); coL += pmOv ? pmOv[2] : (pmMaps ? 0 : row[row.length-1]); }
         if (paidGrp && paidGrp.srcs.includes(src)) { pL+=l; pR+=r; }
         if (orgGrp  && orgGrp.srcs.includes(src))  { oL+=l; oR+=r; }
       }
     }
     return { l:gL,r:gR,l2r:gL>0?gR/gL*100:0, pL,pR,pL2r:pL>0?pR/pL*100:0, oL,oR,oL2r:oL>0?oR/oL*100:0, dL, coL };
-  }, [sm, univ, cm, maps, filters, paidGrp, orgGrp, hasCityFilter, getLR]);
+  }, [sm, univ, cm, maps, filters, paidGrp, orgGrp, hasCityFilter, getLR, pmMaps, RT]);
 
   const trendData = useMemo(() => {
     const byMonth = new Map();
     const univF = makeUnivFilter(filters);
+    const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     if (hasCityFilter) {
+      // city matrix has no PM dimension — PM overlay not applied here
       for (const row of cm) {
         const city = maps.city[row[0]];
         if (!filters.cities.has(city)) continue;
@@ -989,26 +1025,33 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
         if (!allS && !filters.sources.has(maps.src[row[1]])) continue;
         if (!univF(row, maps)) continue;
         const cur = byMonth.get(m) || [0,0];
-        const [l,r] = getLR(row); cur[0]+=l; cur[1]+=r; byMonth.set(m, cur);
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        cur[0]+=l; cur[1]+=r; byMonth.set(m, cur);
       }
     } else {
       for (const row of monthly) {
         const m = maps.lm[row[0]];
-        const [l,r] = getLR(row); byMonth.set(m, [l, r]);
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.byLi.get(''+row[0]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
+        byMonth.set(m, [l, r]);
       }
     }
     return [...byMonth.entries()]
       .sort((a,b) => monthOrder(a[0]) - monthOrder(b[0]))
       .map(([m, v]) => ({ m, l: v[0], r: v[1], l2r: v[0]>0 ? v[1]/v[0]*100 : 0 }));
-  }, [monthly, univ, cm, maps, filters, hasCityFilter, getLR]);
+  }, [monthly, univ, cm, maps, filters, hasCityFilter, getLR, pmMaps, RT]);
 
   const srcBreak = useMemo(() => {
     const allM = !filters.months || filters.months.size === 0;
     const allS = !filters.sources || filters.sources.size === 0;
     const univF = makeUnivFilter(filters);
+    const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     const bySrc = new Map();
     if (hasCityFilter && !univF && csm.length > 0) {
-      // city-only filter: use city×src×month matrix [city,src,lm,l,r,d,c]
+      // city-only filter — PM overlay not applied (no PM dim in csm)
       for (const row of csm) {
         const city = maps.city[row[0]];
         if (!filters.cities.has(city)) continue;
@@ -1029,14 +1072,21 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
         const src = getSrc(row);
         if (!allS && !filters.sources.has(src)) continue;
         if (univF && !univF(row, maps)) continue;
-        const [l,r] = getLR(row);
+        const [l, r_raw] = getLR(row);
+        let r = r_raw;
+        if (pmMaps) {
+          const pmOv = univF
+            ? pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4])
+            : pmMaps.siLi.get(row[0]+'|'+row[1]);
+          r = pmOv ? pmOv[pmRI] : 0;
+        }
         const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
     }
     return [...bySrc.entries()]
       .map(([s,v]) => ({ src:s, l:v[0], r:v[1], l2r:v[0]>0?v[1]/v[0]*100:0 }))
       .sort((a,b) => b.l-a.l);
-  }, [sm, csm, univ, maps, filters, getLR, hasCityFilter]);
+  }, [sm, csm, univ, maps, filters, getLR, hasCityFilter, pmMaps, RT]);
 
   const heatData = useMemo(() => {
     const allM   = !filters.months || filters.months.size === 0;
@@ -1238,7 +1288,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT }) {
 /* ════════════════════════════════════════════════════════════════════
    SOURCE ANALYSIS TAB
    ════════════════════════════════════════════════════════════════════ */
-const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
+const SourceTab = React.memo(function SourceTab({ data, filters, months, RT, pmMaps }) {
   const { maps, sm, univ: univRaw, csm: csmRaw } = data;
   const univ = univRaw || [];
   const csm  = csmRaw  || [];
@@ -1248,6 +1298,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
   const renderMonth = useCallback((M) => {
     const allS = !filters.sources || filters.sources.size === 0;
     const univF = makeUnivFilter(filters);
+    const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     const bySrc = new Map();
     let gL=0, gR=0;
     if (univF) {
@@ -1256,12 +1307,14 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         const src = maps.src[row[1]];
         if (!allS && !filters.sources.has(src)) continue;
         if (!univF(row, maps)) continue;
-        const [l,r] = getLR(row);
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
         gL+=l; gR+=r;
         const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
     } else if (hasCityF && csm.length > 0) {
-      // city-only filter: use city×src×month matrix [city,src,lm,l,r,d,c]
+      // city-only filter — PM overlay not applied (no PM dim in csm)
       for (const row of csm) {
         if (maps.lm[row[2]] !== M) continue;
         const city = maps.city[row[0]];
@@ -1277,7 +1330,9 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         if (maps.lm[row[1]] !== M) continue;
         const src = maps.src[row[0]];
         if (!allS && !filters.sources.has(src)) continue;
-        const [l,r] = getLR(row);
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.siLi.get(row[0]+'|'+row[1]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
         gL+=l; gR+=r;
         const c = bySrc.get(src)||[0,0]; c[0]+=l; c[1]+=r; bySrc.set(src,c);
       }
@@ -1320,7 +1375,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
         )
       )
     );
-  }, [sm, csm, univ, maps, filters, getLR, hasCityF]);
+  }, [sm, csm, univ, maps, filters, getLR, hasCityF, pmMaps, RT]);
 
   const crossMonthTotals = useMemo(() => {
     const allS = !filters.sources || filters.sources.size === 0;
@@ -1399,7 +1454,7 @@ const SourceTab = React.memo(function SourceTab({ data, filters, months, RT }) {
 /* ════════════════════════════════════════════════════════════════════
    LT × SOURCE TAB
    ════════════════════════════════════════════════════════════════════ */
-const LTSourceTab = React.memo(function LTSourceTab({ data, filters, months, RT }) {
+const LTSourceTab = React.memo(function LTSourceTab({ data, filters, months, RT, pmMaps }) {
   const { maps, ltm, univ: univRaw } = data;
   const univ = univRaw || [];
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
@@ -1413,23 +1468,28 @@ const LTSourceTab = React.memo(function LTSourceTab({ data, filters, months, RT 
   const renderAgg = useCallback((M) => {
     const allLT = !filters.leadTypes || filters.leadTypes.size === 0;
     const univF = makeUnivFilter(filters);
+    const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     if (univF) {
+      // univ path: mi=row[0], si=row[1], li=row[4]
+      const eff = pmOverrideLR(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[4]);
       return aggMonth(
         univ, maps, M, filters.sources,
         (row,maps) => { const lt=maps.lt[row[3]]; return allLT||filters.leadTypes.has(lt) ? lt : null; },
         (row,maps) => maps.src[row[1]],
         (row,maps) => maps.lm[row[4]],
-        univF, getLR
+        univF, eff
       );
     }
+    // ltm path: si=row[1], li=row[2]
+    const eff = pmOverrideLR(getLR, pmMaps && pmMaps.siLi, pmRI, row => row[1]+'|'+row[2]);
     return aggMonth(
       ltm, maps, M, filters.sources,
       (row,maps) => { const lt=maps.lt[row[0]]; return allLT||filters.leadTypes.has(lt) ? lt : null; },
       (row,maps) => maps.src[row[1]],
       (row,maps) => maps.lm[row[2]],
-      null, getLR
+      null, eff
     );
-  }, [ltm, univ, maps, filters, getLR]);
+  }, [ltm, univ, maps, filters, getLR, pmMaps, RT]);
 
   return ce('div', { className:'fade-up' },
     ce(MonthlyGrids, { title:'Lead Type × Source', months, renderAgg, srcGroups, dimLabel:'Lead Type',
@@ -1440,7 +1500,7 @@ const LTSourceTab = React.memo(function LTSourceTab({ data, filters, months, RT 
 /* ════════════════════════════════════════════════════════════════════
    MODEL × SOURCE TAB
    ════════════════════════════════════════════════════════════════════ */
-const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, months, RT, viewerMode }) {
+const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, months, RT, viewerMode, pmMaps }) {
   const { maps, mm, univ: univRaw } = data;
   const univ = univRaw || [];
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
@@ -1454,23 +1514,28 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
   const renderAgg = useCallback((M) => {
     const allMdl = !filters.models || filters.models.size === 0;
     const univF  = makeUnivFilter(filters);
+    const pmRI   = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     if (univF) {
+      // univ path: mi=row[0], si=row[1], li=row[4]
+      const eff = pmOverrideLR(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[4]);
       return aggMonth(
         univ, maps, M, filters.sources,
         (row,maps) => { const mdl=maps.mdl[row[0]]; return allMdl||filters.models.has(mdl) ? mdl : null; },
         (row,maps) => maps.src[row[1]],
         (row,maps) => maps.lm[row[4]],
-        univF, getLR
+        univF, eff
       );
     }
+    // mm path: mi=row[0], si=row[1], li=row[2]
+    const eff = pmOverrideLR(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[2]);
     return aggMonth(
       mm, maps, M, filters.sources,
       (row,maps) => { const mdl=maps.mdl[row[0]]; return allMdl||filters.models.has(mdl) ? mdl : null; },
       (row,maps) => maps.src[row[1]],
       (row,maps) => maps.lm[row[2]],
-      null, getLR
+      null, eff
     );
-  }, [mm, univ, maps, filters, getLR]);
+  }, [mm, univ, maps, filters, getLR, pmMaps, RT]);
 
   return ce(MonthlyGrids, { title:'Model × Source', months, renderAgg, srcGroups, dimLabel:'Model', expandedGrps, onToggleGrp, viewerMode });
 });
@@ -2023,11 +2088,16 @@ const FilterBar = React.memo(function FilterBar({ data, filters, onFiltersChange
   const models    = useMemo(() => [...new Set(maps.mdl)].sort(), [maps]);
   const states    = useMemo(() => [...new Set(maps.st)].sort(), [maps]);
   const cities    = useMemo(() => maps.city ? [...new Set(maps.city)].sort() : [], [maps]);
+  const purchasedModels = useMemo(() => {
+    const pm = new Set();
+    for (const row of (data.disp || [])) { const n = maps.mdl[row[1]]; if (n) pm.add(n); }
+    return [...pm].sort();
+  }, [data.disp, maps]);
 
   function set(key, val) { onFiltersChange({ ...filters, [key]: val }); }
-  function reset() { onFiltersChange({ months: new Set(), leadTypes: new Set(), sources: new Set(), models: new Set(), states: new Set(), cities: new Set() }); setRT('all'); }
+  function reset() { onFiltersChange({ months: new Set(), leadTypes: new Set(), sources: new Set(), models: new Set(), states: new Set(), cities: new Set(), purchasedModels: new Set() }); setRT('all'); }
 
-  const hasAnyFilter = [filters.months, filters.leadTypes, filters.sources, filters.models, filters.states, filters.cities]
+  const hasAnyFilter = [filters.months, filters.leadTypes, filters.sources, filters.models, filters.states, filters.cities, filters.purchasedModels]
     .some(s => s && s.size > 0) || RT !== 'all';
 
   const rtBtn = (val, label) => ce('button', {
@@ -2048,6 +2118,7 @@ const FilterBar = React.memo(function FilterBar({ data, filters, onFiltersChange
     ce(MultiSelect, { label:'Model',     options:models,    selected:filters.models,    onChange: v => set('models', v) }),
     ce(MultiSelect, { label:'State',     options:states,    selected:filters.states,    onChange: v => set('states', v) }),
     cities.length > 0 && ce(MultiSelect, { label:'City', options:cities, selected:filters.cities, onChange: v => set('cities', v) }),
+    purchasedModels.length > 0 && ce(MultiSelect, { label:'Purch. Model', options:purchasedModels, selected:filters.purchasedModels||new Set(), onChange: v => set('purchasedModels', v) }),
     data.rt_cols && ce('div', { style:{display:'flex',alignItems:'center',background:'#F1F5F9',borderRadius:20,padding:'2px',border:'1px solid #E2E8F0',gap:2,flexShrink:0} },
       rtBtn('all', 'All'),
       rtBtn('dms', 'DMS'),
@@ -3045,7 +3116,7 @@ const GeoDealerTab = React.memo(function GeoDealerTab({ data, filters, months, R
    Columns: months sorted latest → oldest; Rows: models by total leads.
    Accessible to all roles including Viewer.
    ════════════════════════════════════════════════════════════════════ */
-const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, RT }) {
+const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, RT, pmMaps }) {
   const { maps } = data;
   const mm    = data.mm   || [];
   const univ  = data.univ || [];
@@ -3071,6 +3142,7 @@ const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, R
       cur[0] += l; cur[1] += r; mmap.set(mon, cur);
     }
 
+    const pmRI = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
     if (univF) {
       // model/state/LT filter active → use univ [mi, si, sti, tti, li, ...]
       for (const row of univ) {
@@ -3078,7 +3150,9 @@ const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, R
         if (!monthSet.has(mon)) continue;
         if (!allSrcs && !filters.sources.has(maps.src[row[1]])) continue;
         if (!univF(row, maps)) continue;
-        const [l, r] = getLR(row);
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[4]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
         bump(maps.mdl[row[0]], mon, l, r);
       }
     } else {
@@ -3089,12 +3163,14 @@ const ModelPerfTab = React.memo(function ModelPerfTab({ data, filters, months, R
         const mdl = maps.mdl[row[0]];
         if (!allMdl && !filters.models.has(mdl)) continue;
         if (!allSrcs && !filters.sources.has(maps.src[row[1]])) continue;
-        const [l, r] = getLR(row);
+        const [l, r_raw] = getLR(row);
+        const pmOv = pmMaps && pmMaps.miSiLi.get(row[0]+'|'+row[1]+'|'+row[2]);
+        const r = pmOv ? pmOv[pmRI] : (pmMaps ? 0 : r_raw);
         bump(mdl, mon, l, r);
       }
     }
     return acc;
-  }, [mm, univ, maps, filters, months, getLR]);
+  }, [mm, univ, maps, filters, months, getLR, pmMaps, RT]);
 
   // Sort models by total leads descending
   const modelRows = useMemo(() => {
@@ -3256,7 +3332,7 @@ function App() {
   const [isPending, startT]       = useTransition();
   const [leadsMode, setLeadsMode] = useState('update');
   const [RT, setRT]               = useState('all');
-  const [filters, setFilters]     = useState({ months:new Set(), leadTypes:new Set(), sources:new Set(), models:new Set(), states:new Set(), cities:new Set() });
+  const [filters, setFilters]     = useState({ months:new Set(), leadTypes:new Set(), sources:new Set(), models:new Set(), states:new Set(), cities:new Set(), purchasedModels:new Set() });
   const [fontSize, setFontSize] = useState(_initFS);
   const bumpFS = useCallback((dir) => {
     setFontSize(cur => {
@@ -3320,7 +3396,7 @@ function App() {
       ...data,
       monthly: data.u_monthly, sm: data.u_sm, ltm: data.u_ltm,
       mm: data.u_mm, stm: data.u_stm, zm: data.u_zm, bdm: data.u_bdm,
-      mxst: data.u_mxst, mlt: data.u_mlt, stlt: data.u_stlt, disp: data.u_disp,
+      mxst: data.u_mxst, mlt: data.u_mlt, stlt: data.u_stlt, disp: data.u_disp, pmr: data.u_pmr || [],
       stcm: data.u_stcm, univ: data.u_univ,
       stdm: data.u_stdm, mxdl: data.u_mxdl, ltdl: data.u_ltdl,
       cm: data.u_cm || [], csm: data.u_csm || [], cxm: data.u_cxm || [], cxsm: data.u_cxsm || [],
@@ -3336,6 +3412,12 @@ function App() {
     return allM.filter(m => filters.months.has(m));
   }, [effectiveData, filters.months]);
 
+  // PM retail overlay: Map from "mi|si|li"/"si|li"/"li" → [R,Rd,Rc] for selected purchased models
+  const pmMaps = useMemo(() => {
+    if (!effectiveData) return null;
+    return buildPmMaps(effectiveData.pmr || [], filters.purchasedModels, effectiveData.maps);
+  }, [effectiveData, filters.purchasedModels]);
+
   const role       = auth ? auth.role : null;
   const viewerMode = role === 'viewer';
   const visibleTabs = viewerMode
@@ -3344,7 +3426,7 @@ function App() {
 
   const tabContent = useMemo(() => {
     if (!effectiveData) return null;
-    const props = { data: effectiveData, filters, months, RT, viewerMode, leadsMode };
+    const props = { data: effectiveData, filters, months, RT, viewerMode, leadsMode, pmMaps };
     switch (tab) {
       case 'overview':    return ce(OverviewTab,      props);
       case 'source':      return ce(SourceTab,         props);
@@ -3723,7 +3805,11 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     const rows = disp || [];
     const allM   = !filters.months || filters.months.size === 0;
     const allMdl = !filters.models || filters.models.size === 0;
-    const allSt  = !filters.states || filters.states.size === 0;
+    const allPM  = !filters.purchasedModels || filters.purchasedModels.size === 0;
+    // Build pmi set for purchasedModels filter
+    const selPmi = allPM ? null : new Set(
+      [...filters.purchasedModels].map(pm => maps.mdl.indexOf(pm)).filter(i => i >= 0)
+    );
 
     const map = new Map(); // month → Map(ei → Map(pi → count))
     for (const row of rows) {
@@ -3732,6 +3818,7 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
       const mdl = maps.mdl[ei];
       if (!allM   && !filters.months.has(m))   continue;
       if (!allMdl && !filters.models.has(mdl)) continue;
+      if (selPmi  && !selPmi.has(pi))           continue;
       // state filter doesn't apply here (no state dim in disp)
       if (!map.has(m)) map.set(m, new Map());
       const mMap = map.get(m);

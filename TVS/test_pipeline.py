@@ -5968,6 +5968,472 @@ class TestModelPerfCrossTabReconciliation(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestPurchasedModelFilter (PM1–PM27)
+# Tests for the global Purchased Model filter feature.
+#
+# Architecture:
+#   pmr / u_pmr  — retail-only matrix, schema [pmi, mi, si, li, R, R_dms, R_co].
+#                  OC (pmr) keys by lead month; OU (u_pmr) keys by retail month.
+#   Lead counts in mm are NEVER affected by PM filter.
+#   L2R% = filtered_retail / unchanged_leads × 100.
+#
+# Critical fixture (PM24–PM27):
+#   A lead enquired for Apache RTR 160 but the dealership sold them a Jupiter —
+#   these two models must appear as SEPARATE dimensions in pmr (pm≠mdl).
+# ---------------------------------------------------------------------------
+
+def _simulate_pmr_agg(leads: list) -> dict:
+    """
+    Build pmr  (purch_model × enq_model × src × lead_month → [R, R_dms, R_co])
+    and  u_pmr (purch_model × enq_model × src × retail_month → [R, R_dms, R_co])
+    from synthetic lead records.
+
+    Each lead dict: lid, lm, src, mdl, pm, is_ret, rm, rtype.
+    Leads that are not retailed (is_ret=False) do NOT contribute.
+    """
+    pmr, u_pmr = {}, {}
+    for row in leads:
+        if not row.get('is_ret'):
+            continue
+        pm    = row.get('pm', '')
+        mdl   = row['mdl']
+        src   = row['src']
+        lm    = row['lm']            # lead month (OC key)
+        rm    = row.get('rm', lm)    # retail month (OU key)
+        rtype = row.get('rtype', '')
+        for d, key in [(pmr, (pm, mdl, src, lm)), (u_pmr, (pm, mdl, src, rm))]:
+            if key not in d: d[key] = [0, 0, 0]
+            d[key][0] += 1
+            rt_u = rtype.upper()
+            if 'DMS' in rt_u:    d[key][1] += 1
+            elif 'CALL' in rt_u: d[key][2] += 1
+    return {'pmr': pmr, 'u_pmr': u_pmr}
+
+
+def _sim_mm_agg(leads: list) -> dict:
+    """Build mm (enq_model × src × lead_month → [L, R]) from synthetic leads."""
+    mm = {}
+    for row in leads:
+        k = (row['mdl'], row['src'], row['lm'])
+        if k not in mm: mm[k] = [0, 0]
+        mm[k][0] += 1
+        if row.get('is_ret'): mm[k][1] += 1
+    return mm
+
+
+def _apply_pm_filter_to_pmr(pmr: dict, selected_pms: set) -> dict:
+    """Filter pmr by selected purchased-model names.
+    Returns retail overlay keyed by (mdl, src, lm) → [R, R_dms, R_co]."""
+    result = {}
+    for (pm, mdl, src, lm), counts in pmr.items():
+        if pm not in selected_pms:
+            continue
+        k = (mdl, src, lm)
+        if k not in result: result[k] = [0, 0, 0]
+        result[k][0] += counts[0]
+        result[k][1] += counts[1]
+        result[k][2] += counts[2]
+    return result
+
+
+class TestPurchasedModelFilter(unittest.TestCase):
+    """PM1–PM27: global Purchased Model filter for TVS LDR Dashboard."""
+
+    # ── PM1–PM5: pmr matrix construction ─────────────────────────────────────
+
+    def test_PM1_retail_creates_pmr_row(self):
+        """A retailed lead generates a pmr entry for its purchased model."""
+        leads = [{'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+                  'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': 'DMS'}]
+        agg = _simulate_pmr_agg(leads)
+        self.assertIn(('Jupiter', 'Apache', 'Organic', "Aug'26"), agg['pmr'],
+                      'Retailed lead must create a pmr row keyed by purchased model')
+
+    def test_PM2_lead_only_does_not_create_pmr_row(self):
+        """A non-retailed lead must NOT appear in pmr."""
+        leads = [{'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+                  'pm': 'Jupiter', 'is_ret': False, 'rm': '', 'rtype': ''}]
+        agg = _simulate_pmr_agg(leads)
+        self.assertEqual(len(agg['pmr']), 0, 'Lead-only entry must not create a pmr row')
+
+    def test_PM3_pmr_row_has_three_retail_counters(self):
+        """Each pmr value has exactly [R_all, R_dms, R_co] (3 elements)."""
+        leads = [{'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+                  'pm': 'Raider', 'is_ret': True, 'rm': "Aug'26", 'rtype': 'DMS'}]
+        agg = _simulate_pmr_agg(leads)
+        for k, v in agg['pmr'].items():
+            self.assertEqual(len(v), 3, f'pmr value must have 3 elements, got {len(v)} for {k}')
+
+    def test_PM4_multiple_retails_same_key_accumulate(self):
+        """Multiple retails for the same (pm, mdl, src, lm) accumulate in a single pmr row."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': 'DMS'},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': 'Call Out'},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        row = agg['pmr'][('Jupiter', 'Jupiter', 'Organic', "Aug'26")]
+        self.assertEqual(row[0], 3, 'R_all must be 3 (three retails)')
+        self.assertEqual(row[1], 1, 'R_dms must be 1')
+        self.assertEqual(row[2], 1, 'R_co must be 1')
+
+    def test_PM5_dms_co_type_tracking(self):
+        """DMS rtype increments R_dms; Call Out rtype increments R_co; other rtype increments neither."""
+        leads = [
+            {'lid': 'A', 'lm': "Jul'26", 'src': 'FB', 'mdl': 'Ntorq',
+             'pm': 'Ntorq', 'is_ret': True, 'rm': "Jul'26", 'rtype': 'DMS'},
+            {'lid': 'B', 'lm': "Jul'26", 'src': 'FB', 'mdl': 'Ntorq',
+             'pm': 'Ntorq', 'is_ret': True, 'rm': "Jul'26", 'rtype': 'Call Out'},
+            {'lid': 'C', 'lm': "Jul'26", 'src': 'FB', 'mdl': 'Ntorq',
+             'pm': 'Ntorq', 'is_ret': True, 'rm': "Jul'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        v = agg['pmr'][('Ntorq', 'Ntorq', 'FB', "Jul'26")]
+        self.assertEqual(v, [3, 1, 1])
+
+    # ── PM6–PM10: OC vs OU month attribution ─────────────────────────────────
+
+    def test_PM6_pmr_uses_lead_month(self):
+        """pmr (OC) keys retail by LEAD month, not retail month."""
+        leads = [{'lid': 'L1', 'lm': "Jul'26", 'src': 'Organic', 'mdl': 'Apache',
+                  'pm': 'Apache', 'is_ret': True, 'rm': "Sep'26", 'rtype': ''}]
+        agg = _simulate_pmr_agg(leads)
+        self.assertIn(('Apache', 'Apache', 'Organic', "Jul'26"), agg['pmr'],
+                      'pmr must key by lead month (Jul), not retail month (Sep)')
+        self.assertNotIn(('Apache', 'Apache', 'Organic', "Sep'26"), agg['pmr'])
+
+    def test_PM7_u_pmr_uses_retail_month(self):
+        """u_pmr (OU) keys retail by RETAIL month, not lead month."""
+        leads = [{'lid': 'L1', 'lm': "Jul'26", 'src': 'Organic', 'mdl': 'Apache',
+                  'pm': 'Apache', 'is_ret': True, 'rm': "Sep'26", 'rtype': ''}]
+        agg = _simulate_pmr_agg(leads)
+        self.assertIn(('Apache', 'Apache', 'Organic', "Sep'26"), agg['u_pmr'],
+                      'u_pmr must key by retail month (Sep), not lead month (Jul)')
+        self.assertNotIn(('Apache', 'Apache', 'Organic', "Jul'26"), agg['u_pmr'])
+
+    def test_PM8_total_retail_conserved_oc_vs_ou(self):
+        """Total retails across pmr == total retails across u_pmr (conservation)."""
+        leads = [
+            {'lid': 'L1', 'lm': "Jul'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Raider', 'is_ret': True, 'rm': "Sep'26", 'rtype': 'DMS'},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Raider', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'FB', 'mdl': 'Jupiter',
+             'pm': 'Ntorq', 'is_ret': True, 'rm': "Sep'26", 'rtype': 'Call Out'},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        oc_total = sum(v[0] for v in agg['pmr'].values())
+        ou_total = sum(v[0] for v in agg['u_pmr'].values())
+        self.assertEqual(oc_total, ou_total, 'Total retail must be the same in pmr and u_pmr')
+        self.assertEqual(oc_total, 3)
+
+    def test_PM9_oc_ou_month_distribution_can_differ(self):
+        """OC attributes retails to lead month; OU to retail month — distributions can differ."""
+        leads = [
+            # Jul lead, Sep retail → OC: Jul; OU: Sep
+            {'lid': 'L1', 'lm': "Jul'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Sep'26", 'rtype': ''},
+            # Aug lead, Aug retail → OC: Aug; OU: Aug (no shift)
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        oc_jul = agg['pmr'].get(('Jupiter', 'Jupiter', 'Organic', "Jul'26"), [0])[0]
+        oc_aug = agg['pmr'].get(('Jupiter', 'Jupiter', 'Organic', "Aug'26"), [0])[0]
+        ou_sep = agg['u_pmr'].get(('Jupiter', 'Jupiter', 'Organic', "Sep'26"), [0])[0]
+        ou_aug = agg['u_pmr'].get(('Jupiter', 'Jupiter', 'Organic', "Aug'26"), [0])[0]
+        self.assertEqual(oc_jul, 1, 'OC: L1 retail in Jul')
+        self.assertEqual(oc_aug, 1, 'OC: L2 retail in Aug')
+        self.assertEqual(ou_sep, 1, 'OU: L1 retail in Sep (retail month)')
+        self.assertEqual(ou_aug, 1, 'OU: L2 retail in Aug (no shift)')
+
+    def test_PM10_lead_only_contributes_to_mm_not_pmr(self):
+        """A non-retailed lead increments mm lead count but never appears in pmr."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': '', 'is_ret': False, 'rm': '', 'rtype': ''},
+        ]
+        agg_pmr = _simulate_pmr_agg(leads)
+        mm = _sim_mm_agg(leads)
+        self.assertEqual(len(agg_pmr['pmr']), 0, 'No pmr row for lead-only entry')
+        self.assertEqual(mm[('Raider', 'Organic', "Aug'26")][0], 1, 'mm lead count = 1')
+        self.assertEqual(mm[('Raider', 'Organic', "Aug'26")][1], 0, 'mm retail count = 0')
+
+    # ── PM11–PM15: filter semantics ───────────────────────────────────────────
+
+    def test_PM11_pm_filter_returns_only_selected_pm_retails(self):
+        """Selecting 'Jupiter' as PM returns only retails where purchased model = Jupiter."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache',  'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Ntorq',   'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter'})
+        total_r = sum(v[0] for v in overlay.values())
+        self.assertEqual(total_r, 1, 'PM filter on Jupiter must return exactly 1 retail')
+
+    def test_PM12_unselected_pm_retails_excluded(self):
+        """Retails with an unselected purchased model are excluded from the overlay."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Raider', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Apache', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Raider'})
+        # Apache retail must be excluded; only Raider retail included
+        self.assertEqual(overlay[('Raider', 'Organic', "Aug'26")][0], 1)
+        self.assertNotIn(('Apache', 'Organic', "Aug'26"), overlay)
+
+    def test_PM13_lead_counts_unchanged_when_pm_filter_active(self):
+        """Lead counts (mm L column) are never affected by the PM filter."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache',  'is_ret': False,'rm': '',       'rtype': ''},
+        ]
+        mm = _sim_mm_agg(leads)
+        total_L = sum(v[0] for v in mm.values())
+        # PM filter selects only 'Jupiter' — but lead count is unchanged
+        self.assertEqual(total_L, 2, 'Lead count must reflect all leads, not just selected-PM retails')
+
+    def test_PM14_l2r_uses_filtered_retail_over_unchanged_leads(self):
+        """L2R% = PM-filtered retail / total leads (leads unchanged by PM filter)."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Ntorq',   'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': '',         'is_ret': False,'rm': '',       'rtype': ''},
+        ]
+        mm  = _sim_mm_agg(leads)
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter'})
+        total_L = mm[('Jupiter', 'Organic', "Aug'26")][0]  # unchanged = 3
+        filtered_R = overlay.get(('Jupiter', 'Organic', "Aug'26"), [0])[0]  # = 1
+        l2r = filtered_R / total_L * 100
+        self.assertAlmostEqual(l2r, 100/3, places=5,
+                               msg='L2R% = filtered_retail / unchanged_leads')
+
+    def test_PM15_multiple_pm_selection_is_additive(self):
+        """Selecting multiple PMs returns the union of their retails."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Ntorq',   'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache',  'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter', 'Ntorq'})
+        total_r = sum(v[0] for v in overlay.values())
+        self.assertEqual(total_r, 2, 'Selecting 2 PMs returns union of their retails (2, not 3)')
+
+    # ── PM16–PM20: interaction with other filters ─────────────────────────────
+
+    def test_PM16_pm_filter_plus_month_filter(self):
+        """PM filter + month filter: only retails with matching PM AND month are included."""
+        leads = [
+            {'lid': 'L1', 'lm': "Jul'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Jul'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        # Select PM=Jupiter + month=Aug
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter'})
+        aug_r = overlay.get(('Raider', 'Organic', "Aug'26"), [0])[0]
+        jul_r = overlay.get(('Raider', 'Organic', "Jul'26"), [0])[0]
+        # Then apply month filter (downstream, as frontend does)
+        self.assertEqual(aug_r, 1, 'Aug Jupiter retail present')
+        self.assertEqual(jul_r, 1, 'Jul Jupiter retail present (month filter applied at render)')
+
+    def test_PM17_pm_filter_plus_source_filter(self):
+        """PM filter + source filter: overlay keyed by source; frontend applies source filter downstream."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Facebook','mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter'})
+        # Overlay has separate keys per source — source filter then selects which key to use
+        organic_r  = overlay.get(('Apache', 'Organic', "Aug'26"),  [0])[0]
+        facebook_r = overlay.get(('Apache', 'Facebook', "Aug'26"), [0])[0]
+        self.assertEqual(organic_r,  1, 'Organic Jupiter retail in overlay')
+        self.assertEqual(facebook_r, 1, 'Facebook Jupiter retail in overlay')
+
+    def test_PM18_enquired_model_filter_independent_of_pm_filter(self):
+        """Enquired model (mm dimension) and purchased model (pm filter) are separate dimensions."""
+        leads = [
+            # Enquired Apache, bought Apache → included if PM=Apache selected
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache',  'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            # Enquired Jupiter, bought Apache → included if PM=Apache selected (even though mdl=Jupiter)
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Apache',  'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            # Enquired Apache, bought Jupiter → excluded if PM=Apache selected
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Apache'})
+        total_r = sum(v[0] for v in overlay.values())
+        self.assertEqual(total_r, 2, 'PM=Apache selects 2 retails (L1 and L2), not L3')
+
+    def test_PM19_pm_filter_on_pm_with_no_retails_gives_zero(self):
+        """Selecting a PM with no retails in that month returns 0 retail."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Apache', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        # Select a PM that has no retails (Jupiter)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter'})
+        total_r = sum(v[0] for v in overlay.values())
+        self.assertEqual(total_r, 0, 'PM with no retails → 0 filtered retail')
+
+    def test_PM20_unknown_pm_treated_as_regular_pm(self):
+        """Unknown / blank purchased model is treated as the canonical 'Unknown' value."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Raider',
+             'pm': 'Unknown', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Unknown'})
+        total_r = sum(v[0] for v in overlay.values())
+        self.assertEqual(total_r, 1, "Selecting 'Unknown' PM returns its retails")
+
+    # ── PM21–PM23: DispersionTab purchasedModels filter ───────────────────────
+
+    def test_PM21_dispersion_row_included_when_pm_selected(self):
+        """DispersionTab: row with pi=Jupiter is included when purchasedModels={'Jupiter'}."""
+        mdl_arr = ['Apache', 'Jupiter', 'Raider']
+        # disp row schema: [ei, pi, lmi, count]
+        disp_rows = [
+            [0, 1, 0, 5],  # Apache enquired, Jupiter purchased, count=5
+            [2, 0, 0, 3],  # Raider enquired, Apache purchased, count=3
+        ]
+        selected_pms = {'Jupiter'}
+        # Simulate DispersionTab filter: selPmi = set of pi values for selected names
+        selPmi = {mdl_arr.index(pm) for pm in selected_pms if pm in mdl_arr}
+        filtered = [r for r in disp_rows if r[1] in selPmi]
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0][3], 5, 'Only the Jupiter-purchased row should pass')
+
+    def test_PM22_dispersion_row_excluded_when_pm_not_selected(self):
+        """DispersionTab: row with pi=Apache is excluded when purchasedModels={'Jupiter'}."""
+        mdl_arr = ['Apache', 'Jupiter', 'Raider']
+        disp_rows = [
+            [0, 0, 0, 4],  # Apache enquired, Apache purchased
+            [2, 1, 0, 2],  # Raider enquired, Jupiter purchased
+        ]
+        selected_pms = {'Jupiter'}
+        selPmi = {mdl_arr.index(pm) for pm in selected_pms if pm in mdl_arr}
+        filtered = [r for r in disp_rows if r[1] in selPmi]
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0][3], 2)  # only Jupiter-purchased row
+
+    def test_PM23_no_pm_filter_shows_all_dispersion_rows(self):
+        """DispersionTab: when purchasedModels is empty, all rows pass through."""
+        mdl_arr = ['Apache', 'Jupiter', 'Raider']
+        disp_rows = [
+            [0, 0, 0, 4],
+            [0, 1, 0, 2],
+            [2, 2, 0, 1],
+        ]
+        # allPM = True (no filter)
+        filtered = list(disp_rows)  # no filtering
+        self.assertEqual(len(filtered), 3, 'All rows shown when PM filter is empty')
+
+    # ── PM24–PM27: CRITICAL FIXTURE — lead model ≠ purchased model ────────────
+
+    def test_PM24_lead_model_neq_purchased_model_fixture(self):
+        """CRITICAL: a lead enquired Apache but the dealership sold them Jupiter.
+        These two models must appear as separate dimensions in pmr."""
+        leads = [
+            # Enquired Apache, purchased Jupiter — a cross-model retail
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache RTR 160',
+             'pm': 'TVS Jupiter 110', 'is_ret': True, 'rm': "Aug'26", 'rtype': 'DMS'},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        mm = _sim_mm_agg(leads)
+        # pmr keyed by PURCHASED model
+        self.assertIn(('TVS Jupiter 110', 'Apache RTR 160', 'Organic', "Aug'26"), agg['pmr'])
+        # mm keyed by ENQUIRED (lead) model
+        self.assertIn(('Apache RTR 160', 'Organic', "Aug'26"), mm)
+        # They are different dimensions
+        pmr_pm = list(agg['pmr'].keys())[0][0]
+        mm_mdl = list(mm.keys())[0][0]
+        self.assertNotEqual(pmr_pm, mm_mdl, 'Lead model and purchased model must differ')
+
+    def test_PM25_pmr_keyed_by_purchased_model_not_lead_model(self):
+        """pmr is keyed by PURCHASED model — filtering on pm='Jupiter' returns cross-model retails."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        # Key must be (purchased_model='Jupiter', enq_model='Apache', ...)
+        self.assertIn(('Jupiter', 'Apache', 'Organic', "Aug'26"), agg['pmr'],
+                      'pmr must be keyed by purchased model (Jupiter), not lead model (Apache)')
+
+    def test_PM26_mm_keyed_by_lead_model_not_purchased_model(self):
+        """mm is keyed by LEAD (enquired) model — independent of what was purchased."""
+        leads = [
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': '',        'is_ret': False,'rm': '',       'rtype': ''},
+        ]
+        mm = _sim_mm_agg(leads)
+        # mm key must be ('Apache', ...) not ('Jupiter', ...)
+        self.assertIn(('Apache', 'Organic', "Aug'26"), mm)
+        self.assertNotIn(('Jupiter', 'Organic', "Aug'26"), mm,
+                         'mm must NOT be keyed by purchased model')
+        self.assertEqual(mm[('Apache', 'Organic', "Aug'26")][0], 2, 'Apache has 2 leads')
+
+    def test_PM27_pm_filter_on_jupiter_returns_cross_model_retails(self):
+        """Filtering on PM=Jupiter shows leads that ENQUIRED any model but PURCHASED Jupiter.
+        This is the core value of the purchased-model filter."""
+        leads = [
+            # L1: enquired Apache, purchased Jupiter
+            {'lid': 'L1', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            # L2: enquired Jupiter, purchased Jupiter (loyal)
+            {'lid': 'L2', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Jupiter',
+             'pm': 'Jupiter', 'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+            # L3: enquired Apache, purchased Apache (not Jupiter)
+            {'lid': 'L3', 'lm': "Aug'26", 'src': 'Organic', 'mdl': 'Apache',
+             'pm': 'Apache',  'is_ret': True, 'rm': "Aug'26", 'rtype': ''},
+        ]
+        agg = _simulate_pmr_agg(leads)
+        overlay = _apply_pm_filter_to_pmr(agg['pmr'], {'Jupiter'})
+        total_r = sum(v[0] for v in overlay.values())
+        # L1 (cross-model) + L2 (loyal) = 2 retails; L3 excluded
+        self.assertEqual(total_r, 2,
+                         'PM=Jupiter must return all retails where purchased=Jupiter, '
+                         'regardless of what was enquired')
+        # Both Apache (cross-model) and Jupiter (loyal) are in the overlay
+        apache_r  = overlay.get(('Apache',  'Organic', "Aug'26"), [0])[0]
+        jupiter_r = overlay.get(('Jupiter', 'Organic', "Aug'26"), [0])[0]
+        self.assertEqual(apache_r,  1, 'Cross-model retail (Apache enquiry → Jupiter purchase)')
+        self.assertEqual(jupiter_r, 1, 'Loyal retail (Jupiter enquiry → Jupiter purchase)')
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':

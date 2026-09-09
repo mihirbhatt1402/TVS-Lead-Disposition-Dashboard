@@ -1993,6 +1993,7 @@ def build_payload(all_leads, retail_map):
     mxdl, u_mxdl = {}, {}  # model × dealer × month
     ltdl, u_ltdl = {}, {}  # lead-type × dealer × month
     disp, u_disp = {}, {}   # enquired_model × purchased_model × month (retails only)
+    pmr,  u_pmr  = {}, {}   # purch_model × enq_model × src × month → [R, R_dms, R_co] (retails only)
     cdm, csm, cdsm = {},{},{}
     dl_sn = {}  # city × dealer × lead-month → [L_open, L_booking, L_lost]
     cxm, u_cxm = {}, {}           # city × model × month
@@ -2167,6 +2168,14 @@ def build_payload(all_leads, retail_map):
             disp[f"{mi}|{pmi}|{li}"]   = disp.get(f"{mi}|{pmi}|{li}",   0) + 1
             u_disp[f"{mi}|{pmi}|{uli}"] = u_disp.get(f"{mi}|{pmi}|{uli}", 0) + 1
 
+            # pmr / u_pmr: retail-only [pmi, mi, si, li, R, R_dms, R_co]
+            _rt_u2 = rtype.upper()
+            for (_pmr_d, _pmr_k) in ((pmr, f"{pmi}|{mi}|{si}|{li}"), (u_pmr, f"{pmi}|{mi}|{si}|{uli}")):
+                if _pmr_k not in _pmr_d: _pmr_d[_pmr_k] = [0, 0, 0]
+                _pmr_d[_pmr_k][0] += 1
+                if 'DMS'  in _rt_u2: _pmr_d[_pmr_k][1] += 1
+                elif 'CALL' in _rt_u2: _pmr_d[_pmr_k][2] += 1
+
             # ── Retail Ageing (On Create, lead month attribution) ──────────────
             _ram_total += 1
             _rd = retail_map[lid].get('rd')
@@ -2232,6 +2241,7 @@ def build_payload(all_leads, retail_map):
         'stlt':    to_rows(stlt,  lambda k: list(map(int, k.split('|')))),
         'stcm':    to_rows(stcm,  lambda k: list(map(int, k.split('|')))),
         'disp':    [[*map(int,k.split('|')), v] for k,v in disp.items()],
+        'pmr':     [[*map(int,k.split('|')), *v] for k,v in pmr.items()],   # [pmi,mi,si,li,R,R_dms,R_co]
         'zm':      to_rows(zm,  lambda k: list(map(int, k.split('|')))),
         'bdm':     to_rows(bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),
         'cm':      to_rows(cm,  lambda k: list(map(int, k.split('|')))),
@@ -2265,6 +2275,7 @@ def build_payload(all_leads, retail_map):
         'univ':      to_rows(univ,    lambda k: list(map(int, k.split('|')))),
         'u_univ':    to_rows(u_univ,  lambda k: list(map(int, k.split('|')))),
         'u_disp':  [[*map(int,k.split('|')), v] for k,v in u_disp.items()],
+        'u_pmr':   [[*map(int,k.split('|')), *v] for k,v in u_pmr.items()],   # [pmi,mi,si,li,R,R_dms,R_co]
         'u_zm':      to_rows(u_zm,  lambda k: list(map(int, k.split('|')))),
         'u_bdm':     to_rows(u_bdm, lambda k: [int(k.split('|')[0])] + list(map(int, k.split('|')[1:]))),
         'ram':       [[*map(int, k.split('|')), *v] for k, v in ram.items()],
