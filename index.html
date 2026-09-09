@@ -1535,6 +1535,7 @@ const LTSourceTab = React.memo(function LTSourceTab({ data, filters, months, RT,
    ════════════════════════════════════════════════════════════════════ */
 const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, months, RT, viewerMode, pmMaps }) {
   const { maps, mm, univ: univRaw } = data;
+  const pmr  = data.pmr || [];
   const univ = univRaw || [];
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
   const allSrcs = useMemo(() => [...new Set(maps.src)], [maps]);
@@ -1544,13 +1545,45 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   }), []);
 
+  /* Retail keyed by (pmi|si|li) — the PURCHASED-MODEL dimension.
+     Row X's retail = pmiSiLi.get("X|si|li") = total retail where PM=X for that source+month.
+     This is intentionally different from the Lead Model (mi) used for the Leads column.
+     When PM filter is active, only the selected pmi values are included.
+     PM standardisation is the same as pmr/Dispersion: pmi indices come from maps.mdl. */
+  const pmiSiLi = useMemo(() => {
+    const selPmiSet = (filters.purchasedModels && filters.purchasedModels.size > 0)
+      ? new Set([...filters.purchasedModels].map(pm => maps.mdl.indexOf(pm)).filter(i => i >= 0))
+      : null;
+    const m = new Map();
+    for (const row of pmr) {
+      const pmi = row[0], si = row[2], li = row[3];
+      const R = row[4], Rd = row[5], Rc = row[6];
+      if (selPmiSet && !selPmiSet.has(pmi)) continue;
+      const k = pmi+'|'+si+'|'+li;
+      const e = m.get(k)||[0,0,0]; e[0]+=R; e[1]+=Rd; e[2]+=Rc; m.set(k,e);
+    }
+    return m;
+  }, [pmr, maps, filters.purchasedModels]);
+
   const renderAgg = useCallback((M) => {
     const allMdl = !filters.models || filters.models.size === 0;
     const univF  = makeUnivFilter(filters);
     const pmRI   = RT === 'dms' ? 1 : RT === 'co' ? 2 : 0;
+
     if (univF) {
-      // univ path: mi=row[0], si=row[1], li=row[4]  — dedup to avoid sti/tti double-counting
-      const eff = pmOverrideLRDedup(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[4]);
+      // univ path: mi=row[0], si=row[1], li=row[4]
+      // Leads:  from univ (lead-model dimension, unchanged)
+      // Retail: from pmiSiLi keyed by (mi|si|li) — treating mi as pmi gives retail where PM=mi
+      // seenRT dedup: prevents multiple sti/tti rows from multiplying the pmiSiLi value
+      const seenRT = new Set();
+      const eff = row => {
+        const [l] = getLR(row);
+        const k = row[0]+'|'+row[1]+'|'+row[4];
+        if (seenRT.has(k)) return [l, 0];
+        seenRT.add(k);
+        const v = pmiSiLi.get(k);
+        return [l, v ? v[pmRI] : 0];
+      };
       return aggMonth(
         univ, maps, M, filters.sources,
         (row,maps) => { const mdl=maps.mdl[row[0]]; return allMdl||filters.models.has(mdl) ? mdl : null; },
@@ -1559,8 +1592,17 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
         univF, eff
       );
     }
+
     // mm path: mi=row[0], si=row[1], li=row[2]
-    const eff = pmOverrideLR(getLR, pmMaps && pmMaps.miSiLi, pmRI, row => row[0]+'|'+row[1]+'|'+row[2]);
+    // Leads:  from mm.L (lead-model dimension, unchanged)
+    // Retail: from pmiSiLi keyed by (mi|si|li) — treating mi as pmi
+    // Each (mi,si,li) is unique in mm so no dedup needed
+    const eff = row => {
+      const [l] = getLR(row);
+      const k = row[0]+'|'+row[1]+'|'+row[2];
+      const v = pmiSiLi.get(k);
+      return [l, v ? v[pmRI] : 0];
+    };
     return aggMonth(
       mm, maps, M, filters.sources,
       (row,maps) => { const mdl=maps.mdl[row[0]]; return allMdl||filters.models.has(mdl) ? mdl : null; },
@@ -1568,7 +1610,7 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
       (row,maps) => maps.lm[row[2]],
       null, eff
     );
-  }, [mm, univ, maps, filters, getLR, pmMaps, RT]);
+  }, [mm, univ, maps, filters, getLR, pmiSiLi, RT]);
 
   return ce(MonthlyGrids, { title:'Model × Source', months, renderAgg, srcGroups, dimLabel:'Model', expandedGrps, onToggleGrp, viewerMode });
 });

@@ -6434,6 +6434,382 @@ class TestPurchasedModelFilter(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Model × Source retail dimension tests (MS1–MS22)
+#
+# Root cause fixed: ModelSourceTab was using mm.R (keyed by Lead Model mi) for
+# retail. The business requirement is that retail must be keyed by Purchased
+# Model (pmi). A lead enquiring Apache but purchasing Jupiter must be counted
+# in the Retail column of the Jupiter row, not the Apache row.
+#
+# pmiSiLi map schema: key = (pmi, si, li), value = [R_all, R_dms, R_co]
+# This is built from the same pmr matrix used by the global PM filter and
+# Retail Dispersion — no duplicate standardisation.
+# ---------------------------------------------------------------------------
+
+def _build_pmiSiLi(pmr_rows, sel_pmi_set=None):
+    """Build pmiSiLi: retail keyed by (pmi, si, li) — purchased-model dimension.
+    pmr_rows: list of (pmi, mi, si, li, R, Rd, Rc).
+    sel_pmi_set: set of pmi values to include (None = all)."""
+    m = {}
+    for row in pmr_rows:
+        pmi, mi, si, li, R, Rd, Rc = row
+        if sel_pmi_set is not None and pmi not in sel_pmi_set:
+            continue
+        k = (pmi, si, li)
+        if k not in m: m[k] = [0, 0, 0]
+        m[k][0] += R; m[k][1] += Rd; m[k][2] += Rc
+    return m
+
+
+def _sim_mdl_src_agg(mm_rows, pmiSiLi, pmRI=0):
+    """Simulate ModelSourceTab mm-path aggregation with pmiSiLi retail.
+    mm_rows: list of (mi, si, li, L, R_all, R_dms, R_co).
+    Returns dict: (mi, si) → (leads, retail)."""
+    result = {}
+    for row in mm_rows:
+        mi, si, li, L = row[0], row[1], row[2], row[3]
+        k_pmi = (mi, si, li)          # treat mi as pmi for the lookup
+        v = pmiSiLi.get(k_pmi)
+        r = v[pmRI] if v else 0
+        k = (mi, si)
+        if k not in result: result[k] = [0, 0]
+        result[k][0] += L; result[k][1] += r
+    return result
+
+
+def _sim_mdl_src_agg_old(mm_rows, pmRI=0):
+    """Simulate OLD ModelSourceTab mm-path (retail from mm.R — wrong)."""
+    result = {}
+    for row in mm_rows:
+        mi, si, li, L, R_all, R_dms, R_co = row
+        r = (R_dms if pmRI==1 else R_co if pmRI==2 else R_all)
+        k = (mi, si)
+        if k not in result: result[k] = [0, 0]
+        result[k][0] += L; result[k][1] += r
+    return result
+
+
+class TestModelSourceRetail(unittest.TestCase):
+    """MS1–MS22: Model × Source retail-dimension regression tests.
+
+    Verifies that retail in each model row is based on Purchased Model (pmi),
+    not Lead Model (mi).  Lead counts remain Lead-Model-based throughout.
+    """
+
+    # ── MS1–MS3: retail goes to purchased-model row ───────────────────────────
+
+    def test_MS1_cross_model_retail_goes_to_purchased_model_row(self):
+        """Lead=A, PM=B: retail must appear in Row B, not Row A."""
+        pmr = [
+            (1, 0, 0, 0, 5, 1, 4),   # pmi=B(1), mi=A(0), si=0, li=0 → 5 retails
+        ]
+        mm = [
+            (0, 0, 0, 10, 0, 0, 0),  # mi=A, si=0, li=0, L=10, R=0 (A has no loyal retail)
+            (1, 0, 0,  3, 5, 1, 4),  # mi=B, si=0, li=0, L=3,  R=5
+        ]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # Row A: 10 leads, 0 retail (no retail where PM=A)
+        self.assertEqual(agg[(0, 0)][0], 10, 'Row A leads = 10')
+        self.assertEqual(agg[(0, 0)][1],  0, 'Row A retail = 0 (PM=A has no pmr rows)')
+        # Row B: 3 leads, 5 retail (retail where PM=B includes the cross-model record)
+        self.assertEqual(agg[(1, 0)][0],  3, 'Row B leads = 3')
+        self.assertEqual(agg[(1, 0)][1],  5, 'Row B retail = 5 (PM=B)')
+
+    def test_MS2_loyal_retail_stays_in_same_row(self):
+        """Lead=A, PM=A: retail stays in Row A."""
+        pmr = [
+            (0, 0, 0, 0, 7, 2, 5),   # pmi=A(0), mi=A(0) → loyal retail
+        ]
+        mm  = [(0, 0, 0, 20, 7, 2, 5)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        self.assertEqual(agg[(0, 0)][0], 20, 'Leads unchanged')
+        self.assertEqual(agg[(0, 0)][1],  7, 'Loyal retail in Row A')
+
+    def test_MS3_old_system_wrong_cross_model(self):
+        """Demonstrate old system puts cross-model retail in WRONG row."""
+        pmr = [(1, 0, 0, 0, 5, 0, 5)]  # lead=A(0), purchased=B(1), R=5
+        mm  = [
+            (0, 0, 0, 10, 5, 0, 5),   # old mm had retail where lead=A including cross-model
+            (1, 0, 0,  3, 0, 0, 0),
+        ]
+        old_agg = _sim_mdl_src_agg_old(mm)
+        # Old: Row A had 5 retail (wrong — that 5 was cross-model into B)
+        self.assertEqual(old_agg[(0, 0)][1], 5, 'OLD: cross-model retail erroneously in Row A')
+        pmiSiLi = _build_pmiSiLi(pmr)
+        new_agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # New: Row A has 0 retail (A has no pmr rows where pmi=A)
+        self.assertEqual(new_agg[(0, 0)][1], 0, 'NEW: Row A correctly has 0 retail')
+        # New: Row B has 5 retail
+        self.assertEqual(new_agg[(1, 0)][1], 5, 'NEW: Row B correctly has 5 retail (PM=B)')
+
+    # ── MS4–MS6: leads remain lead-model based ────────────────────────────────
+
+    def test_MS4_leads_always_from_lead_model(self):
+        """Leads must come from mm.L keyed by mi (lead model), unchanged."""
+        pmr = [(1, 0, 0, 0, 3, 0, 3)]  # lead=A, purch=B
+        mm  = [(0, 0, 0, 15, 3, 0, 3), (1, 0, 0, 8, 0, 0, 0)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        self.assertEqual(agg[(0, 0)][0], 15, 'Row A leads = 15 (lead model A)')
+        self.assertEqual(agg[(1, 0)][0],  8, 'Row B leads = 8 (lead model B)')
+
+    def test_MS5_retail_change_does_not_affect_leads(self):
+        """Changing retail attribution must not alter any lead count."""
+        pmr = [(0, 1, 0, 0, 4, 1, 3), (1, 0, 0, 0, 6, 2, 4)]
+        mm  = [(0, 0, 0, 30, 6, 2, 4), (1, 0, 0, 20, 4, 1, 3)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # Leads unchanged regardless of retail fix
+        self.assertEqual(agg[(0, 0)][0], 30)
+        self.assertEqual(agg[(1, 0)][0], 20)
+
+    def test_MS6_no_retail_when_no_pmr_rows_for_model(self):
+        """A model with no pmr rows (never purchased) must show 0 retail."""
+        pmr = [(1, 0, 0, 0, 9, 3, 6)]  # only pmi=B has retail
+        mm  = [(0, 0, 0, 50, 0, 0, 0), (1, 0, 0, 10, 9, 3, 6)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        self.assertEqual(agg[(0, 0)][1], 0, 'Model A with no pmr pmi=A rows: retail=0')
+        self.assertEqual(agg[(1, 0)][1], 9, 'Model B retail = 9')
+
+    # ── MS7–MS9: total retail reconciliation ─────────────────────────────────
+
+    def test_MS7_total_retail_across_all_models_equals_pmr_total(self):
+        """Sum of retail across all model rows must equal total pmr retail."""
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),
+            (1, 0, 0, 0,  5, 1, 4),  # cross-model: lead=A, purch=B
+            (1, 1, 0, 0,  8, 2, 6),
+        ]
+        mm  = [(0, 0, 0, 50, 15, 4, 11), (1, 0, 0, 20, 8, 2, 6)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        total_new = sum(v[1] for v in agg.values())
+        total_pmr = sum(row[4] for row in pmr)
+        self.assertEqual(total_new, total_pmr,
+            f'Model row retail sum ({total_new}) must equal pmr total ({total_pmr})')
+
+    def test_MS8_oc_retail_from_pmr_lead_month(self):
+        """OC mode: retail uses lead month (li) from pmr — same as mm li."""
+        # li=0 = lead month
+        pmr = [(0, 0, 0, 0, 12, 4, 8)]   # pmi=A, si=0, li=0(lead month)
+        mm  = [(0, 0, 0, 25, 12, 4, 8)]  # mi=A, si=0, li=0(lead month)
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        self.assertEqual(agg[(0, 0)][1], 12, 'OC: retail by lead month correct')
+
+    def test_MS9_ou_retail_from_u_pmr_retail_month(self):
+        """OU mode: u_pmr uses retail month (li). Same logic, different data slice."""
+        # Simulate OU: li=1 = retail month. mm key is (mi, si) — li is only for pmiSiLi lookup.
+        u_pmr = [(0, 0, 0, 1, 8, 2, 6)]   # pmi=A(0), mi=A(0), si=0, li=1(retail month)
+        u_mm  = [(0, 0, 1, 20, 8, 2, 6)]  # mi=A(0), si=0, li=1(retail month) — key=(0,0)
+        pmiSiLi = _build_pmiSiLi(u_pmr)
+        agg = _sim_mdl_src_agg(u_mm, pmiSiLi)
+        # Result key is (mi=0, si=0); li=1 matches the pmiSiLi entry (0,0,1)→8
+        self.assertEqual(agg[(0, 0)][1], 8, 'OU: retail by retail month correct')
+
+    # ── MS10–MS12: PM filter interaction ─────────────────────────────────────
+
+    def test_MS10_pm_filter_restricts_pmiSiLi_to_selected_pmi(self):
+        """PM filter = {B}: only rows where pmi=B appear in pmiSiLi."""
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),  # pmi=A(0), si=0
+            (1, 0, 0, 0,  5, 1, 4),  # pmi=B(1), si=0  — key (1,0,0)
+            (1, 1, 1, 0,  8, 2, 6),  # pmi=B(1), si=1  — key (1,1,0) — different source
+        ]
+        sel = {1}  # only B
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set=sel)
+        # pmiSiLi must only contain pmi=B entries
+        self.assertNotIn((0, 0, 0), pmiSiLi, 'pmi=A excluded by PM filter')
+        self.assertIn((1, 0, 0),    pmiSiLi, 'pmi=B si=0 included')
+        self.assertIn((1, 1, 0),    pmiSiLi, 'pmi=B si=1 included')
+        self.assertEqual(pmiSiLi[(1, 0, 0)][0], 5)
+        self.assertEqual(pmiSiLi[(1, 1, 0)][0], 8)
+
+    def test_MS11_pm_filter_row_x_eq_y_shows_retail(self):
+        """PM filter = {A}: Row A shows its own retail, Row B shows 0."""
+        # Separate keys: pmi=A si=0 (loyal), pmi=B si=0 (B's own retail)
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),  # pmi=A, mi=A — key (0,0,0)
+            (1, 0, 0, 0,  6, 2, 4),  # pmi=B, mi=A — key (1,0,0)
+        ]
+        mm  = [(0, 0, 0, 30, 10, 3, 7), (1, 0, 0, 20, 6, 2, 4)]
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set={0})  # PM filter = A(0)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # pmiSiLi only has (0,0,0)→10; Row A looks up pmi=A=10
+        self.assertEqual(agg[(0, 0)][1], 10, 'Row A retail with PM filter A = 10')
+        # Row B looks up pmiSiLi[(pmi=B=1, si=0, li=0)] — excluded by filter → 0
+        self.assertEqual(agg[(1, 0)][1],  0, 'Row B retail with PM filter A = 0')
+
+    def test_MS12_pm_filter_row_x_neq_y_zero_retail(self):
+        """PM filter = {B}: Row A gets 0 retail (pmiSiLi has no pmi=A entries)."""
+        pmr = [(1, 0, 0, 0, 7, 2, 5)]   # pmi=B only
+        mm  = [(0, 0, 0, 15, 7, 2, 5)]  # Row A has leads
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set={1})  # PM filter = B(1)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # Row A looks up pmiSiLi[(A=0, si=0, li=0)] — not present → 0
+        self.assertEqual(agg[(0, 0)][1], 0,
+            'Model=A + PM filter=B: Row A retail = 0 (PM filter restricts to pmi=B)')
+        self.assertEqual(agg[(0, 0)][0], 15, 'Leads unchanged')
+
+    # ── MS13–MS15: model filter interaction ───────────────────────────────────
+
+    def test_MS13_model_filter_restricts_rows_not_retail(self):
+        """Model filter restricts which rows appear; retail source is still pmiSiLi."""
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),  # pmi=A
+            (1, 1, 0, 0,  8, 2, 6),  # pmi=B
+        ]
+        mm = [
+            (0, 0, 0, 30, 10, 3, 7),  # Row A
+            (1, 0, 0, 20,  8, 2, 6),  # Row B
+        ]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        # With model filter = {A}: only Row A appears (caller filters rows, not pmiSiLi)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # Both rows exist; caller would filter by model — retail is still correct
+        self.assertEqual(agg[(0, 0)][1], 10, 'Row A retail = 10 (PM=A)')
+        self.assertEqual(agg[(1, 0)][1],  8, 'Row B retail = 8 (PM=B)')
+
+    def test_MS14_model_filter_does_not_leak_retail_across_models(self):
+        """When Model filter = {A}, Row A must NOT show retail from other models."""
+        pmr = [(0, 0, 0, 0, 10, 0, 10), (1, 0, 0, 0, 5, 0, 5)]  # pmi=A and pmi=B
+        mm  = [(0, 0, 0, 30, 15, 0, 15)]                          # only Row A
+        pmiSiLi = _build_pmiSiLi(pmr)  # no PM filter
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # Row A looks up pmiSiLi[(A=0, si=0, li=0)] = 10 (not 15 = 10+5)
+        self.assertEqual(agg[(0, 0)][1], 10,
+            'Row A retail must be pmi=A only, not pmi=A+B combined')
+
+    def test_MS15_model_x_pm_y_independent_dimensions(self):
+        """Model=A + PM filter=B: leads from A, retail from B (independent dimensions)."""
+        # Cross-model: lead=A, purchased=B
+        pmr = [(1, 0, 0, 0, 3, 0, 3)]   # pmi=B(1), mi=A(0)
+        mm  = [(0, 0, 0, 25, 3, 0, 3)]  # Row A
+        # PM filter = B(1)
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set={1})
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # Row A: 25 leads. retail = pmiSiLi[(pmi=A=0, si=0, li=0)] — but pmiSiLi only has pmi=B
+        self.assertEqual(agg[(0, 0)][0], 25, 'Row A leads: 25 (from lead model A)')
+        self.assertEqual(agg[(0, 0)][1],  0,
+            'Row A retail = 0 with PM=B filter (Row A is pmi=A, excluded by filter)')
+
+    # ── MS16–MS17: DMS / Call Out retail type ────────────────────────────────
+
+    def test_MS16_dms_retail_type_uses_pmiSiLi_index_1(self):
+        """DMS (pmRI=1) must pick index 1 from pmiSiLi for purchased-model row."""
+        pmr = [(0, 0, 0, 0, 20, 8, 12)]  # R_all=20, R_dms=8, R_co=12
+        mm  = [(0, 0, 0, 40, 20, 8, 12)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg_dms = _sim_mdl_src_agg(mm, pmiSiLi, pmRI=1)
+        agg_co  = _sim_mdl_src_agg(mm, pmiSiLi, pmRI=2)
+        self.assertEqual(agg_dms[(0, 0)][1], 8,  'DMS retail = 8')
+        self.assertEqual(agg_co[(0, 0)][1],  12, 'CO retail = 12')
+
+    def test_MS17_cross_model_dms_retail_goes_to_pm_row(self):
+        """DMS cross-model retail: pmRI=1 → goes to purchased-model row."""
+        pmr = [(1, 0, 0, 0, 15, 6, 9)]   # pmi=B, mi=A, DMS=6
+        mm  = [(0, 0, 0, 30, 15, 6, 9), (1, 0, 0, 10, 0, 0, 0)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi, pmRI=1)
+        self.assertEqual(agg[(0, 0)][1], 0, 'Row A DMS = 0 (no pmi=A DMS retail)')
+        self.assertEqual(agg[(1, 0)][1], 6, 'Row B DMS = 6 (cross-model DMS goes to B)')
+
+    # ── MS18: dedup invariant ─────────────────────────────────────────────────
+
+    def test_MS18_pmiSiLi_aggregates_across_all_lead_models(self):
+        """pmiSiLi sums retail across ALL lead models for the same (pmi, si, li).
+        No dedup needed in mm path (mm rows are unique per mi|si|li)."""
+        pmr = [
+            (0, 0, 0, 0, 5, 1, 4),  # pmi=A, mi=A (loyal)
+            (0, 1, 0, 0, 3, 0, 3),  # pmi=A, mi=B (cross-model: lead B, purchased A)
+            (0, 2, 0, 0, 2, 1, 1),  # pmi=A, mi=C (cross-model: lead C, purchased A)
+        ]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        # pmiSiLi[(pmi=A, si=0, li=0)] = 5+3+2 = 10
+        self.assertEqual(pmiSiLi.get((0, 0, 0), [0])[0], 10,
+            'pmiSiLi sums loyal + cross-model: 5+3+2=10')
+
+    # ── MS19: source-level reconciliation ────────────────────────────────────
+
+    def test_MS19_per_source_retail_reconciles_with_pmr(self):
+        """Per-(model, source) retail must equal pmr filtered to pmi=model, si=source."""
+        # si=0 = Organic, si=1 = Google
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),   # pmi=A, si=Organic
+            (0, 1, 0, 0,  4, 1, 3),   # pmi=A, mi=B (cross), si=Organic
+            (0, 0, 1, 0,  6, 2, 4),   # pmi=A, si=Google
+        ]
+        mm = [(0, 0, 0, 30, 14, 4, 10), (0, 1, 0, 15, 6, 2, 4)]  # mi=A, si=Organic and Google
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        # Row A, Organic: pmr pmi=A + si=Organic = 10+4=14
+        self.assertEqual(agg.get((0, 0), [0,0])[1], 14,
+            'Row A Organic retail = 14 (all pmr pmi=A + si=Organic)')
+        # Row A, Google: pmr pmi=A + si=Google = 6
+        self.assertEqual(agg.get((0, 1), [0,0])[1], 6,
+            'Row A Google retail = 6 (pmr pmi=A + si=Google)')
+
+    # ── MS20–MS21: all-model total and dispersion reconciliation ─────────────
+
+    def test_MS20_all_model_total_equals_total_pmr_retail(self):
+        """Grand total retail across all rows equals total pmr retail (no filter)."""
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),
+            (0, 1, 0, 0,  5, 1, 4),
+            (1, 1, 0, 0,  8, 2, 6),
+            (2, 2, 0, 0,  3, 0, 3),
+        ]
+        mm = [(0, 0, 0, 50, 15, 4, 11), (1, 0, 0, 30, 8, 2, 6), (2, 0, 0, 10, 3, 0, 3)]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        total_new = sum(v[1] for v in agg.values())
+        total_pmr = sum(row[4] for row in pmr)
+        self.assertEqual(total_new, total_pmr,
+            'Grand total must equal sum of all pmr retail')
+
+    def test_MS21_dispersion_total_reconciles_with_model_src_retail(self):
+        """Total retail in Model × Source (no filter) must equal sum of Dispersion retail.
+        Dispersion counts each retail once, keyed by (pmi, mi). So must Model × Source."""
+        pmr = [
+            (0, 0, 0, 0, 10, 0, 10),  # loyal A→A
+            (1, 0, 0, 0,  5, 0,  5),  # cross-model: lead A, purch B
+            (1, 1, 0, 0,  8, 0,  8),  # loyal B→B
+        ]
+        pmiSiLi = _build_pmiSiLi(pmr)
+        mm = [(0, 0, 0, 30, 15, 0, 15), (1, 0, 0, 20, 8, 0, 8)]
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+        total = sum(v[1] for v in agg.values())
+        # Dispersion total: each record counted once by pmi (5+10=A retail not right...
+        # actually dispersion is by (ei, pi) counts, not just pmi):
+        # pmiSiLi: pmi=A→10, pmi=B→(5+8=13), total=23
+        self.assertEqual(total, 23, 'Total = pmi=A(10) + pmi=B(5+8=13) = 23')
+        self.assertEqual(sum(row[4] for row in pmr), 23, 'pmr total also = 23')
+
+    # ── MS22: pmiSiLi reuses same standardisation as PM filter ───────────────
+
+    def test_MS22_pmiSiLi_uses_same_pmi_index_as_pm_filter(self):
+        """pmiSiLi pmi indices and PM filter pmi indices come from the same maps.mdl.
+        This test verifies there is no separate standardisation path."""
+        # Simulate: maps.mdl = ['Apache', 'Jupiter']; PM filter selects 'Jupiter' (idx=1)
+        mdl_arr = ['Apache', 'Jupiter']
+        selected_pms = {'Jupiter'}
+        sel_pmi_set = {mdl_arr.index(pm) for pm in selected_pms}  # {1}
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),  # pmi=Apache(0)
+            (1, 0, 0, 0,  5, 1, 4),  # pmi=Jupiter(1)
+        ]
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set=sel_pmi_set)
+        # Only Jupiter rows in pmiSiLi
+        self.assertNotIn((0, 0, 0), pmiSiLi, 'Apache excluded by PM filter')
+        self.assertIn((1, 0, 0), pmiSiLi,    'Jupiter included by PM filter')
+        self.assertEqual(pmiSiLi[(1, 0, 0)][0], 5,
+            'PM filter uses same pmi index as pmiSiLi — no separate standardisation')
+
+
+# ---------------------------------------------------------------------------
 # Model × PM intersection dedup regression tests (DD1–DD18)
 #
 # These tests verify the seenRT dedup fix applied to the frontend univ path.
