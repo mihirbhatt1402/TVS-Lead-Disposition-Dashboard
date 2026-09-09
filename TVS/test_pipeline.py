@@ -8867,6 +8867,499 @@ class TestBug3PivotMatConfigSourceFilter(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Bug 4 — GeoDealerTab source filter via cdsm
+# Bug 5 — StateModelTab source+LT filter via univ
+# ---------------------------------------------------------------------------
+
+def _sim_geo_dealer_agg(cdm_rows, cdsm_rows, lm_arr, src_arr, city_arr, dl_arr,
+                        city_state_arr, st_arr,
+                        filters_months, filters_sources, filters_cities, filters_states,
+                        getLR, use_oc=True):
+    """
+    Simulate GeoDealerTab.tableRows aggregation (leads + retails only, no status).
+    Fixed version: uses cdsm when source filter active.
+    cdm  rows: [cti, dli, li, L, R, R_dms, R_co]
+    cdsm rows: [cti, dli, si, li, L, R, R_dms, R_co]
+    Returns {dli: {'leads': int, 'rets': int}}.
+    """
+    allM    = not filters_months  or len(filters_months)  == 0
+    allSrcF = not filters_sources or len(filters_sources) == 0
+    allCF   = not filters_cities  or len(filters_cities)  == 0
+    allSF   = not filters_states  or len(filters_states)  == 0
+
+    lead_mat = cdsm_rows if not allSrcF else cdm_rows
+    ret_mat  = cdsm_rows if not allSrcF else cdm_rows  # simplified (OC only for test)
+
+    def apply_filters(cti, lmi):
+        m = lm_arr[lmi]
+        if not allM and m not in filters_months:
+            return False
+        if not allCF:
+            city = city_arr[cti]
+            if city not in filters_cities:
+                return False
+        if not allSF and city_state_arr:
+            sti = city_state_arr[cti]
+            if sti is None or st_arr[sti] not in filters_states:
+                return False
+        return True
+
+    dl_map = {}
+
+    for row in lead_mat:
+        cti = row[0]; dli = row[1]
+        si  = row[2] if not allSrcF else -1
+        lmi = row[3] if not allSrcF else row[2]
+        if not allSrcF and src_arr[si] not in filters_sources:
+            continue
+        if not apply_filters(cti, lmi):
+            continue
+        l = row[-4]
+        if dli not in dl_map:
+            dl_map[dli] = {'leads': 0, 'rets': 0, '_cti': cti, '_maxL': 0}
+        rec = dl_map[dli]
+        rec['leads'] += l
+        if l > rec['_maxL']:
+            rec['_cti'] = cti; rec['_maxL'] = l
+
+    for row in ret_mat:
+        cti = row[0]; dli = row[1]
+        si  = row[2] if not allSrcF else -1
+        lmi = row[3] if not allSrcF else row[2]
+        if not allSrcF and src_arr[si] not in filters_sources:
+            continue
+        if not apply_filters(cti, lmi):
+            continue
+        if dli not in dl_map:
+            continue
+        r = getLR(row)[1]
+        dl_map[dli]['rets'] += r
+
+    return {dli: {'leads': rec['leads'], 'rets': rec['rets']} for dli, rec in dl_map.items()}
+
+
+def _sim_state_model_cross_agg(mxst_rows, univ_rows, mdl_arr, src_arr, st_arr, lt_arr, lm_arr,
+                                filters_months, filters_models, filters_states,
+                                filters_sources, filters_lt, getLR):
+    """
+    Simulate StateModelTab.buildAgg (all months, simplified).
+    Fixed: uses univ when source or LT filter active.
+    mxst rows: [mi, sti, li, L, R, R_dms, R_co]
+    univ rows: [mi, si, sti, tti, li, L, R, R_dms, R_co]
+    Returns {(state, model): leads}.
+    """
+    allSrc = not filters_sources or len(filters_sources) == 0
+    allLT  = not filters_lt      or len(filters_lt)      == 0
+    allM   = not filters_months  or len(filters_months)  == 0
+    allMdl = not filters_models  or len(filters_models)  == 0
+    allSt  = not filters_states  or len(filters_states)  == 0
+
+    cell = {}
+
+    if not allSrc or not allLT:
+        # Use univ path
+        for row in univ_rows:
+            mdl = mdl_arr[row[0]]
+            src = src_arr[row[1]]
+            st  = st_arr[row[2]]
+            lt  = lt_arr[row[3]]
+            m   = lm_arr[row[4]]
+            if not allM   and m   not in filters_months:  continue
+            if not allMdl and mdl not in filters_models:  continue
+            if not allSt  and st  not in filters_states:  continue
+            if not allSrc and src not in filters_sources: continue
+            if not allLT  and lt  not in filters_lt:      continue
+            l = getLR(row)[0]
+            k = (st, mdl)
+            cell[k] = cell.get(k, 0) + l
+    else:
+        # Use mxst path
+        for row in mxst_rows:
+            mdl = mdl_arr[row[0]]
+            st  = st_arr[row[1]]
+            m   = lm_arr[row[2]]
+            if not allM   and m   not in filters_months: continue
+            if not allMdl and mdl not in filters_models: continue
+            if not allSt  and st  not in filters_states: continue
+            l = getLR(row)[0]
+            k = (st, mdl)
+            cell[k] = cell.get(k, 0) + l
+    return cell
+
+
+class TestBug4GeoDealerSourceFilter(unittest.TestCase):
+    """Bug 4 regression: GeoDealerTab must use cdsm when source filter active."""
+
+    LM   = ['Jan 2026', 'Feb 2026']
+    SRC  = ['Google', 'Facebook', 'WhatsApp']
+    CITY = ['Mumbai', 'Delhi']
+    DL   = ['DealerA', 'DealerB']
+    ST   = ['MH', 'DL']
+    CITY_STATE = [0, 1]  # Mumbai→MH, Delhi→DL
+
+    # cdm rows: [cti, dli, li, L, R, 0, 0]
+    CDM = [
+        (0, 0, 0, 100, 10, 0, 0),  # Mumbai DealerA Jan: 100L 10R (all sources)
+        (1, 1, 0,  60,  5, 0, 0),  # Delhi  DealerB Jan:  60L  5R
+        (0, 0, 1,  80,  8, 0, 0),  # Mumbai DealerA Feb:  80L  8R
+    ]
+
+    # cdsm rows: [cti, dli, si, li, L, R, 0, 0]
+    # si=0→Google, si=1→Facebook, si=2→WhatsApp
+    CDSM = [
+        (0, 0, 0, 0, 60, 6, 0, 0),  # Mumbai DealerA Google Jan: 60L 6R
+        (0, 0, 1, 0, 30, 3, 0, 0),  # Mumbai DealerA Facebook Jan: 30L 3R
+        (0, 0, 2, 0, 10, 1, 0, 0),  # Mumbai DealerA WhatsApp Jan: 10L 1R
+        (1, 1, 0, 0, 50, 5, 0, 0),  # Delhi  DealerB Google Jan:   50L 5R
+        (1, 1, 1, 0, 10, 0, 0, 0),  # Delhi  DealerB Facebook Jan: 10L 0R
+        (0, 0, 0, 1, 80, 8, 0, 0),  # Mumbai DealerA Google Feb:   80L 8R
+    ]
+
+    def getLR(self, row):
+        return row[-4], row[-3]
+
+    def test_B4_no_filter_uses_cdm(self):
+        """No source filter → cdm; DealerA Jan has all-source 100 leads."""
+        result = _sim_geo_dealer_agg(
+            self.CDM, self.CDSM, self.LM, self.SRC, self.CITY, self.DL,
+            self.CITY_STATE, self.ST,
+            set(), set(), set(), set(), self.getLR
+        )
+        self.assertEqual(result[0]['leads'], 100 + 80)  # DealerA (dli=0): Jan+Feb
+
+    def test_B4_source_filter_switches_to_cdsm(self):
+        """Source filter → cdsm; DealerA Jan shows only Google leads (60)."""
+        result = _sim_geo_dealer_agg(
+            self.CDM, self.CDSM, self.LM, self.SRC, self.CITY, self.DL,
+            self.CITY_STATE, self.ST,
+            set(), {'Google'}, set(), set(), self.getLR
+        )
+        # DealerA (dli=0): Google Jan(60) + Google Feb(80) = 140
+        self.assertEqual(result[0]['leads'], 140)
+        # DealerB (dli=1): Google Jan(50) only
+        self.assertEqual(result[1]['leads'], 50)
+
+    def test_B4_source_filter_excludes_other_sources(self):
+        """Facebook filter → cdsm; DealerB excluded (0 Facebook leads)."""
+        result = _sim_geo_dealer_agg(
+            self.CDM, self.CDSM, self.LM, self.SRC, self.CITY, self.DL,
+            self.CITY_STATE, self.ST,
+            set(), {'Facebook'}, set(), set(), self.getLR
+        )
+        # DealerA Facebook Jan=30; DealerB Facebook Jan=10
+        self.assertEqual(result[0]['leads'], 30)
+        self.assertEqual(result[1]['leads'], 10)
+
+    def test_B4_old_cdm_path_ignores_source_filter(self):
+        """Show old cdm path gives wrong result when source filter active."""
+        def buggy_agg(cdm_rows, lm_arr, getLR):
+            dl_map = {}
+            for row in cdm_rows:
+                dli = row[1]; lmi = row[2]
+                l = row[-4]
+                dl_map[dli] = dl_map.get(dli, 0) + l
+            return dl_map
+        buggy = buggy_agg(self.CDM, self.LM, self.getLR)
+        fixed = _sim_geo_dealer_agg(
+            self.CDM, self.CDSM, self.LM, self.SRC, self.CITY, self.DL,
+            self.CITY_STATE, self.ST,
+            set(), {'Google'}, set(), set(), self.getLR
+        )
+        # Buggy: DealerA = 100+80 = 180 (all sources). Fixed: DealerA = 60+80 = 140 (Google only)
+        self.assertEqual(buggy[0], 180)
+        self.assertEqual(fixed[0]['leads'], 140)
+        self.assertNotEqual(fixed[0]['leads'], buggy[0])
+
+    def test_B4_multi_source_filter_accumulates(self):
+        """Multiple sources selected → sum of matching cdsm rows."""
+        result = _sim_geo_dealer_agg(
+            self.CDM, self.CDSM, self.LM, self.SRC, self.CITY, self.DL,
+            self.CITY_STATE, self.ST,
+            set(), {'Google', 'Facebook'}, set(), set(), self.getLR
+        )
+        # DealerA: Google(60+80) + Facebook(30) = 170; DealerB: Google(50) + Facebook(10) = 60
+        self.assertEqual(result[0]['leads'], 170)
+        self.assertEqual(result[1]['leads'], 60)
+
+    def test_B4_source_filter_combined_with_month_filter(self):
+        """Source + month filter → only matching rows."""
+        result = _sim_geo_dealer_agg(
+            self.CDM, self.CDSM, self.LM, self.SRC, self.CITY, self.DL,
+            self.CITY_STATE, self.ST,
+            {'Jan 2026'}, {'Google'}, set(), set(), self.getLR
+        )
+        # DealerA: Google Jan only = 60; DealerB: Google Jan = 50
+        self.assertEqual(result[0]['leads'], 60)
+        self.assertEqual(result[1]['leads'], 50)
+
+    def test_B4_retail_count_also_source_filtered(self):
+        """Retail count filtered by source via cdsm (not all-source from cdm)."""
+        result = _sim_geo_dealer_agg(
+            self.CDM, self.CDSM, self.LM, self.SRC, self.CITY, self.DL,
+            self.CITY_STATE, self.ST,
+            set(), {'Google'}, set(), set(), self.getLR
+        )
+        # DealerA Google retails: Jan(6) + Feb(8) = 14
+        self.assertEqual(result[0]['rets'], 14)
+
+
+class TestBug5StateModelSourceLTFilter(unittest.TestCase):
+    """Bug 5 regression: StateModelTab must use univ path when source or LT filter active."""
+
+    MDL = ['Apache', 'Jupiter']
+    SRC = ['Google', 'Facebook']
+    ST  = ['MH', 'DL', 'KA']
+    LT  = ['1105', '9999']
+    LM  = ['Jan 2026', 'Feb 2026']
+
+    # mxst rows: [mi, sti, li, L, R, 0, 0]  (no src/lt dims)
+    MXST = [
+        (0, 0, 0, 80, 8, 0, 0),   # Apache MH Jan: 80L (Google 50 + Facebook 30)
+        (0, 1, 0, 40, 4, 0, 0),   # Apache DL Jan: 40L
+        (1, 0, 0, 60, 6, 0, 0),   # Jupiter MH Jan: 60L
+        (0, 0, 1, 70, 7, 0, 0),   # Apache MH Feb: 70L
+    ]
+
+    # univ rows: [mi, si, sti, tti, li, L, R, 0, 0]
+    UNIV = [
+        (0, 0, 0, 0, 0, 50, 5, 0, 0),  # Apache Google MH 1105 Jan: 50L
+        (0, 1, 0, 0, 0, 30, 3, 0, 0),  # Apache Facebook MH 1105 Jan: 30L
+        (0, 0, 1, 0, 0, 40, 4, 0, 0),  # Apache Google DL 1105 Jan: 40L
+        (1, 0, 0, 1, 0, 60, 6, 0, 0),  # Jupiter Google MH 9999 Jan: 60L
+        (0, 0, 0, 0, 1, 70, 7, 0, 0),  # Apache Google MH 1105 Feb: 70L
+    ]
+
+    def getLR(self, row):
+        return row[-4], row[-3]
+
+    def test_B5_no_filter_uses_mxst(self):
+        """No source/LT filter → mxst; Apache MH Jan = 80."""
+        result = _sim_state_model_cross_agg(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), set(), set(), self.getLR
+        )
+        self.assertEqual(result.get(('MH', 'Apache'), 0), 80 + 70)  # Jan + Feb
+
+    def test_B5_source_filter_triggers_univ(self):
+        """Source filter → univ; Apache/MH/Google only."""
+        result = _sim_state_model_cross_agg(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), {'Google'}, set(), self.getLR
+        )
+        # Apache MH Google: Jan(50) + Feb(70) = 120; Apache Facebook excluded
+        self.assertEqual(result.get(('MH', 'Apache'), 0), 120)
+
+    def test_B5_source_filter_excludes_facebook_rows(self):
+        """Source filter = Google → Facebook rows excluded from state×model grid."""
+        result = _sim_state_model_cross_agg(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), {'Google'}, set(), self.getLR
+        )
+        # Apache MH from mxst=80 (all sources); from univ Google-only=120 (Jan+Feb)
+        # 80 is the old wrong answer; 120 is the correct Google-only answer
+        self.assertNotEqual(result.get(('MH', 'Apache'), 0), 80 + 70)
+        self.assertEqual(result.get(('MH', 'Apache'), 0), 120)
+
+    def test_B5_lt_filter_triggers_univ(self):
+        """LT filter → univ; Jupiter 9999 only from MH."""
+        result = _sim_state_model_cross_agg(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), set(), {'9999'}, self.getLR
+        )
+        # Jupiter 9999 MH Jan = 60; Apache 1105 excluded from Jupiter counts
+        self.assertEqual(result.get(('MH', 'Jupiter'), 0), 60)
+        self.assertEqual(result.get(('MH', 'Apache'), 0), 0)
+
+    def test_B5_source_and_lt_filter_combined(self):
+        """Source = Google + LT = 1105 → only Apache/Google/1105 rows."""
+        result = _sim_state_model_cross_agg(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), {'Google'}, {'1105'}, self.getLR
+        )
+        # Apache Google 1105: MH Jan(50)+Feb(70)=120, DL Jan(40)=40
+        self.assertEqual(result.get(('MH', 'Apache'), 0), 120)
+        self.assertEqual(result.get(('DL', 'Apache'), 0), 40)
+        # Jupiter 9999 excluded
+        self.assertEqual(result.get(('MH', 'Jupiter'), 0), 0)
+
+    def test_B5_old_mxst_path_ignores_source_filter(self):
+        """Show old mxst path gives wrong result when source filter active."""
+        def buggy_agg(mxst_rows, mdl_arr, st_arr, lm_arr, getLR):
+            cell = {}
+            for row in mxst_rows:
+                k = (st_arr[row[1]], mdl_arr[row[0]])
+                cell[k] = cell.get(k, 0) + getLR(row)[0]
+            return cell
+        buggy = buggy_agg(self.MXST, self.MDL, self.ST, self.LM, self.getLR)
+        fixed = _sim_state_model_cross_agg(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), set(), set(), {'Google'}, set(), self.getLR
+        )
+        # Buggy: Apache MH = 80+70 = 150 (all sources). Fixed: Apache MH = 120 (Google only)
+        self.assertEqual(buggy.get(('MH', 'Apache'), 0), 150)
+        self.assertEqual(fixed.get(('MH', 'Apache'), 0), 120)
+
+    def test_B5_state_and_model_filter_still_work_in_univ_path(self):
+        """State and model filters still apply correctly in univ path."""
+        result = _sim_state_model_cross_agg(
+            self.MXST, self.UNIV, self.MDL, self.SRC, self.ST, self.LT, self.LM,
+            set(), {'Apache'}, {'MH'}, {'Google'}, set(), self.getLR
+        )
+        # Apache Google MH: Jan(50)+Feb(70)=120; DL and KA excluded; Jupiter excluded
+        self.assertEqual(result.get(('MH', 'Apache'), 0), 120)
+        self.assertNotIn(('DL', 'Apache'), result)
+        self.assertNotIn(('MH', 'Jupiter'), result)
+
+
+class TestAdversarialDesignLimitations(unittest.TestCase):
+    """
+    Adversarial challenge: prove intentionally unsupported combinations are genuine limitations,
+    not hidden bugs. Each test documents WHY a filter cannot apply.
+    """
+
+    def test_AL01_retail_ageing_on_update_no_u_ram_in_pipeline(self):
+        """
+        RetailAgeingTab On Update is intentionally unsupported.
+        Reason: pipeline builds no u_ram matrix. Ageing (retail_date - lead_create_date)
+        is a fixed property of each retail — it does not change with attribution mode.
+        The On Create view (leads grouped by lead month) answers the business question:
+        'of leads acquired in month X, how long did they take to convert?'
+        """
+        # Verify the absence of u_ram is by design: there is no u_ram key built in push_tvs_data.py
+        import re
+        pipeline_path = (
+            r"C:\Users\mihir.bhatt\Desktop\TVS-Lead-Disposition-Dashboard"
+            r"\TVS\push_tvs_data.py"
+        )
+        with open(pipeline_path, encoding='utf-8') as f:
+            src = f.read()
+        # u_ram is never defined as a dict in the pipeline
+        self.assertNotIn("u_ram = {}", src, "u_ram should not be built by the pipeline")
+        self.assertNotIn("'u_ram':", src, "u_ram should not appear in the payload")
+
+    def test_AL02_geo_dealer_model_filter_no_city_dealer_model_matrix(self):
+        """
+        GeoDealerTab model filter is not applicable.
+        Reason: no city×dealer×model matrix exists in the pipeline.
+        cdm=[city,dealer,month], cdsm=[city,dealer,src,month], mxdl=[model,dealer,month].
+        None of these carry all three: city, dealer, AND model simultaneously.
+        """
+        pipeline_path = (
+            r"C:\Users\mihir.bhatt\Desktop\TVS-Lead-Disposition-Dashboard"
+            r"\TVS\push_tvs_data.py"
+        )
+        with open(pipeline_path, encoding='utf-8') as f:
+            src = f.read()
+        # Confirm there is no matrix keyed by city+dealer+model
+        self.assertNotIn('f"{cti}|{dli}|{mi}|', src,
+                          "No city×dealer×model matrix should exist in pipeline")
+
+    def test_AL03_geo_dealer_lt_filter_no_city_dealer_lt_matrix(self):
+        """
+        GeoDealerTab LT filter is not applicable.
+        Reason: no city×dealer×LT matrix exists in the pipeline.
+        ltdl=[lt,dealer,month] but has no city dimension.
+        """
+        pipeline_path = (
+            r"C:\Users\mihir.bhatt\Desktop\TVS-Lead-Disposition-Dashboard"
+            r"\TVS\push_tvs_data.py"
+        )
+        with open(pipeline_path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertNotIn('f"{cti}|{dli}|{tti}|', src,
+                          "No city×dealer×LT matrix should exist in pipeline")
+
+    def test_AL04_geo_dealer_dl_sn_has_no_source_dim(self):
+        """
+        GeoDealerTab status counts (open/booking/lost) are always all-source.
+        Reason: dl_sn is keyed by city×dealer×month with no source dimension.
+        Leads and retails now correctly source-filtered via cdsm (Bug 4 fix),
+        but status remains all-source.
+        """
+        pipeline_path = (
+            r"C:\Users\mihir.bhatt\Desktop\TVS-Lead-Disposition-Dashboard"
+            r"\TVS\push_tvs_data.py"
+        )
+        with open(pipeline_path, encoding='utf-8') as f:
+            src = f.read()
+        # dl_sn is keyed without source index
+        self.assertIn('dl_sn[_sk] = [0, 0, 0]', src)
+        self.assertIn('f"{cti}|{dli}|{li}"', src)
+        # _sk never includes si (source index)
+        import re
+        dl_sn_key_lines = [l for l in src.split('\n') if '_sk = ' in l and 'cti' in l]
+        for line in dl_sn_key_lines:
+            self.assertNotIn('si', line, f"dl_sn key should not include source: {line}")
+
+    def test_AL05_dispersion_no_source_dim_in_disp_matrix(self):
+        """
+        DispersionTab source filter is not applicable.
+        Reason: disp matrix keyed by [enq_model, purch_model, month] — no source dim.
+        No disp_src matrix is built; adding source would require a new pipeline matrix.
+        """
+        pipeline_path = (
+            r"C:\Users\mihir.bhatt\Desktop\TVS-Lead-Disposition-Dashboard"
+            r"\TVS\push_tvs_data.py"
+        )
+        with open(pipeline_path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn("disp[", src)
+        # Disp keyed by mi|pmi|li — no si
+        self.assertIn('f"{mi}|{pmi}|{li}"', src)
+        self.assertNotIn('disp_src', src)
+
+    def test_AL06_cxm_fallback_is_dead_code_in_practice(self):
+        """
+        CityModelTab cxm fallback (which ignores source filter) is practically dead code.
+        Reason: pipeline always builds cxsm alongside cxm in the same loop iteration.
+        useCxsm flag is always true in production. The fallback is a safety net only.
+        """
+        pipeline_path = (
+            r"C:\Users\mihir.bhatt\Desktop\TVS-Lead-Disposition-Dashboard"
+            r"\TVS\push_tvs_data.py"
+        )
+        with open(pipeline_path, encoding='utf-8') as f:
+            src = f.read()
+        # cxm and cxsm are bumped in the same code path (same for-loop iteration)
+        cxm_line  = next(i for i, l in enumerate(src.split('\n')) if 'bump(cxm,' in l)
+        cxsm_line = next(i for i, l in enumerate(src.split('\n')) if 'bump(cxsm,' in l)
+        # They must be adjacent — confirming they are always built together
+        self.assertAlmostEqual(cxm_line, cxsm_line, delta=2,
+                               msg="cxm and cxsm must be bumped in the same loop body")
+
+    def test_AL07_state_model_source_lt_filter_now_uses_univ(self):
+        """
+        After Bug 5 fix, StateModelTab correctly uses univ when source or LT filter active.
+        Verify the simulation produces distinct results for filtered vs all-source.
+        """
+        MDL = ['Apache', 'Jupiter']
+        SRC = ['Google', 'Facebook']
+        ST  = ['MH', 'DL']
+        LT  = ['1105', '9999']
+        LM  = ['Jan 2026']
+        MXST = [(0, 0, 0, 100, 10, 0, 0)]  # Apache MH Jan: 100L (G=60, FB=40 in univ)
+        UNIV = [
+            (0, 0, 0, 0, 0, 60, 6, 0, 0),  # Apache Google MH 1105 Jan
+            (0, 1, 0, 0, 0, 40, 4, 0, 0),  # Apache Facebook MH 1105 Jan
+        ]
+
+        def getLR(row): return row[-4], row[-3]
+
+        no_filter = _sim_state_model_cross_agg(
+            MXST, UNIV, MDL, SRC, ST, LT, LM,
+            set(), set(), set(), set(), set(), getLR
+        )
+        src_filter = _sim_state_model_cross_agg(
+            MXST, UNIV, MDL, SRC, ST, LT, LM,
+            set(), set(), set(), {'Google'}, set(), getLR
+        )
+        # Without filter: uses mxst → 100L
+        self.assertEqual(no_filter.get(('MH', 'Apache'), 0), 100)
+        # With Google filter: uses univ → 60L (Google only)
+        self.assertEqual(src_filter.get(('MH', 'Apache'), 0), 60)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':

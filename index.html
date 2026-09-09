@@ -2786,16 +2786,35 @@ const CitySourceTab = React.memo(function CitySourceTab({ data, filters, months,
 const StateModelTab = React.memo(function StateModelTab({ data, filters, months, RT, viewerMode }) {
   const { maps } = data;
   const mxst = data.mxst || [];
+  const univ = data.univ || [];
   const getLR = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
 
-  // mxst format: [mdl_idx, st_idx, lm_idx, L, R_all, R_dms, R_co]
-  // rows = states, cols = models
+  // mxst format: [mdl_idx, st_idx, lm_idx, L, R_all, R_dms, R_co]  — no src/lt dims
+  // univ format: [mi, si, sti, tti, li, L, R_all, R_dms, R_co]      — all 5 dims
+  // When source or leadType filter is active, mxst cannot honour it → use univ instead.
   const buildAgg = useCallback((monthSet) => {
+    const allSrc = !filters.sources   || filters.sources.size   === 0;
+    const allLT  = !filters.leadTypes || filters.leadTypes.size === 0;
+    if (!allSrc || !allLT) {
+      // Pre-filter univ by source and/or LT, then aggregate as State × Model cross-tab.
+      // univ row positions: mi=0, si=1, sti=2, tti=3, li=4; L/R at row.length-4 / row.length-ri.
+      // Summing over tti for fixed (mi,si,sti,li) gives correct total leads — no seenRT dedup
+      // needed here because we are aggregating leads (not doing a pmr retail lookup).
+      const filtered = univ.filter(row => {
+        if (!allSrc && !filters.sources.has(maps.src[row[1]]))    return false;
+        if (!allLT  && !filters.leadTypes.has(maps.lt[row[3]]))  return false;
+        return true;
+      });
+      return buildCrossAgg(
+        filtered, maps, 'st', 'mdl', 'lm', 2, 0, 4, monthSet,
+        filters.states, filters.models, getLR, data.rt_cols
+      );
+    }
     return buildCrossAgg(
       mxst, maps, 'st', 'mdl', 'lm', 1, 0, 2, monthSet,
       filters.states, filters.models, getLR, data.rt_cols
     );
-  }, [mxst, maps, filters, getLR, data.rt_cols]);
+  }, [mxst, univ, maps, filters, getLR, data.rt_cols]);
 
   const summaryAgg = useMemo(() => {
     const a=buildAgg(new Set(months)); return a.grand.l>0?a:null;
@@ -2919,6 +2938,8 @@ const GeoDealerTab = React.memo(function GeoDealerTab({ data, filters, months, R
   const { maps } = data;
   const cdm      = data.cdm    || [];
   const u_cdm    = data.u_cdm  || [];
+  const cdsm     = data.cdsm   || [];  // city × dealer × src × month (source-filterable)
+  const u_cdsm   = data.u_cdsm || [];
   const dl_sn    = data.dl_sn  || [];
   const getLR    = useMemo(() => makeLR(data.rt_cols, RT), [data.rt_cols, RT]);
 
@@ -2938,14 +2959,20 @@ const GeoDealerTab = React.memo(function GeoDealerTab({ data, filters, months, R
     if (!hasDealers || !hasCities) return [];
 
     const cityStateArr = maps.city_state || [];
-    const allM  = monthSet.size === 0;
-    const hasCF = filters.cities  && filters.cities.size  > 0;
-    const hasSF = filters.states  && filters.states.size  > 0;
+    const allM   = monthSet.size === 0;
+    const hasCF  = filters.cities  && filters.cities.size  > 0;
+    const hasSF  = filters.states  && filters.states.size  > 0;
+    const hasSrcF = filters.sources && filters.sources.size > 0;
 
-    // Use leadsMode to pick the right matrix for retail attribution
-    const retMat = leadsMode === 'update' ? u_cdm : cdm;
+    // cdm  row: [cti, dli, li,     L, R, R_dms, R_co]  (7 elements)
+    // cdsm row: [cti, dli, si, li, L, R, R_dms, R_co]  (8 elements)
+    // When source filter active use cdsm (has src dim); otherwise cdm.
+    const leadMat  = hasSrcF ? cdsm   : cdm;
+    const retMat   = hasSrcF
+      ? (leadsMode === 'update' ? u_cdsm : cdsm)
+      : (leadsMode === 'update' ? u_cdm  : cdm);
 
-    // Step 1 — aggregate leads (always On Create = cdm) and retails from retMat
+    // Step 1 — aggregate leads and retails
     const dlMap = new Map(); // dli → { cti, leads, rets, open, booking, lost }
 
     function applyFilters(cti, lmi) {
@@ -2962,27 +2989,34 @@ const GeoDealerTab = React.memo(function GeoDealerTab({ data, filters, months, R
       return true;
     }
 
-    // Count leads from cdm (On Create — leads don't change with leadsMode)
-    for (const row of cdm) {
-      const cti = row[0], dli = row[1], lmi = row[2];
+    // Count leads (On Create — leads don't change with leadsMode)
+    for (const row of leadMat) {
+      // cdsm: [cti, dli, si, li, ...]; cdm: [cti, dli, li, ...]
+      const cti = row[0], dli = row[1];
+      const si  = hasSrcF ? row[2] : -1;
+      const lmi = hasSrcF ? row[3] : row[2];
+      if (hasSrcF && !filters.sources.has(maps.src[si])) continue;
       if (!applyFilters(cti, lmi)) continue;
-      const l = row[row.length - 4];  // lead count is always 4th from end
+      const l = row[row.length - 4];
       if (!dlMap.has(dli)) dlMap.set(dli, { cti, leads:0, rets:0, open:0, booking:0, lost:0 });
       const rec = dlMap.get(dli);
       rec.leads += l;
       if (l > (rec._maxL || 0)) { rec.cti = cti; rec._maxL = l; }
     }
 
-    // Count retails from retMat (honours leadsMode)
+    // Count retails from retMat (honours leadsMode + source filter)
     for (const row of retMat) {
-      const cti = row[0], dli = row[1], lmi = row[2];
+      const cti = row[0], dli = row[1];
+      const si  = hasSrcF ? row[2] : -1;
+      const lmi = hasSrcF ? row[3] : row[2];
+      if (hasSrcF && !filters.sources.has(maps.src[si])) continue;
       if (!applyFilters(cti, lmi)) continue;
       if (!dlMap.has(dli)) continue;
       const [, r] = getLR(row);
       dlMap.get(dli).rets += r;
     }
 
-    // Step 2 — aggregate status (only available after pipeline includes dl_sn)
+    // Step 2 — aggregate status (dl_sn has no source dim — always all-source)
     if (hasStatus) {
       for (const row of dl_sn) {
         const cti = row[0], dli = row[1], lmi = row[2];
@@ -3015,7 +3049,7 @@ const GeoDealerTab = React.memo(function GeoDealerTab({ data, filters, months, R
                  cityShare, convPct, open: rec.open, booking: rec.booking, lost: rec.lost });
     }
     return out;
-  }, [cdm, u_cdm, dl_sn, maps, monthSet, filters, getLR, leadsMode, hasDealers, hasCities, hasStatus]);
+  }, [cdm, u_cdm, cdsm, u_cdsm, dl_sn, maps, monthSet, filters, getLR, leadsMode, hasDealers, hasCities, hasStatus]);
 
   // ── Filter (search) + sort ─────────────────────────────────────────────────
   const displayRows = useMemo(() => {
