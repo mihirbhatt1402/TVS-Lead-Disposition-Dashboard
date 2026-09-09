@@ -6447,12 +6447,34 @@ class TestPurchasedModelFilter(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def _build_pmiSiLi(pmr_rows, sel_pmi_set=None):
-    """Build pmiSiLi: retail keyed by (pmi, si, li) — purchased-model dimension.
+    """Build pmiSiLi (OLD / cross-model-inclusive): keyed by (pmi, si, li).
+    Includes ALL rows regardless of whether pmi==mi (cross-model included).
+    Used to simulate and document the OLD (now incorrect) behavior.
     pmr_rows: list of (pmi, mi, si, li, R, Rd, Rc).
     sel_pmi_set: set of pmi values to include (None = all)."""
     m = {}
     for row in pmr_rows:
         pmi, mi, si, li, R, Rd, Rc = row
+        if sel_pmi_set is not None and pmi not in sel_pmi_set:
+            continue
+        k = (pmi, si, li)
+        if k not in m: m[k] = [0, 0, 0]
+        m[k][0] += R; m[k][1] += Rd; m[k][2] += Rc
+    return m
+
+
+def _build_pmiSiLi_loyal(pmr_rows, sel_pmi_set=None):
+    """Build pmiSiLi (NEW / loyal-only): keyed by (pmi, si, li).
+    Only includes rows where pmi == mi (loyal purchases: same lead and purchased model).
+    Cross-model records (lead!=pm) are excluded — row X shows only pm=X AND lead=X retail.
+    This is the CURRENT production implementation in ModelSourceTab.
+    pmr_rows: list of (pmi, mi, si, li, R, Rd, Rc).
+    sel_pmi_set: set of pmi values to include (None = all)."""
+    m = {}
+    for row in pmr_rows:
+        pmi, mi, si, li, R, Rd, Rc = row
+        if pmi != mi:   # loyal only: pmi must equal mi
+            continue
         if sel_pmi_set is not None and pmi not in sel_pmi_set:
             continue
         k = (pmi, si, li)
@@ -7373,12 +7395,14 @@ class TestModelSourceRetailCanonical(unittest.TestCase):
     # ── MS28: cross-model in mm path → retail goes to PM row ─────────────────
 
     def test_MS28_cross_model_mm_path_retail_goes_to_pm_row(self):
-        """No model filter (mm path): Lead=A, PM=B → retail in Row B, not Row A."""
+        """No model filter (mm path): Lead=A, PM=B → row A retail=0, row B retail=loyal B.
+        Cross-model (lead=A, pm=B) is excluded because pmiSiLi only includes loyal rows
+        (pmi=mi). Row B's retail is its own loyal purchases."""
         pmr = [
-            (1, 0, 0, 0, 10, 2, 8),    # pmi=B, mi=A — cross-model
-            (1, 1, 0, 0,  5, 1, 4),    # pmi=B, mi=B — loyal B
+            (1, 0, 0, 0, 10, 2, 8),    # pmi=B, mi=A — cross-model (excluded: pmi!=mi)
+            (1, 1, 0, 0,  5, 1, 4),    # pmi=B, mi=B — loyal B (included)
         ]
-        pmiSiLi = _build_pmiSiLi(pmr)   # no PM filter
+        pmiSiLi = _build_pmiSiLi_loyal(pmr)   # no PM filter, loyal-only
 
         mm = [
             (0, 0, 0, 40, 0, 0, 0),    # mi=A, si=0, li=0
@@ -7386,10 +7410,10 @@ class TestModelSourceRetailCanonical(unittest.TestCase):
         ]
         agg = _sim_mdl_src_agg(mm, pmiSiLi)
 
-        # Row A: pmiSiLi[(A=0, si=0, li=0)] = 0 (no record with pmi=A)
-        # Row B: pmiSiLi[(B=1, si=0, li=0)] = 10+5 = 15 (cross-model + loyal)
+        # Row A: pmiSiLi[(A=0, si=0, li=0)] = 0 (no loyal pm=A record)
+        # Row B: pmiSiLi[(B=1, si=0, li=0)] = 5 (loyal B only; cross-model excluded)
         self.assertEqual(agg[(0, 0)][1],  0, 'Row A: no retail where PM=A')
-        self.assertEqual(agg[(1, 0)][1], 15, 'Row B: 10 cross-model + 5 loyal = 15')
+        self.assertEqual(agg[(1, 0)][1],  5, 'Row B: 5 loyal (cross-model excluded from loyal-only map)')
 
     # ── MS29: source-level retail reconciliation ─────────────────────────────
 
@@ -7472,6 +7496,251 @@ class TestModelSourceRetailCanonical(unittest.TestCase):
         self.assertEqual(retail_total, 99,
                          f'Retail = 99 (counted once); got {retail_total}')
         self.assertEqual(fixed[(0, 0)][0], 10 * 8, 'Leads = 80 (all L values summed)')
+
+
+class TestModelSourceLoyalOnlyRetail(unittest.TestCase):
+    """MS33–MS44: loyal-only pmiSiLi fix — PM=All must give same row retail as PM=row-model.
+
+    Root cause of the 111-vs-87 regression: pmiSiLi aggregated ALL pmr rows for a
+    given pmi, including cross-model rows (pmi≠mi). Fix: only include rows where pmi==mi
+    (loyal). Now PM=All and PM=row-model give identical results for a row's own retail.
+    """
+
+    # ── MS33: PM=All uses loyal pmiSiLi — cross-model rows excluded ──────────
+
+    def test_MS33_pm_all_loyal_only_excludes_cross_model(self):
+        """PM=All: pmiSiLi_loyal excludes cross-model rows so row A shows only loyal retail."""
+        pmr = [
+            (0, 0, 0, 0, 50, 5, 45),    # loyal A: pmi=A, mi=A
+            (0, 1, 0, 0, 20, 2, 18),    # cross:   pmi=A, mi=B (excluded by loyal filter)
+            (1, 1, 0, 0, 30, 3, 27),    # loyal B: pmi=B, mi=B
+        ]
+        # PM=All → selPmiSet=None
+        loyal_map = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)
+        mm = [
+            (0, 0, 0, 100, 0, 0, 0),    # mi=A
+            (1, 0, 0,  80, 0, 0, 0),    # mi=B
+        ]
+        agg = _sim_mdl_src_agg(mm, loyal_map)
+        self.assertEqual(agg[(0, 0)][1], 50, 'Row A retail = loyal A only (cross excluded)')
+        self.assertEqual(agg[(1, 0)][1], 30, 'Row B retail = loyal B only')
+
+    # ── MS34: PM=All and PM=row-model give identical retail ──────────────────
+
+    def test_MS34_pm_all_matches_pm_same_model(self):
+        """Row A retail is identical whether PM filter = All or PM = A.
+        mm has one row per source so _sim_mdl_src_agg sums across (mi=A, si=0..3)."""
+        pmr = [
+            (0, 0, 0, 0, 39, 3, 36),    # loyal A, si=0 Organic
+            (0, 0, 1, 0, 21, 2, 19),    # loyal A, si=1 Facebook
+            (0, 0, 2, 0, 26, 4, 22),    # loyal A, si=2 WhatsApp
+            (0, 0, 3, 0,  1, 0,  1),    # loyal A, si=3 NonCPS → total loyal A = 87
+            (0, 1, 0, 0, 10, 1,  9),    # cross:   pmi=A, mi=B (excluded loyal-filter)
+            (1, 0, 0, 0, 15, 2, 13),    # cross:   pmi=B, mi=A (excluded loyal-filter)
+        ]
+        # mm needs one row per (mi, si) so each (mi=A, si=k) lookup resolves
+        mm = [
+            (0, 0, 0, 200, 0, 0, 0),   # mi=A, si=0
+            (0, 1, 0, 100, 0, 0, 0),   # mi=A, si=1
+            (0, 2, 0,  80, 0, 0, 0),   # mi=A, si=2
+            (0, 3, 0,  10, 0, 0, 0),   # mi=A, si=3
+        ]
+
+        loyal_all  = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)   # PM = All
+        loyal_selA = _build_pmiSiLi_loyal(pmr, sel_pmi_set={0})    # PM = A
+
+        agg_all  = _sim_mdl_src_agg(mm, loyal_all)
+        agg_selA = _sim_mdl_src_agg(mm, loyal_selA)
+
+        total_all  = sum(v[1] for k, v in agg_all.items()  if k[0] == 0)
+        total_selA = sum(v[1] for k, v in agg_selA.items() if k[0] == 0)
+        self.assertEqual(total_all,  87, 'PM=All  → total row A retail = 87')
+        self.assertEqual(total_selA, 87, 'PM=A    → total row A retail = 87')
+        self.assertEqual(total_all, total_selA, 'PM=All and PM=A must agree')
+
+    # ── MS35: PM=same-model gives loyal retail ───────────────────────────────
+
+    def test_MS35_pm_same_model_gives_loyal_retail(self):
+        """PM=A filter restricts to pmi=A loyal rows only; result = loyal A retail."""
+        pmr = [
+            (0, 0, 0, 0, 87, 10, 77),   # loyal A: R_all=87
+            (0, 1, 0, 0, 30,  3, 27),   # cross:   pmi=A, mi=B
+            (1, 1, 0, 0, 50,  5, 45),   # loyal B
+        ]
+        loyal_selA = _build_pmiSiLi_loyal(pmr, sel_pmi_set={0})
+        mm = [(0, 0, 0, 100, 0, 0, 0)]
+        agg = _sim_mdl_src_agg(mm, loyal_selA)
+        self.assertEqual(agg[(0, 0)][1], 87, 'PM=A → row A retail = 87 (loyal A row)')
+
+    # ── MS36: PM=other-model gives zero retail for row A ─────────────────────
+
+    def test_MS36_pm_other_model_gives_zero_retail(self):
+        """PM=B filter: row A retail = 0 (no loyal A rows pass pmi=B filter)."""
+        pmr = [
+            (0, 0, 0, 0, 87, 10, 77),   # loyal A
+            (1, 1, 0, 0, 50,  5, 45),   # loyal B
+            (1, 0, 0, 0, 20,  2, 18),   # cross: pmi=B, mi=A
+        ]
+        loyal_selB = _build_pmiSiLi_loyal(pmr, sel_pmi_set={1})
+        mm = [
+            (0, 0, 0, 100, 0, 0, 0),    # mi=A
+            (1, 0, 0,  80, 0, 0, 0),    # mi=B
+        ]
+        agg = _sim_mdl_src_agg(mm, loyal_selB)
+        self.assertEqual(agg[(0, 0)][1],  0, 'Row A retail = 0 (PM=B, no loyal A passes)')
+        self.assertEqual(agg[(1, 0)][1], 50, 'Row B retail = 50 (loyal B passes PM=B)')
+
+    # ── MS37: Model filter + PM=All → correct retail in univ path ────────────
+
+    def test_MS37_model_filter_pm_all_univ_path(self):
+        """Model filter active (univ path) + PM=All: row retail = loyal row-model only."""
+        pmr = [
+            (0, 0, 0, 0, 87, 10, 77),   # loyal A
+            (0, 1, 0, 0, 24,  2, 22),   # cross: pmi=A, mi=B (excluded)
+        ]
+        loyal_all = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)
+        # univ rows for mi=A (model filter active); multiple sti/tti combos
+        univ = [
+            (0, 0, 0, 0, 0, 50, 87, 10, 77),   # mi=A, si=0, sti=0, tti=0, li=0, L=50
+            (0, 0, 1, 0, 0, 30, 87, 10, 77),   # mi=A, si=0, sti=1, tti=0, li=0 — same RT key
+        ]
+        agg = _sim_univ_agg_fixed(univ, pmiSiLi=loyal_all, filt_mi={0})
+        self.assertEqual(agg[(0, 0)][1], 87,
+                         'Univ path + PM=All: retail = loyal A = 87 (deduped)')
+        self.assertEqual(agg[(0, 0)][0], 80,
+                         'Leads = 50+30 = 80 (all univ L values summed)')
+
+    # ── MS38: Model=All + PM=selected → mm path with restricted pmiSiLi ──────
+
+    def test_MS38_model_all_pm_selected_mm_path(self):
+        """No model filter (mm path) + PM=A: row A=loyal-A, row B=0."""
+        pmr = [
+            (0, 0, 0, 0, 87, 10, 77),   # loyal A
+            (1, 1, 0, 0, 50,  5, 45),   # loyal B
+            (0, 1, 0, 0, 20,  2, 18),   # cross: pmi=A, mi=B (excluded loyal-filter)
+        ]
+        loyal_selA = _build_pmiSiLi_loyal(pmr, sel_pmi_set={0})
+        mm = [
+            (0, 0, 0, 100, 0, 0, 0),    # mi=A
+            (1, 0, 0,  80, 0, 0, 0),    # mi=B
+        ]
+        agg = _sim_mdl_src_agg(mm, loyal_selA)
+        self.assertEqual(agg[(0, 0)][1], 87, 'Row A = loyal A (PM=A)')
+        self.assertEqual(agg[(1, 0)][1],  0, 'Row B = 0 (PM=A, loyal B excluded)')
+
+    # ── MS39: PM=All cross-model attribution is zero in any row ──────────────
+
+    def test_MS39_pm_all_cross_model_attribution_zero_in_any_row(self):
+        """Cross-model record (lead=A, pm=B) contributes 0 to both row A and row B retail.
+        Row B gets only its own loyal retail, never the cross-model from lead=A."""
+        pmr = [
+            (1, 0, 0, 0, 40, 4, 36),    # cross: pmi=B, mi=A → lead=A, pm=B; excluded loyal
+            (0, 0, 0, 0, 60, 6, 54),    # loyal A
+            (1, 1, 0, 0, 25, 3, 22),    # loyal B
+        ]
+        loyal_all = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)
+        mm = [
+            (0, 0, 0, 100, 0, 0, 0),    # mi=A
+            (1, 0, 0,  70, 0, 0, 0),    # mi=B
+        ]
+        agg = _sim_mdl_src_agg(mm, loyal_all)
+        self.assertEqual(agg[(0, 0)][1], 60, 'Row A = loyal A only (cross mi=A excluded)')
+        self.assertEqual(agg[(1, 0)][1], 25, 'Row B = loyal B only (cross pmi=B excluded)')
+
+    # ── MS40: Lead != Purchased Model fixture — cross-model completely absent ─
+
+    def test_MS40_lead_neq_pm_fixture_retail_absent_from_both_rows(self):
+        """Fixture where every pmr row is cross-model: pmiSiLi_loyal is empty."""
+        pmr = [
+            (1, 0, 0, 0, 100, 10, 90),   # pmi=B, mi=A — cross only, no loyal rows
+            (0, 1, 0, 0,  80,  8, 72),   # pmi=A, mi=B — cross only
+        ]
+        loyal_all = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)
+        self.assertEqual(len(loyal_all), 0,
+                         'Loyal map empty when all pmr rows are cross-model')
+        mm = [
+            (0, 0, 0, 50, 0, 0, 0),
+            (1, 0, 0, 60, 0, 0, 0),
+        ]
+        agg = _sim_mdl_src_agg(mm, loyal_all)
+        self.assertEqual(agg[(0, 0)][1], 0, 'Row A retail = 0 (no loyal rows)')
+        self.assertEqual(agg[(1, 0)][1], 0, 'Row B retail = 0 (no loyal rows)')
+
+    # ── MS41: OC row retail reconciliation (pmr = lead-month keyed) ──────────
+
+    def test_MS41_oc_retail_reconciliation(self):
+        """OC: pmiSiLi_loyal total = sum of all loyal pmr rows across sources."""
+        pmr = [
+            (0, 0, 0, 0, 30, 3, 27),    # loyal A, si=0
+            (0, 0, 1, 0, 25, 2, 23),    # loyal A, si=1
+            (0, 0, 2, 0, 32, 4, 28),    # loyal A, si=2
+            (0, 1, 0, 0, 50, 5, 45),    # cross: pmi=A, mi=B (excluded)
+        ]
+        loyal_all = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)
+        total_loyal_A = sum(v[0] for k, v in loyal_all.items() if k[0] == 0)
+        self.assertEqual(total_loyal_A, 87,
+                         'OC loyal total for mi=A across all sources = 87')
+
+    # ── MS42: OU row retail reconciliation (u_pmr = retail-month keyed) ──────
+
+    def test_MS42_ou_retail_reconciliation(self):
+        """OU: pmiSiLi_loyal built from u_pmr gives same per-source totals as direct sum."""
+        u_pmr = [
+            (0, 0, 0, 0, 39, 3, 36),    # loyal A, Organic
+            (0, 0, 1, 0, 21, 2, 19),    # loyal A, Facebook
+            (0, 0, 2, 0, 26, 4, 22),    # loyal A, WhatsApp
+            (0, 0, 3, 0,  1, 0,  1),    # loyal A, NonCPS
+            (0, 1, 0, 0, 26, 2, 24),    # cross: excluded
+        ]
+        loyal_all = _build_pmiSiLi_loyal(u_pmr, sel_pmi_set=None)
+        retail_A = sum(v[0] for k, v in loyal_all.items() if k[0] == 0)
+        self.assertEqual(retail_A, 87, 'OU loyal retail for A = 87')
+        # DMS sub-total
+        dms_A = sum(v[1] for k, v in loyal_all.items() if k[0] == 0)
+        self.assertEqual(dms_A, 9, 'OU loyal DMS for A = 3+2+4+0 = 9')
+
+    # ── MS43: Source-level reconciliation ────────────────────────────────────
+
+    def test_MS43_source_level_reconciliation(self):
+        """Per-source retail in pmiSiLi_loyal matches per-source pmr loyal sums."""
+        pmr = [
+            (0, 0, 0, 0, 39, 3, 36),    # loyal A, si=Organic
+            (0, 0, 1, 0, 21, 2, 19),    # loyal A, si=Facebook
+            (0, 0, 2, 0, 27, 4, 23),    # loyal A, si=WhatsApp
+            (0, 1, 1, 0, 10, 1,  9),    # cross: pmi=A, mi=B, si=Facebook (excluded)
+        ]
+        loyal_all = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)
+        mm = [
+            (0, 0, 0, 100, 0, 0, 0),    # mi=A, si=Organic
+            (0, 1, 0,  80, 0, 0, 0),    # mi=A, si=Facebook
+            (0, 2, 0,  60, 0, 0, 0),    # mi=A, si=WhatsApp
+        ]
+        agg = _sim_mdl_src_agg(mm, loyal_all)
+        self.assertEqual(agg[(0, 0)][1], 39, 'mi=A, si=0 (Organic)  = 39')
+        self.assertEqual(agg[(0, 1)][1], 21, 'mi=A, si=1 (Facebook) = 21 (cross excluded)')
+        self.assertEqual(agg[(0, 2)][1], 27, 'mi=A, si=2 (WhatsApp) = 27')
+        total = sum(v[1] for v in agg.values())
+        self.assertEqual(total, 87, 'Source-level retail total = 87')
+
+    # ── MS44: No retail duplication through univ path (loyal-only) ───────────
+
+    def test_MS44_no_retail_duplication_loyal_pmiSiLi_univ(self):
+        """seenRT dedup still works with loyal-only pmiSiLi — retail counted once per RT key."""
+        pmr = [
+            (0, 0, 0, 0, 87, 9, 78),    # loyal A, li=0
+            (0, 1, 1, 0, 20, 2, 18),    # cross: excluded from loyal map
+        ]
+        loyal_all = _build_pmiSiLi_loyal(pmr, sel_pmi_set=None)
+        # 6 univ rows for same RT key (mi=0, si=0, li=0) with different (sti, tti)
+        univ = [
+            (0, 0, sti, tti, 0, 15, 87, 9, 78)
+            for sti in range(3) for tti in range(2)
+        ]
+        agg = _sim_univ_agg_fixed(univ, pmiSiLi=loyal_all, filt_mi={0})
+        self.assertEqual(agg[(0, 0)][1], 87,
+                         'Retail = 87 (loyal only, seenRT dedup prevents 6× inflation)')
+        self.assertEqual(agg[(0, 0)][0], 15 * 6,
+                         'Leads = 90 (all 6 univ L values summed, no dedup on leads)')
 
 
 # ---------------------------------------------------------------------------

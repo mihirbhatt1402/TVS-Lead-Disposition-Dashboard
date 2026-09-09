@@ -1545,19 +1545,21 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
   }), []);
 
-  /* Retail keyed by (pmi|si|li) — the PURCHASED-MODEL dimension.
-     Row X's retail = pmiSiLi.get("X|si|li") = total retail where PM=X for that source+month.
-     This is intentionally different from the Lead Model (mi) used for the Leads column.
-     When PM filter is active, only the selected pmi values are included.
-     PM standardisation is the same as pmr/Dispersion: pmi indices come from maps.mdl. */
+  /* Retail keyed by (mi|si|li) — ROW MODEL as the Purchased Model dimension.
+     Row X's retail = pmiSiLi.get("X|si|li") = total retail where pmi=X AND mi=X (loyal).
+     Only rows where pmi === mi are included: each model row shows its own loyal retail,
+     never cross-model records that pollute the total.
+     PM filter restricts which pmi values are eligible; if PM≠row-model, retail = 0.
+     PM standardisation is identical to pmr/Dispersion: pmi indices from maps.mdl. */
   const pmiSiLi = useMemo(() => {
     const selPmiSet = (filters.purchasedModels && filters.purchasedModels.size > 0)
       ? new Set([...filters.purchasedModels].map(pm => maps.mdl.indexOf(pm)).filter(i => i >= 0))
       : null;
     const m = new Map();
     for (const row of pmr) {
-      const pmi = row[0], si = row[2], li = row[3];
+      const pmi = row[0], mi = row[1], si = row[2], li = row[3];
       const R = row[4], Rd = row[5], Rc = row[6];
+      if (pmi !== mi) continue;                          // loyal rows only: pmi must equal mi
       if (selPmiSet && !selPmiSet.has(pmi)) continue;
       const k = pmi+'|'+si+'|'+li;
       const e = m.get(k)||[0,0,0]; e[0]+=R; e[1]+=Rd; e[2]+=Rc; m.set(k,e);
@@ -1573,19 +1575,13 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
     if (univF) {
       // univ path: mi=row[0], si=row[1], li=row[4]
       // Leads:  from univ (lead-model dimension, unchanged)
-      // Retail: when PM filter active → pmMaps.miSiLi (lead-model keyed, canonical)
-      //         when no PM filter    → pmiSiLi        (pm-model keyed, cross-model attribution)
-      // seenRT dedup: prevents multiple sti/tti rows from multiplying the map lookup
+      // Retail: from pmiSiLi keyed by (mi|si|li) — loyal rows (pmi=mi) only.
+      //         Row X retail = retail where pm=X AND lead=X for that (si, li).
+      // seenRT dedup: prevents multiple sti/tti rows from multiplying the pmiSiLi lookup.
       const seenRT = new Set();
       const eff = row => {
-        const [l, r_raw] = getLR(row);
+        const [l] = getLR(row);
         const k = row[0]+'|'+row[1]+'|'+row[4];
-        if (pmMaps) {
-          if (seenRT.has(k)) return [l, 0];
-          seenRT.add(k);
-          const v = pmMaps.miSiLi.get(k);
-          return [l, v ? v[pmRI] : 0];
-        }
         if (seenRT.has(k)) return [l, 0];
         seenRT.add(k);
         const v = pmiSiLi.get(k);
