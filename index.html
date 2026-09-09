@@ -1086,7 +1086,7 @@ const OverviewTab = React.memo(function OverviewTab({ data, filters, RT, pmMaps 
     return [...byMonth.entries()]
       .sort((a,b) => monthOrder(a[0]) - monthOrder(b[0]))
       .map(([m, v]) => ({ m, l: v[0], r: v[1], l2r: v[0]>0 ? v[1]/v[0]*100 : 0 }));
-  }, [monthly, univ, cm, maps, filters, hasCityFilter, getLR, pmMaps, RT]);
+  }, [monthly, sm, univ, cm, maps, filters, hasCityFilter, getLR, pmMaps, RT]);
 
   const srcBreak = useMemo(() => {
     const allM = !filters.months || filters.months.size === 0;
