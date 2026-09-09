@@ -1573,12 +1573,19 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
     if (univF) {
       // univ path: mi=row[0], si=row[1], li=row[4]
       // Leads:  from univ (lead-model dimension, unchanged)
-      // Retail: from pmiSiLi keyed by (mi|si|li) — treating mi as pmi gives retail where PM=mi
-      // seenRT dedup: prevents multiple sti/tti rows from multiplying the pmiSiLi value
+      // Retail: when PM filter active → pmMaps.miSiLi (lead-model keyed, canonical)
+      //         when no PM filter    → pmiSiLi        (pm-model keyed, cross-model attribution)
+      // seenRT dedup: prevents multiple sti/tti rows from multiplying the map lookup
       const seenRT = new Set();
       const eff = row => {
-        const [l] = getLR(row);
+        const [l, r_raw] = getLR(row);
         const k = row[0]+'|'+row[1]+'|'+row[4];
+        if (pmMaps) {
+          if (seenRT.has(k)) return [l, 0];
+          seenRT.add(k);
+          const v = pmMaps.miSiLi.get(k);
+          return [l, v ? v[pmRI] : 0];
+        }
         if (seenRT.has(k)) return [l, 0];
         seenRT.add(k);
         const v = pmiSiLi.get(k);

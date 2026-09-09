@@ -7137,6 +7137,344 @@ class TestModelPMIntersectionDedup(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# MS23–MS32: Model × Source univ-path canonical reconciliation tests
+# ---------------------------------------------------------------------------
+
+def _build_miSiLi_for_ms(pmr_rows, sel_pmi_set=None):
+    """Build miSiLi (canonical, lead-model keyed): keyed by (mi, si, li).
+    Mirrors buildPmMaps().miSiLi used by SourceTab / ModelPerfTab.
+    pmr_rows: list of (pmi, mi, si, li, R, Rd, Rc).
+    sel_pmi_set: set of pmi values to include (None = all)."""
+    m = {}
+    for row in pmr_rows:
+        pmi, mi, si, li, R, Rd, Rc = row
+        if sel_pmi_set is not None and pmi not in sel_pmi_set:
+            continue
+        k = (mi, si, li)
+        if k not in m: m[k] = [0, 0, 0]
+        m[k][0] += R; m[k][1] += Rd; m[k][2] += Rc
+    return m
+
+
+def _sim_univ_agg_fixed(univ_rows, miSiLi=None, pmiSiLi=None, filt_mi=None, pmRI=0):
+    """Simulate ModelSourceTab univ-path with the FIXED retail logic.
+
+    Fixed rule:
+      - pmMaps non-null (miSiLi given): use miSiLi[mi|si|li]  ← canonical
+      - pmMaps null    (pmiSiLi given): use pmiSiLi[mi|si|li] ← cross-model
+    seenRT dedup prevents sti/tti multiplication.
+    univ_rows: (mi, si, sti, tti, li, L, R_all, R_dms, R_co)
+    filt_mi:   set of mi values to include (None = all)
+    Returns dict: (mi, si) → (leads, retail)."""
+    result = {}
+    seen = set()
+    for row in univ_rows:
+        mi, si, sti, tti, li, L = row[0], row[1], row[2], row[3], row[4], row[5]
+        R_col = row[6 + pmRI]
+        if filt_mi is not None and mi not in filt_mi:
+            continue
+        k_dim = (mi, si)
+        k_rt  = (mi, si, li)
+        if miSiLi is not None:
+            # canonical PM-active path: seenRT dedup + miSiLi lookup
+            r = 0
+            if k_rt not in seen:
+                seen.add(k_rt)
+                v = miSiLi.get(k_rt)
+                r = v[pmRI] if v else 0
+        elif pmiSiLi is not None:
+            # no-PM-filter path: seenRT dedup + pmiSiLi lookup (cross-model)
+            r = 0
+            if k_rt not in seen:
+                seen.add(k_rt)
+                v = pmiSiLi.get(k_rt)
+                r = v[pmRI] if v else 0
+        else:
+            r = R_col  # raw from univ row (no map)
+        if k_dim not in result: result[k_dim] = [0, 0]
+        result[k_dim][0] += L
+        result[k_dim][1] += r
+    return result
+
+
+def _sim_univ_agg_buggy(univ_rows, pmiSiLi, filt_mi=None, pmRI=0):
+    """Simulate ModelSourceTab univ-path with the OLD (buggy) retail logic.
+    Uses pmiSiLi even when PM filter is active — includes cross-model retail."""
+    result = {}
+    seen = set()
+    for row in univ_rows:
+        mi, si, sti, tti, li, L = row[0], row[1], row[2], row[3], row[4], row[5]
+        if filt_mi is not None and mi not in filt_mi:
+            continue
+        k_dim = (mi, si)
+        k_rt  = (mi, si, li)
+        r = 0
+        if k_rt not in seen:
+            seen.add(k_rt)
+            v = pmiSiLi.get(k_rt)
+            r = v[pmRI] if v else 0
+        if k_dim not in result: result[k_dim] = [0, 0]
+        result[k_dim][0] += L
+        result[k_dim][1] += r
+    return result
+
+
+class TestModelSourceRetailCanonical(unittest.TestCase):
+    """MS23–MS32: Reconciliation tests for the univ-path canonical retail fix.
+
+    Root cause being tested: when model filter is active (univ path), using
+    pmiSiLi (keyed by purchased model, summed over all lead models) pulls in
+    cross-model retails and inflates the total vs Source Analysis / Model Perf.
+
+    Fix: univ path with PM filter uses miSiLi (lead-model keyed, same as
+    canonical tabs). mm path keeps pmiSiLi for cross-model attribution.
+    """
+
+    # ── MS23: OU univ path matches canonical 87 ──────────────────────────────
+
+    def test_MS23_ou_univ_path_matches_canonical_87(self):
+        """Model × Source OU Sep'26 retail = 87, not 111 (the live regression)."""
+        # loyal pmr rows (pmi=mi=A) for Sep'26: total = 87
+        loyal = [
+            (0, 0, 0, 0,  39, 3, 36),   # pmi=A, mi=A, si=Organic, li=Sep26
+            (0, 0, 1, 0,  21, 2, 19),   # pmi=A, mi=A, si=Facebook
+            (0, 0, 2, 0,  26, 4, 22),   # pmi=A, mi=A, si=WhatsApp
+            (0, 0, 3, 0,   1, 0,  1),   # pmi=A, mi=A, si=NonCPS
+        ]
+        # cross-model pmr rows (pmi=A, mi=B...) — these must NOT appear in univ path retail
+        cross = [
+            (0, 1, 1, 0,  10, 5,  5),   # pmi=A, mi=B, si=Facebook (RTR160 without 4V)
+            (0, 2, 2, 0,   4, 1,  3),   # pmi=A, mi=C, si=WhatsApp (Raider)
+            (0, 3, 0, 0,   1, 0,  1),   # pmi=A, mi=D, si=Organic  (RTR200 4V)
+            (0, 4, 0, 0,   1, 1,  0),   # pmi=A, mi=D, si=Organic  (another)
+            (0, 5, 1, 0,   1, 0,  1),   # pmi=A, mi=E, si=Facebook (Ronin)
+            (0, 6, 0, 0,   1, 1,  0),   # pmi=A, mi=F, si=Organic  (RTR310)
+            (0, 7, 3, 0,   1, 0,  1),   # pmi=A, mi=G, si=NonCPS   (iQube)
+        ]
+        pmr = loyal + cross
+
+        # miSiLi (canonical, PM filter = A = {0}) — keyed by (mi, si, li)
+        miSiLi  = _build_miSiLi_for_ms(pmr, sel_pmi_set={0})
+        # pmiSiLi (buggy path) — keyed by (pmi, si, li)
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set={0})
+
+        # univ rows: mi=A only (model filter = A), one sti/tti each (no dedup needed)
+        univ = [
+            (0, 0, 0, 0, 0, 50, 39, 3, 36),   # mi=A, si=Organic, li=Sep26
+            (0, 1, 0, 0, 0, 20, 21, 2, 19),   # mi=A, si=Facebook
+            (0, 2, 0, 0, 0, 30, 26, 4, 22),   # mi=A, si=WhatsApp
+            (0, 3, 0, 0, 0,  5,  1, 0,  1),   # mi=A, si=NonCPS
+        ]
+
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0})
+        buggy = _sim_univ_agg_buggy(univ, pmiSiLi, filt_mi={0})
+
+        loyal_total = sum(row[4] for row in loyal)   # = 87
+        self.assertEqual(loyal_total, 87)
+
+        fixed_total = sum(v[1] for v in fixed.values())
+        buggy_total = sum(v[1] for v in buggy.values())
+
+        self.assertEqual(fixed_total, 87, f'Fixed retail = 87; got {fixed_total}')
+        self.assertGreater(buggy_total, 87, 'Buggy retail > 87 (includes cross-model)')
+
+    # ── MS24: univ path retail reconciles with Model Performance ─────────────
+
+    def test_MS24_univ_retail_reconciles_with_model_perf(self):
+        """Model × Source (fixed univ) == Model Performance for same filter state."""
+        # Model Performance uses miSiLi for the same (mi, si, li) keys.
+        pmr = [
+            (0, 0, 0, 0, 20, 5, 15),   # loyal A
+            (0, 1, 1, 0, 30, 8, 22),   # loyal A, different source
+            (0, 2, 0, 0,  5, 1,  4),   # cross-model into A
+        ]
+        miSiLi  = _build_miSiLi_for_ms(pmr, sel_pmi_set={0})
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set={0})
+
+        univ = [
+            (0, 0, 0, 0, 0, 100, 20, 5, 15),
+            (0, 1, 0, 0, 1, 200, 30, 8, 22),
+        ]
+
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0})
+
+        # Model Performance canonical: sum miSiLi for mi=0
+        mp_total = sum(v[0] for k, v in miSiLi.items() if k[0] == 0)  # only mi=0 keys
+        ms_total = sum(v[1] for v in fixed.values())
+        self.assertEqual(ms_total, mp_total,
+                         f'Model × Source {ms_total} != Model Performance {mp_total}')
+
+    # ── MS25: univ path retail reconciles with Source Analysis ───────────────
+
+    def test_MS25_univ_retail_reconciles_with_source_analysis(self):
+        """Total retail across all Model × Source rows = Source Analysis total."""
+        pmr = [
+            (0, 0, 0, 0, 15, 4, 11),  # pmi=A, mi=A, si=0, li=0
+            (0, 1, 0, 0,  8, 2,  6),  # pmi=A, mi=B, si=0, li=0 — cross-model
+            (1, 1, 0, 0, 12, 3,  9),  # pmi=B, mi=B, si=0, li=0
+        ]
+        sel_pmi_set = {0}  # PM filter = A
+        miSiLi  = _build_miSiLi_for_ms(pmr, sel_pmi_set=sel_pmi_set)
+
+        univ = [
+            (0, 0, 0, 0, 0, 50, 15, 4, 11),   # mi=A, si=0, li=0
+            (1, 0, 0, 0, 0, 30,  8, 2,  6),   # mi=B, si=0, li=0
+        ]
+
+        # Source Analysis total = sum miSiLi over all mi for si=0, li=0
+        sa_total = sum(v[0] for v in miSiLi.values())  # = 15 + 8 = 23
+
+        # Model × Source fixed (all models visible, model filter = all)
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi)
+        ms_total = sum(v[1] for v in fixed.values())
+
+        self.assertEqual(ms_total, sa_total,
+                         f'Model × Source {ms_total} != Source Analysis {sa_total}')
+
+    # ── MS26: same model and PM filter → canonical retail ────────────────────
+
+    def test_MS26_same_model_and_pm_filter_gives_loyal_retail(self):
+        """Model=X + PM=X: retail = loyal records only (lead=X AND pm=X)."""
+        pmr = [
+            (0, 0, 0, 0, 40, 10, 30),   # pmi=A, mi=A  (loyal, should count)
+            (0, 1, 0, 0, 15,  4, 11),   # pmi=A, mi=B  (cross-model, must NOT count)
+        ]
+        miSiLi  = _build_miSiLi_for_ms(pmr, sel_pmi_set={0})
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set={0})
+
+        univ = [(0, 0, 0, 0, 0, 100, 40, 10, 30)]  # only mi=A rows (model filter=A)
+
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0})
+        buggy = _sim_univ_agg_buggy(univ, pmiSiLi, filt_mi={0})
+
+        self.assertEqual(fixed[(0, 0)][1], 40, 'Fixed: only loyal 40')
+        self.assertEqual(buggy[(0, 0)][1], 55, 'Buggy: 40+15=55 (cross-model inflated)')
+
+    # ── MS27: different model and PM filter → cross-model in lead row ────────
+
+    def test_MS27_different_model_pm_filter_canonical_semantics(self):
+        """Model=A + PM=B: retail = records where lead=A AND pm=B (canonical)."""
+        pmr = [
+            (1, 0, 0, 0, 20, 5, 15),   # pmi=B, mi=A, si=0, li=0  ← cross-model (lead=A, pm=B)
+            (1, 1, 0, 0, 30, 8, 22),   # pmi=B, mi=B, si=0, li=0  ← loyal B
+        ]
+        sel_pmi_set = {1}   # PM filter = B
+        miSiLi = _build_miSiLi_for_ms(pmr, sel_pmi_set=sel_pmi_set)
+
+        univ = [
+            (0, 0, 0, 0, 0, 50, 0, 0, 0),   # mi=A, si=0, li=0  (model filter = A only)
+        ]
+
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0})
+
+        # Row A: miSiLi[(A=0, si=0, li=0)] with PM=B = retail where lead=A AND pm=B = 20
+        self.assertEqual(fixed[(0, 0)][1], 20, 'Row A gets cross-model retail (lead=A, pm=B)=20')
+
+    # ── MS28: cross-model in mm path → retail goes to PM row ─────────────────
+
+    def test_MS28_cross_model_mm_path_retail_goes_to_pm_row(self):
+        """No model filter (mm path): Lead=A, PM=B → retail in Row B, not Row A."""
+        pmr = [
+            (1, 0, 0, 0, 10, 2, 8),    # pmi=B, mi=A — cross-model
+            (1, 1, 0, 0,  5, 1, 4),    # pmi=B, mi=B — loyal B
+        ]
+        pmiSiLi = _build_pmiSiLi(pmr)   # no PM filter
+
+        mm = [
+            (0, 0, 0, 40, 0, 0, 0),    # mi=A, si=0, li=0
+            (1, 0, 0,  8, 5, 1, 4),    # mi=B, si=0, li=0
+        ]
+        agg = _sim_mdl_src_agg(mm, pmiSiLi)
+
+        # Row A: pmiSiLi[(A=0, si=0, li=0)] = 0 (no record with pmi=A)
+        # Row B: pmiSiLi[(B=1, si=0, li=0)] = 10+5 = 15 (cross-model + loyal)
+        self.assertEqual(agg[(0, 0)][1],  0, 'Row A: no retail where PM=A')
+        self.assertEqual(agg[(1, 0)][1], 15, 'Row B: 10 cross-model + 5 loyal = 15')
+
+    # ── MS29: source-level retail reconciliation ─────────────────────────────
+
+    def test_MS29_source_level_retail_reconciliation(self):
+        """Per-source retail in fixed univ path matches miSiLi per source."""
+        pmr = [
+            (0, 0, 0, 0, 12, 3,  9),   # pmi=A, mi=A, si=Organic(0)
+            (0, 0, 1, 0,  8, 2,  6),   # pmi=A, mi=A, si=Facebook(1)
+            (0, 1, 0, 0,  5, 1,  4),   # pmi=A, mi=B, si=Organic — cross-model
+        ]
+        miSiLi  = _build_miSiLi_for_ms(pmr, sel_pmi_set={0})
+
+        univ = [
+            (0, 0, 0, 0, 0, 100, 12, 3,  9),   # mi=A, si=Organic
+            (0, 1, 0, 0, 0,  80,  8, 2,  6),   # mi=A, si=Facebook
+        ]
+
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0})
+
+        self.assertEqual(fixed[(0, 0)][1], 12, 'Organic: 12 loyal (cross-model excluded)')
+        self.assertEqual(fixed[(0, 1)][1],  8, 'Facebook: 8 loyal')
+
+    # ── MS30: DMS and Call-Out retail type reconciliation ────────────────────
+
+    def test_MS30_dms_retail_type_univ_path_canonical(self):
+        """pmRI=1 (DMS) in fixed univ path uses miSiLi index 1."""
+        pmr = [
+            (0, 0, 0, 0, 50, 20, 30),   # pmi=A, mi=A: R_all=50, R_dms=20, R_co=30
+            (0, 1, 0, 0,  5,  2,  3),   # cross-model — must be excluded
+        ]
+        miSiLi = _build_miSiLi_for_ms(pmr, sel_pmi_set={0})
+
+        univ = [(0, 0, 0, 0, 0, 100, 50, 20, 30)]
+
+        fixed_dms = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0}, pmRI=1)
+        fixed_co  = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0}, pmRI=2)
+
+        self.assertEqual(fixed_dms[(0, 0)][1], 20, 'DMS retail = 20 (loyal only)')
+        self.assertEqual(fixed_co[(0, 0)][1],  30, 'CO retail = 30 (loyal only)')
+
+    # ── MS31: lead counts remain unchanged ───────────────────────────────────
+
+    def test_MS31_leads_unchanged_by_retail_fix(self):
+        """Lead counts must not change between buggy and fixed paths."""
+        pmr = [
+            (0, 0, 0, 0, 10, 3, 7),
+            (0, 1, 0, 0,  5, 1, 4),   # cross-model
+        ]
+        miSiLi  = _build_miSiLi_for_ms(pmr, sel_pmi_set={0})
+        pmiSiLi = _build_pmiSiLi(pmr, sel_pmi_set={0})
+
+        univ = [
+            (0, 0, 0, 0, 0, 150, 10, 3, 7),
+            (0, 0, 1, 0, 0,  50, 10, 3, 7),   # same (mi,si,li) different sti/tti
+        ]
+
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0})
+        buggy = _sim_univ_agg_buggy(univ, pmiSiLi, filt_mi={0})
+
+        fixed_leads = sum(v[0] for v in fixed.values())
+        buggy_leads = sum(v[0] for v in buggy.values())
+
+        self.assertEqual(fixed_leads, buggy_leads, 'Leads unchanged by retail fix')
+        self.assertEqual(fixed_leads, 150 + 50, 'All univ L values summed')
+
+    # ── MS32: no retail duplication with multiple sti/tti rows ───────────────
+
+    def test_MS32_no_duplicate_retail_inflation_in_univ_path(self):
+        """seenRT dedup prevents sti/tti multiplication of miSiLi lookup."""
+        pmr = [(0, 0, 0, 0, 99, 33, 66)]   # (mi=A, si=0, li=0): R_all=99
+        miSiLi = _build_miSiLi_for_ms(pmr, sel_pmi_set={0})
+
+        # 8 univ rows for same (mi=0, si=0, li=0) with different (sti, tti)
+        univ = [(0, 0, sti, tti, 0, 10, 99, 33, 66)
+                for sti in range(4) for tti in range(2)]
+
+        fixed = _sim_univ_agg_fixed(univ, miSiLi=miSiLi, filt_mi={0})
+        retail_total = fixed[(0, 0)][1]
+
+        self.assertEqual(retail_total, 99,
+                         f'Retail = 99 (counted once); got {retail_total}')
+        self.assertEqual(fixed[(0, 0)][0], 10 * 8, 'Leads = 80 (all L values summed)')
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
