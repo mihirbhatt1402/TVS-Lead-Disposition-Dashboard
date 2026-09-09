@@ -7744,6 +7744,754 @@ class TestModelSourceLoyalOnlyRetail(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# GLOBAL FILTER AUDIT REGRESSION TESTS (FA01 – FA72)
+# ---------------------------------------------------------------------------
+# Python mirrors of the JS tab aggregation logic, used to verify that every
+# applicable filter dimension is correctly applied in every tab.
+# ---------------------------------------------------------------------------
+
+def _py_make_univ_filter(filters_models, filters_states, filters_lt,
+                          mdl_arr, st_arr, lt_arr):
+    """Mirror of JS makeUnivFilter. Returns None when all three sets empty."""
+    mf = bool(filters_models)
+    sf = bool(filters_states)
+    lf = bool(filters_lt)
+    if not mf and not sf and not lf:
+        return None
+    def pred(row):
+        if mf and mdl_arr[row[0]] not in filters_models:
+            return False
+        if sf and st_arr[row[2]] not in filters_states:
+            return False
+        if lf and lt_arr[row[3]] not in filters_lt:
+            return False
+        return True
+    return pred
+
+
+def _py_mxst_agg(mxst_rows, mdl_arr, st_arr, lm_arr,
+                  filt_st=None, filt_mdl=None, filt_months=None):
+    """Simulate StateModelTab mxst aggregation.
+    mxst row: (mi, sti, lmi, L, R_all).
+    Returns dict: (state, model) → [L, R]."""
+    result = {}
+    for row in mxst_rows:
+        mdl = mdl_arr[row[0]]
+        st  = st_arr[row[1]]
+        mon = lm_arr[row[2]]
+        if filt_mdl and mdl not in filt_mdl:
+            continue
+        if filt_st and st not in filt_st:
+            continue
+        if filt_months and mon not in filt_months:
+            continue
+        k = (st, mdl)
+        if k not in result:
+            result[k] = [0, 0]
+        result[k][0] += row[3]
+        result[k][1] += row[4]
+    return result
+
+
+def _py_cxsm_agg(cxsm_rows, city_arr, src_arr, mdl_arr, lm_arr,
+                  city_state_arr, st_arr,
+                  filt_city=None, filt_src=None, filt_mdl=None,
+                  filt_st=None, filt_months=None):
+    """Simulate CityModelTab cxsm aggregation with source pre-filter + state→city mapping.
+    cxsm row: (cti, si, mi, lmi, L, R_all).
+    Returns dict: (city, model) → [L, R]."""
+    city_from_state = None
+    if filt_st and city_state_arr:
+        city_from_state = {city_arr[i] for i, sti in enumerate(city_state_arr)
+                           if sti is not None and st_arr[sti] in filt_st}
+    if city_from_state and filt_city:
+        eff_city = city_from_state & filt_city
+    elif city_from_state:
+        eff_city = city_from_state
+    elif filt_city:
+        eff_city = filt_city
+    else:
+        eff_city = None
+
+    result = {}
+    for row in cxsm_rows:
+        city = city_arr[row[0]]
+        src  = src_arr[row[1]]
+        mdl  = mdl_arr[row[2]]
+        mon  = lm_arr[row[3]]
+        if filt_src and src not in filt_src:
+            continue
+        if eff_city and city not in eff_city:
+            continue
+        if filt_mdl and mdl not in filt_mdl:
+            continue
+        if filt_months and mon not in filt_months:
+            continue
+        k = (city, mdl)
+        if k not in result:
+            result[k] = [0, 0]
+        result[k][0] += row[4]
+        result[k][1] += row[5]
+    return result
+
+
+def _py_cdm_agg(cdm_rows, city_arr, dl_arr, lm_arr, city_state_arr, st_arr,
+                 filt_city=None, filt_st=None, filt_months=None):
+    """Simulate GeoDealerTab cdm aggregation (city+state+month filters only).
+    cdm row: (cti, dli, lmi, L, R_all, R_dms, R_co).
+    Returns dict: dli → [leads, rets]."""
+    result = {}
+    for row in cdm_rows:
+        cti = row[0]; dli = row[1]; lmi = row[2]
+        mon = lm_arr[lmi]
+        if filt_months and mon not in filt_months:
+            continue
+        if filt_city and city_arr[cti] not in filt_city:
+            continue
+        if filt_st and city_state_arr:
+            sti = city_state_arr[cti]
+            if sti is None or st_arr[sti] not in filt_st:
+                continue
+        if dli not in result:
+            result[dli] = [0, 0]
+        result[dli][0] += row[3]
+        result[dli][1] += row[4]
+    return result
+
+
+def _py_ram_agg(ram_rows, mdl_arr, src_arr, lt_arr, st_arr, city_arr, lm_arr,
+                 filt_mdl=None, filt_src=None, filt_lt=None,
+                 filt_st=None, filt_city=None, filt_months=None):
+    """Simulate RetailAgeingTab aggregation (new format: 10 cols per row).
+    ram row: (mi, si, lti, sti, cityi, abi, li, rets, dms, co).
+    Returns dict: (model, abi) → retail_count."""
+    result = {}
+    for row in ram_rows:
+        if len(row) < 10:
+            continue
+        mi, si, lti, sti, cityi, abi, li = (
+            row[0], row[1], row[2], row[3], row[4], row[5], row[6])
+        rets = row[7]
+        if not rets:
+            continue
+        mdl  = mdl_arr[mi]
+        src  = src_arr[si]
+        lt   = lt_arr[lti]
+        st   = st_arr[sti]
+        city = city_arr[cityi]
+        mon  = lm_arr[li]
+        if filt_mdl and mdl not in filt_mdl:
+            continue
+        if filt_src and src not in filt_src:
+            continue
+        if filt_lt and lt not in filt_lt:
+            continue
+        if filt_st and st not in filt_st:
+            continue
+        if filt_city and city not in filt_city:
+            continue
+        if filt_months and mon not in filt_months:
+            continue
+        k = (mdl, abi)
+        result[k] = result.get(k, 0) + rets
+    return result
+
+
+def _py_pivot_filter_sets(dims, filters, maps):
+    """Simulate PivotTab filterSets useMemo.
+    Returns dict of {dim: set_of_indices}. purchasedModels is deliberately absent."""
+    def mk(dim, fSet, arr):
+        if dim not in dims or not fSet:
+            return None
+        s = {i for i, v in enumerate(arr) if v in fSet}
+        return s if s else None
+
+    sets = {}
+    checks = [
+        ('lm',  filters.get('months'),    maps.get('lm',  [])),
+        ('src', filters.get('sources'),   maps.get('src', [])),
+        ('st',  filters.get('states'),    maps.get('st',  [])),
+        ('mdl', filters.get('models'),    maps.get('mdl', [])),
+        ('lt',  filters.get('leadTypes'), maps.get('lt',  [])),
+    ]
+    for dim, fset, arr in checks:
+        r = mk(dim, fset, arr)
+        if r:
+            sets[dim] = r
+    if 'city' in dims and filters.get('cities'):
+        cs = {i for i, v in enumerate(maps.get('city', [])) if v in filters['cities']}
+        if cs:
+            sets['city'] = cs
+    return sets
+
+
+class TestMakeUnivFilter(unittest.TestCase):
+    """FA01–FA08: makeUnivFilter Python mirror — returns None iff all three sets empty."""
+
+    def setUp(self):
+        self.mdl = ['Apache', 'Ntorq', 'Jupiter']
+        self.st  = ['MH', 'GJ', 'DL']
+        self.lt  = ['Online', 'Offline', 'Exchange']
+
+    def test_FA01_all_empty_returns_none(self):
+        f = _py_make_univ_filter(set(), set(), set(), self.mdl, self.st, self.lt)
+        self.assertIsNone(f)
+
+    def test_FA02_model_only_returns_predicate(self):
+        f = _py_make_univ_filter({'Apache'}, set(), set(), self.mdl, self.st, self.lt)
+        self.assertIsNotNone(f)
+
+    def test_FA03_state_only_returns_predicate(self):
+        f = _py_make_univ_filter(set(), {'MH'}, set(), self.mdl, self.st, self.lt)
+        self.assertIsNotNone(f)
+
+    def test_FA04_lt_only_returns_predicate(self):
+        f = _py_make_univ_filter(set(), set(), {'Online'}, self.mdl, self.st, self.lt)
+        self.assertIsNotNone(f)
+
+    def test_FA05_model_filter_accepts_matching_row(self):
+        f = _py_make_univ_filter({'Apache'}, set(), set(), self.mdl, self.st, self.lt)
+        row = (0, 0, 0, 0, 0, 100, 10)   # mi=0=Apache
+        self.assertTrue(f(row))
+
+    def test_FA06_model_filter_rejects_non_matching_row(self):
+        f = _py_make_univ_filter({'Apache'}, set(), set(), self.mdl, self.st, self.lt)
+        row = (1, 0, 0, 0, 0, 100, 10)   # mi=1=Ntorq
+        self.assertFalse(f(row))
+
+    def test_FA07_state_filter_rejects_wrong_state(self):
+        f = _py_make_univ_filter(set(), {'MH'}, set(), self.mdl, self.st, self.lt)
+        row = (0, 0, 1, 0, 0, 100, 10)   # sti=1=GJ
+        self.assertFalse(f(row))
+
+    def test_FA08_combined_filter_requires_all_match(self):
+        f = _py_make_univ_filter({'Apache'}, {'MH'}, {'Online'}, self.mdl, self.st, self.lt)
+        ok_row  = (0, 0, 0, 0, 0, 50, 5)   # Apache+MH+Online — passes
+        bad_row = (0, 0, 1, 0, 0, 50, 5)   # Apache+GJ+Online — fails state
+        self.assertTrue(f(ok_row))
+        self.assertFalse(f(bad_row))
+
+
+class TestStateModelTabFilter(unittest.TestCase):
+    """FA09–FA18: StateModelTab (mxst) and CityModelTab (cxsm) filter application."""
+
+    _MDL  = ['Apache', 'Ntorq', 'Jupiter']
+    _ST   = ['MH', 'GJ', 'DL']
+    _LM   = ['Jan 2026', 'Feb 2026']
+    _MXST = [
+        (0, 0, 0, 500, 50),   # Apache, MH, Jan
+        (0, 1, 0, 300, 30),   # Apache, GJ, Jan
+        (1, 0, 0, 400, 40),   # Ntorq,  MH, Jan
+        (1, 2, 0, 200, 20),   # Ntorq,  DL, Jan
+        (2, 0, 1, 150, 15),   # Jupiter, MH, Feb
+    ]
+
+    def test_FA09_no_filter_returns_all_rows(self):
+        agg = _py_mxst_agg(self._MXST, self._MDL, self._ST, self._LM)
+        self.assertEqual(len(agg), 5)
+        self.assertEqual(sum(v[0] for v in agg.values()), 1550)
+
+    def test_FA10_state_filter_MH(self):
+        agg = _py_mxst_agg(self._MXST, self._MDL, self._ST, self._LM, filt_st={'MH'})
+        self.assertTrue(all(k[0] == 'MH' for k in agg))
+        self.assertEqual(sum(v[0] for v in agg.values()), 1050)
+
+    def test_FA11_model_filter_Apache(self):
+        agg = _py_mxst_agg(self._MXST, self._MDL, self._ST, self._LM, filt_mdl={'Apache'})
+        self.assertTrue(all(k[1] == 'Apache' for k in agg))
+        self.assertEqual(sum(v[0] for v in agg.values()), 800)
+
+    def test_FA12_state_plus_model_filter(self):
+        agg = _py_mxst_agg(self._MXST, self._MDL, self._ST, self._LM,
+                            filt_st={'MH'}, filt_mdl={'Apache'})
+        self.assertEqual(len(agg), 1)
+        self.assertIn(('MH', 'Apache'), agg)
+        self.assertEqual(agg[('MH', 'Apache')][0], 500)
+        self.assertEqual(agg[('MH', 'Apache')][1], 50)
+
+    def test_FA13_month_filter_Feb(self):
+        agg = _py_mxst_agg(self._MXST, self._MDL, self._ST, self._LM,
+                            filt_months={'Feb 2026'})
+        self.assertEqual(len(agg), 1)
+        self.assertIn(('MH', 'Jupiter'), agg)
+
+    def test_FA14_no_matching_state_gives_empty(self):
+        agg = _py_mxst_agg(self._MXST, self._MDL, self._ST, self._LM, filt_st={'TN'})
+        self.assertEqual(len(agg), 0)
+
+    def test_FA15_retail_values_preserved_in_filter(self):
+        agg = _py_mxst_agg(self._MXST, self._MDL, self._ST, self._LM, filt_mdl={'Ntorq'})
+        self.assertEqual(sum(v[1] for v in agg.values()), 60)
+
+    # ── CityModelTab (cxsm) ────────────────────────────────────────────────
+
+    _CITY       = ['Mumbai', 'Pune', 'Ahmedabad', 'Delhi']
+    _SRC        = ['Digital', 'WalkIn']
+    _CITY_STATE = [0, 0, 1, 2]   # Mumbai→MH(0), Pune→MH(0), Ahmedabad→GJ(1), Delhi→DL(2)
+    _ST2        = ['MH', 'GJ', 'DL']
+    _CXSM = [
+        (0, 0, 0, 0, 100, 10),  # Mumbai, Digital, Apache, Jan
+        (0, 1, 0, 0,  80,  8),  # Mumbai, WalkIn,  Apache, Jan
+        (1, 0, 1, 0,  60,  6),  # Pune,   Digital, Ntorq,  Jan
+        (2, 0, 0, 0,  40,  4),  # Ahmedabad, Digital, Apache, Jan
+        (3, 0, 1, 0,  50,  5),  # Delhi, Digital, Ntorq, Jan
+    ]
+
+    def test_FA16_cxsm_source_filter_excludes_walkin(self):
+        agg = _py_cxsm_agg(self._CXSM, self._CITY, self._SRC,
+                            self._MDL, self._LM, self._CITY_STATE, self._ST2,
+                            filt_src={'Digital'})
+        self.assertEqual(sum(v[0] for v in agg.values()), 250)  # 100+60+40+50
+
+    def test_FA17_cxsm_state_filter_via_city_mapping(self):
+        agg = _py_cxsm_agg(self._CXSM, self._CITY, self._SRC,
+                            self._MDL, self._LM, self._CITY_STATE, self._ST2,
+                            filt_st={'MH'})
+        # Mumbai (×2) + Pune = 100+80+60 = 240
+        self.assertEqual(sum(v[0] for v in agg.values()), 240)
+
+    def test_FA18_cxsm_city_filter_direct(self):
+        agg = _py_cxsm_agg(self._CXSM, self._CITY, self._SRC,
+                            self._MDL, self._LM, self._CITY_STATE, self._ST2,
+                            filt_city={'Mumbai'})
+        self.assertEqual(sum(v[0] for v in agg.values()), 180)  # 100+80
+
+
+class TestGeoDealerTabFilter(unittest.TestCase):
+    """FA19–FA28: GeoDealerTab cdm filter application (month/city/state only)."""
+
+    _CITY       = ['Mumbai', 'Pune', 'Delhi']
+    _DL         = ['Dealer_A', 'Dealer_B', 'Dealer_C', 'Dealer_D']
+    _LM         = ['Jan 2026', 'Feb 2026']
+    _CITY_STATE = [0, 0, 1]   # Mumbai→MH(0), Pune→MH(0), Delhi→DL(1)
+    _ST         = ['MH', 'DL']
+    _CDM = [
+        (0, 0, 0, 200, 20, 15, 5),   # Mumbai, Dealer_A, Jan
+        (0, 0, 1, 100, 10,  8, 2),   # Mumbai, Dealer_A, Feb
+        (1, 1, 0, 150, 15, 12, 3),   # Pune,   Dealer_B, Jan
+        (2, 2, 0, 300, 30, 25, 5),   # Delhi,  Dealer_C, Jan
+        (2, 3, 0,  50,  5,  4, 1),   # Delhi,  Dealer_D, Jan
+    ]
+
+    def test_FA19_no_filter_all_dealers(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST)
+        self.assertEqual(len(agg), 4)
+        self.assertEqual(sum(v[0] for v in agg.values()), 800)
+
+    def test_FA20_city_filter_Mumbai(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_city={'Mumbai'})
+        self.assertEqual(set(agg.keys()), {0})   # only Dealer_A
+        self.assertEqual(agg[0][0], 300)          # 200+100
+
+    def test_FA21_state_filter_MH(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_st={'MH'})
+        self.assertEqual(set(agg.keys()), {0, 1})
+        self.assertEqual(sum(v[0] for v in agg.values()), 450)
+
+    def test_FA22_month_filter_Feb_only(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_months={'Feb 2026'})
+        self.assertEqual(set(agg.keys()), {0})
+        self.assertEqual(agg[0][0], 100)
+
+    def test_FA23_city_and_month_combined(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_city={'Mumbai'}, filt_months={'Jan 2026'})
+        self.assertEqual(agg[0][0], 200)
+
+    def test_FA24_state_DL_gives_Delhi_dealers(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_st={'DL'})
+        self.assertEqual(set(agg.keys()), {2, 3})
+        self.assertEqual(sum(v[0] for v in agg.values()), 350)
+
+    def test_FA25_ou_matrix_gives_different_retail_than_oc(self):
+        # OC and OU matrices can differ — switch is correct
+        oc_cdm = [(0, 0, 0, 200, 20, 15, 5)]
+        ou_cdm = [(0, 0, 0, 200, 25, 18, 7)]   # same leads, different retail
+        agg_oc = _py_cdm_agg(oc_cdm, self._CITY, self._DL, self._LM, self._CITY_STATE, self._ST)
+        agg_ou = _py_cdm_agg(ou_cdm, self._CITY, self._DL, self._LM, self._CITY_STATE, self._ST)
+        self.assertEqual(agg_oc[0][1], 20)
+        self.assertEqual(agg_ou[0][1], 25)
+        self.assertNotEqual(agg_oc[0][1], agg_ou[0][1])
+
+    def test_FA26_no_match_city_empty_result(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_city={'Chennai'})
+        self.assertEqual(len(agg), 0)
+
+    def test_FA27_retail_accumulates_across_months(self):
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_city={'Mumbai'})
+        self.assertEqual(agg[0][1], 30)   # Jan:20 + Feb:10
+
+    def test_FA28_state_MH_city_Delhi_gives_empty(self):
+        # Both filters are applied independently; Delhi is not in MH
+        agg = _py_cdm_agg(self._CDM, self._CITY, self._DL,
+                           self._LM, self._CITY_STATE, self._ST,
+                           filt_st={'MH'}, filt_city={'Delhi'})
+        self.assertEqual(len(agg), 0)
+
+
+class TestRetailAgeingTabFilter(unittest.TestCase):
+    """FA29–FA40: RetailAgeingTab applies model/src/lt/state/city/month; PM is design limitation."""
+
+    _MDL  = ['Apache', 'Ntorq', 'Jupiter']
+    _SRC  = ['Digital', 'WalkIn', 'IVR']
+    _LT   = ['Online', 'Offline']
+    _ST   = ['MH', 'GJ']
+    _CITY = ['Mumbai', 'Pune', 'Ahmedabad']
+    _LM   = ['Jan 2026', 'Feb 2026']
+    # ram new format: (mi, si, lti, sti, cityi, abi, li, rets, dms, co)
+    _RAM  = [
+        (0, 0, 0, 0, 0, 0, 0, 10, 8, 2),   # Apache, Digital, Online, MH, Mumbai, bkt0, Jan
+        (0, 0, 0, 0, 0, 1, 0,  5, 4, 1),   # Apache, Digital, Online, MH, Mumbai, bkt1, Jan
+        (1, 0, 0, 0, 1, 0, 0, 20,15, 5),   # Ntorq,  Digital, Online, MH, Pune,   bkt0, Jan
+        (2, 1, 1, 1, 2, 0, 0, 30,22, 8),   # Jupiter,WalkIn, Offline, GJ, Ahmedabad,bkt0,Jan
+        (0, 2, 0, 0, 0, 0, 1,  8, 6, 2),   # Apache, IVR,   Online, MH, Mumbai, bkt0, Feb
+    ]
+
+    def test_FA29_no_filter_all_retails(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM)
+        self.assertEqual(sum(agg.values()), 73)   # 10+5+20+30+8
+
+    def test_FA30_model_filter_Apache(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM, filt_mdl={'Apache'})
+        self.assertEqual(sum(agg.values()), 23)   # 10+5+8
+        self.assertTrue(all(k[0] == 'Apache' for k in agg))
+
+    def test_FA31_source_filter_Digital(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM, filt_src={'Digital'})
+        self.assertEqual(sum(agg.values()), 35)   # 10+5+20
+
+    def test_FA32_lt_filter_Offline(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM, filt_lt={'Offline'})
+        self.assertEqual(sum(agg.values()), 30)   # only Jupiter WalkIn Offline
+
+    def test_FA33_state_filter_GJ(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM, filt_st={'GJ'})
+        self.assertEqual(sum(agg.values()), 30)
+
+    def test_FA34_city_filter_Mumbai(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM, filt_city={'Mumbai'})
+        self.assertEqual(sum(agg.values()), 23)   # rows 0,1,4
+
+    def test_FA35_month_filter_Feb(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM, filt_months={'Feb 2026'})
+        self.assertEqual(sum(agg.values()), 8)
+
+    def test_FA36_model_plus_source_combined(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM,
+                           filt_mdl={'Apache'}, filt_src={'Digital'})
+        self.assertEqual(sum(agg.values()), 15)   # rows 0,1 only
+
+    def test_FA37_all_five_dims_combined(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM,
+                           filt_mdl={'Apache'}, filt_src={'Digital'},
+                           filt_lt={'Online'}, filt_st={'MH'}, filt_city={'Mumbai'})
+        self.assertEqual(sum(agg.values()), 15)
+
+    def test_FA38_ageing_bucket_split_preserved(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM,
+                           filt_mdl={'Apache'}, filt_src={'Digital'})
+        self.assertEqual(agg.get(('Apache', 0), 0), 10)
+        self.assertEqual(agg.get(('Apache', 1), 0),  5)
+
+    def test_FA39_no_matching_model_gives_empty(self):
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM, filt_mdl={'Raider'})
+        self.assertEqual(len(agg), 0)
+
+    def test_FA40_pm_not_in_ram_schema_all_rows_included(self):
+        """PM filter is a design limitation for RetailAgeingTab — no PM dim in ram."""
+        # Without any filter, all retails are present (PM filter cannot reduce this)
+        agg = _py_ram_agg(self._RAM, self._MDL, self._SRC, self._LT,
+                           self._ST, self._CITY, self._LM)
+        self.assertEqual(sum(agg.values()), 73)
+
+
+class TestPivotTabFilterSets(unittest.TestCase):
+    """FA41–FA52: PivotTab filterSets builds correct index sets for 6 dims; PM is absent."""
+
+    _MAPS = {
+        'lm':   ['Jan 2026', 'Feb 2026', 'Mar 2026'],
+        'src':  ['Digital', 'WalkIn', 'IVR'],
+        'st':   ['MH', 'GJ', 'DL'],
+        'mdl':  ['Apache', 'Ntorq', 'Jupiter'],
+        'lt':   ['Online', 'Offline'],
+        'city': ['Mumbai', 'Pune', 'Ahmedabad'],
+    }
+    _DIMS = ['lm', 'src', 'st', 'mdl', 'lt', 'city']
+
+    def test_FA41_empty_filters_gives_empty_sets(self):
+        fs = _py_pivot_filter_sets(self._DIMS, {}, self._MAPS)
+        self.assertEqual(fs, {})
+
+    def test_FA42_month_filter_maps_to_indices(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'months': {'Jan 2026', 'Feb 2026'}}, self._MAPS)
+        self.assertIn('lm', fs)
+        self.assertEqual(fs['lm'], {0, 1})
+
+    def test_FA43_source_filter_maps_correctly(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'sources': {'Digital', 'IVR'}}, self._MAPS)
+        self.assertIn('src', fs)
+        self.assertEqual(fs['src'], {0, 2})
+
+    def test_FA44_state_filter_maps_correctly(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'states': {'MH', 'DL'}}, self._MAPS)
+        self.assertIn('st', fs)
+        self.assertEqual(fs['st'], {0, 2})
+
+    def test_FA45_model_filter_maps_correctly(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'models': {'Ntorq'}}, self._MAPS)
+        self.assertIn('mdl', fs)
+        self.assertEqual(fs['mdl'], {1})
+
+    def test_FA46_lt_filter_maps_correctly(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'leadTypes': {'Online'}}, self._MAPS)
+        self.assertIn('lt', fs)
+        self.assertEqual(fs['lt'], {0})
+
+    def test_FA47_city_filter_maps_correctly(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'cities': {'Pune', 'Ahmedabad'}}, self._MAPS)
+        self.assertIn('city', fs)
+        self.assertEqual(fs['city'], {1, 2})
+
+    def test_FA48_all_six_dims_simultaneously(self):
+        fs = _py_pivot_filter_sets(self._DIMS, {
+            'months':    {'Jan 2026'},
+            'sources':   {'Digital'},
+            'states':    {'MH'},
+            'models':    {'Apache'},
+            'leadTypes': {'Online'},
+            'cities':    {'Mumbai'},
+        }, self._MAPS)
+        self.assertEqual(fs['lm'],   {0})
+        self.assertEqual(fs['src'],  {0})
+        self.assertEqual(fs['st'],   {0})
+        self.assertEqual(fs['mdl'],  {0})
+        self.assertEqual(fs['lt'],   {0})
+        self.assertEqual(fs['city'], {0})
+
+    def test_FA49_pm_filter_not_included_in_filter_sets(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'purchasedModels': {'Apache'}}, self._MAPS)
+        for bad_key in ('pm', 'pmi', 'purchasedModels'):
+            self.assertNotIn(bad_key, fs)
+
+    def test_FA50_dim_not_in_matrix_dims_ignored(self):
+        partial_dims = ['lm', 'src']
+        fs = _py_pivot_filter_sets(partial_dims, {
+            'months':  {'Jan 2026'},
+            'sources': {'Digital'},
+            'models':  {'Apache'},   # mdl not in partial_dims → ignored
+        }, self._MAPS)
+        self.assertIn('lm', fs)
+        self.assertIn('src', fs)
+        self.assertNotIn('mdl', fs)
+
+    def test_FA51_unknown_filter_value_excluded(self):
+        fs = _py_pivot_filter_sets(self._DIMS,
+                                   {'models': {'Raider125'}}, self._MAPS)
+        # 'Raider125' not in mdl_arr → empty set → not added
+        self.assertNotIn('mdl', fs)
+
+    def test_FA52_row_passes_iff_all_dim_indices_match(self):
+        """Given filterSets, a raw pivot row passes iff all indexed dims match."""
+        fs = _py_pivot_filter_sets(self._DIMS, {
+            'months': {'Jan 2026'},
+            'models': {'Apache'},
+        }, self._MAPS)
+        dims = self._DIMS
+        # row: (lm, src, st, mdl, lt, city, L, R)
+        row_ok  = (0, 0, 0, 0, 0, 0, 100, 10)   # Jan+Apache
+        row_bad = (1, 0, 0, 0, 0, 0, 100, 10)   # Feb → excluded
+        def passes(r):
+            for dim, allowed in fs.items():
+                pos = dims.index(dim)
+                if r[pos] not in allowed:
+                    return False
+            return True
+        self.assertTrue(passes(row_ok))
+        self.assertFalse(passes(row_bad))
+
+
+class TestDesignLimitationsConfirmed(unittest.TestCase):
+    """FA53–FA62: Confirm PM/source/LT are absent from cdm/mxst/ram/disp schemas by design."""
+
+    def test_FA53_mxst_has_no_source_dimension(self):
+        col_names = ['mi', 'sti', 'lmi', 'L', 'R_all']
+        self.assertNotIn('si', col_names)
+        self.assertNotIn('src', col_names)
+
+    def test_FA54_mxst_has_no_lt_dimension(self):
+        col_names = ['mi', 'sti', 'lmi', 'L', 'R_all']
+        self.assertNotIn('lti', col_names)
+        self.assertNotIn('tti', col_names)
+
+    def test_FA55_cdm_has_no_model_dimension(self):
+        col_names = ['cti', 'dli', 'lmi', 'L', 'R_all', 'R_dms', 'R_co']
+        self.assertNotIn('mi', col_names)
+        self.assertNotIn('mdl', col_names)
+
+    def test_FA56_cdm_has_no_source_dimension(self):
+        col_names = ['cti', 'dli', 'lmi', 'L', 'R_all', 'R_dms', 'R_co']
+        self.assertNotIn('si', col_names)
+        self.assertNotIn('src', col_names)
+
+    def test_FA57_ram_has_no_pm_dimension(self):
+        col_names = ['mi', 'si', 'lti', 'sti', 'cityi', 'abi', 'li', 'rets', 'dms', 'co']
+        self.assertNotIn('pmi', col_names)
+        self.assertNotIn('pm', col_names)
+
+    def test_FA58_disp_has_no_src_state_city_lt(self):
+        col_names = ['ei', 'pi', 'lmi', 'cnt']
+        for dim in ('si', 'sti', 'cityi', 'tti'):
+            self.assertNotIn(dim, col_names,
+                             f'disp has no {dim} — filter not applicable by design')
+
+    def test_FA59_cxsm_has_no_lt_dimension(self):
+        col_names = ['cti', 'si', 'mi', 'lmi', 'L', 'R_all']
+        self.assertNotIn('lti', col_names)
+        self.assertNotIn('tti', col_names)
+
+    def test_FA60_pivot_filter_sets_never_contains_pm(self):
+        maps = {
+            'lm': ['Jan 2026'], 'src': ['D'], 'st': ['MH'],
+            'mdl': ['Apache'],  'lt': ['Online'], 'city': ['Mumbai'],
+        }
+        fs = _py_pivot_filter_sets(
+            ['lm', 'src', 'st', 'mdl', 'lt', 'city'],
+            {'purchasedModels': {'Apache', 'Ntorq'}},
+            maps
+        )
+        self.assertEqual(fs, {})
+
+    def test_FA61_pm_absent_from_ram_does_not_affect_ageing_total(self):
+        ram = [
+            (0, 0, 0, 0, 0, 0, 0, 10, 8, 2),
+            (1, 0, 0, 0, 0, 0, 0, 20, 15, 5),
+        ]
+        mdl = ['Apache', 'Ntorq']; src = ['Digital']; lt = ['Online']
+        st  = ['MH']; city = ['Mumbai']; lm = ['Jan 2026']
+        agg = _py_ram_agg(ram, mdl, src, lt, st, city, lm)
+        self.assertEqual(sum(agg.values()), 30)
+
+    def test_FA62_geo_dealer_no_src_filter_param_all_rows_included(self):
+        cdm = [
+            (0, 0, 0, 200, 20, 15, 5),
+            (0, 1, 0, 100, 10,  8, 2),
+        ]
+        city = ['Mumbai']; dl = ['Dealer_A', 'Dealer_B']
+        lm   = ['Jan 2026']; city_state = [0]; st = ['MH']
+        agg = _py_cdm_agg(cdm, city, dl, lm, city_state, st)
+        self.assertEqual(sum(v[0] for v in agg.values()), 300)
+
+
+class TestUnivPathFilterCoverage(unittest.TestCase):
+    """FA63–FA72: univ path (_sim_univ) applies model/state/lt/source across tabs."""
+
+    _MDL  = ['Apache', 'Ntorq', 'Jupiter']
+    _SRC  = ['Digital', 'WalkIn']
+    _ST   = ['MH', 'GJ']
+    _LT   = ['Online', 'Offline']
+    _LM   = ['Jan 2026', 'Feb 2026']
+    # univ row: (mi, si, sti, tti, li, L, R_all, R_dms, R_co)
+    _UNIV = [
+        (0, 0, 0, 0, 0, 100, 10, 8, 2),  # Apache, Digital, MH, Online, Jan
+        (0, 1, 0, 0, 0,  80,  8, 6, 2),  # Apache, WalkIn,  MH, Online, Jan
+        (1, 0, 0, 0, 0, 200, 20,16, 4),  # Ntorq,  Digital, MH, Online, Jan
+        (2, 0, 1, 0, 0, 150, 15,12, 3),  # Jupiter,Digital, GJ, Online, Jan
+        (0, 0, 0, 1, 0,  60,  6, 5, 1),  # Apache, Digital, MH, Offline,Jan
+        (0, 0, 0, 0, 1,  40,  4, 3, 1),  # Apache, Digital, MH, Online, Feb
+    ]
+
+    @staticmethod
+    def _getLR(row):
+        return (row[5], row[6])
+
+    def test_FA63_model_filter_reduces_univ(self):
+        agg = _sim_univ(self._UNIV, self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR, filt_mdl={'Apache'})
+        self.assertEqual(sum(v[0] for v in agg.values()), 280)   # 100+80+60+40
+
+    def test_FA64_state_filter_GJ(self):
+        agg = _sim_univ(self._UNIV, self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR, filt_st={'GJ'})
+        self.assertEqual(sum(v[0] for v in agg.values()), 150)
+
+    def test_FA65_lt_filter_Offline(self):
+        agg = _sim_univ(self._UNIV, self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR, filt_lt={'Offline'})
+        self.assertEqual(sum(v[0] for v in agg.values()), 60)
+
+    def test_FA66_source_filter_Digital(self):
+        agg = _sim_univ(self._UNIV, self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR, filt_src={'Digital'})
+        # Digital rows: 100+200+150+60+40 = 550
+        self.assertEqual(sum(v[0] for v in agg.values()), 550)
+
+    def test_FA67_model_plus_state(self):
+        agg = _sim_univ(self._UNIV, self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR, filt_mdl={'Apache'}, filt_st={'MH'})
+        self.assertEqual(sum(v[0] for v in agg.values()), 280)
+
+    def test_FA68_model_plus_lt(self):
+        agg = _sim_univ(self._UNIV, self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR, filt_mdl={'Apache'}, filt_lt={'Offline'})
+        self.assertEqual(sum(v[0] for v in agg.values()), 60)
+
+    def test_FA69_model_state_lt_all_three(self):
+        agg = _sim_univ(self._UNIV, self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR, filt_mdl={'Apache'}, filt_st={'MH'}, filt_lt={'Online'})
+        # Apache+MH+Online: 100+80+40=220
+        self.assertEqual(sum(v[0] for v in agg.values()), 220)
+
+    def test_FA70_empty_model_state_lt_returns_none_filter(self):
+        """No model/state/lt → makeUnivFilter returns None → mm path is used."""
+        f = _py_make_univ_filter(set(), set(), set(), self._MDL, self._ST, self._LT)
+        self.assertIsNone(f)
+
+    def test_FA71_source_alone_does_not_trigger_univ_filter(self):
+        """Source filter alone → makeUnivFilter returns None (univ needs model/state/lt)."""
+        f = _py_make_univ_filter(set(), set(), set(), self._MDL, self._ST, self._LT)
+        self.assertIsNone(f)
+
+    def test_FA72_univ_retail_comes_from_row_data_without_pm_lookup(self):
+        """univ path without PM maps → R comes from row[6] directly (no miSiLi lookup)."""
+        row = (0, 0, 0, 0, 0, 100, 42, 30, 12)
+        agg = _sim_univ([row], self._MDL, self._SRC, self._ST, self._LT, self._LM,
+                        self._getLR)
+        self.assertEqual(agg[('Apache', 'Jan 2026')][1], 42)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
