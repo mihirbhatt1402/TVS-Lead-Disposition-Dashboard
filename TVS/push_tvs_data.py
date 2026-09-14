@@ -914,6 +914,179 @@ PURCHASED_MODEL_MAP = {
 # Lead model map uses the same 345-entry lookup as the retail map
 LEAD_MODEL_MAP = PURCHASED_MODEL_MAP
 
+# ── Retail Dispersion purchased-model standardisation ─────────────────────────
+# Source of truth: supplied mapping (raw purchasedModel → Retail Dispersion Model).
+# Do NOT merge entries, do NOT apply keyword inference, do NOT deviate from this map.
+# Unmapped raw values are preserved verbatim so they appear as distinct buckets.
+RETAIL_DISPERSION_MAP: dict[str, str] = {
+    'APACHE 160 4V – PL 2CH USD OBDIIB':            'TVS Apache RTR 160 - 200 Family',
+    'APACHE 160 4V – PL DISC B.T OBDIIB':           'TVS Apache RTR 160 - 200 Family',
+    'APACHE 160 4V – PL DISC SPL ED OBDIIB':        'TVS Apache RTR 160 - 200 Family',
+    'APACHE 160 4V \xe2\x80\x93 PL 2CH USD+TFT OBDIIB':  'TVS Apache RTR 160 - 200 Family',  # mojibake â€"
+    'APACHE 160-2V Disc 2CH A -EDI OBDIIB':             'TVS Apache RTR 160 - 200 Family',
+    'APACHE 160-4V PL TFT USD 2CH A.EDI':               'TVS Apache RTR 160 - 200 Family',
+    'APACHE 180-2V Disc 1CH A -EDI OBDIIB':             'TVS Apache RTR 160 - 200 Family',
+    'APACHE 200 4V \xe2\x80\x93 PL 2CH USD+TFT OBDIIB':  'TVS Apache RTR 160 - 200 Family',  # mojibake â€"
+    'APACHE 200-4V PL TFT USD 2CH A.EDI':               'TVS Apache RTR 160 - 200 Family',
+    'APACHE RR310-O2B-M24–BASE W/O QS-RAR':         'TVS Apache RTR / RR 310 Family',
+    'APACHE RR310-O2B-M24–BASE-RAR':                'TVS Apache RTR / RR 310 Family',
+    'APACHE RR310-O2B-M24–BASE-SMG':                'TVS Apache RTR / RR 310 Family',
+    'APACHE RR310-O2B-M24-DYN PRO-SEP-BLU':             'TVS Apache RTR / RR 310 Family',
+    'Apache RTR 160 4V Disc BT':                        'TVS Apache RTR / RR 310 Family',
+    'APACHE RTR 310 – BASE BLK':                    'TVS Apache RTR / RR 310 Family',
+    'APACHE RTR 310-O2B-M24- BASE-GL BLK':              'TVS Apache RTR / RR 310 Family',
+    'APACHE RTR 310-O2B-M24-BASE-RC-RED':               'TVS Apache RTR / RR 310 Family',
+    'APACHE RTR 310-O2B-M24-DYN PRO-RC-RED TR':         'TVS Apache RTR / RR 310 Family',
+    'CITY+ DRUM OBDIIB':                                'TVS Star City Plus',
+    'Jupiter 110':                                      'TVS Jupiter Family',
+    'JUPITER 110 OBDIIB DISC DIGITAL DT':               'TVS Jupiter Family',
+    'Jupiter 125':                                      'TVS Jupiter Family',
+    'JUPITER 125 BSVI':                                 'TVS Jupiter Family',
+    'Jupiter X':                                        'TVS Jupiter Family',
+    'N597 BASE':                                        'TVS Apache RTX',
+    'N597 TOP':                                         'TVS Apache RTX',
+    'NTORQ 125 DISC – Race Edition BSVI':           'TVS NTORQ 125 - 150 Family',
+    'NTORQ 125 DISC – SSE':                         'TVS NTORQ 125 - 150 Family',
+    'NTORQ 125 DISC R.LCD OBD2B':                       'TVS NTORQ 125 - 150 Family',
+    'NTORQ 125 RACE XP OBDIIB TORQUE ASSIST':           'TVS NTORQ 125 - 150 Family',
+    'NTORQ 125 RE R.LCD OBD2B':                         'TVS NTORQ 125 - 150 Family',
+    'NTORQ 125 SSE R.LCD OBD2B':                        'TVS NTORQ 125 - 150 Family',
+    'NTORQ 125 XT':                                     'TVS NTORQ 125 - 150 Family',
+    'ORBITER':                                          'TVS Orbiter',
+    'RADEON DISC DIGI OBDIIB':                          'TVS Radeon',
+    'RADEON DRUM BLACK EDITION OBDIIB':                 'TVS Radeon',
+    'RADEON DRUM DIGI OBDIIB':                          'TVS Radeon',
+    'RADEON DRUM OBDIIB':                               'TVS Radeon',
+    'RAIDER - OBDIIB 1CH ABS':                          'TVS Radeon',
+    'Raider 125':                                       'TVS Raider',
+    'RAIDER DISC IGO I-ECU OBDIIB':                     'TVS Raider',
+    'RAIDER DRUM OBDIIB':                               'TVS Raider',
+    'RAIDER IGO I-ECU RD WH OBDIIB':                   'TVS Raider',
+    'Raider LCD OBDIIB 1CH ABS':                        'TVS Raider',
+    'RAIDER SQD EDN I-ECU OBDIIB':                      'TVS Raider',
+    'RAIDER SS DISC OBDIIB':                            'TVS Raider',
+    'Scooty Zest – OBDIIB':                         'TVS Scooty Zest',
+    'Scooty Zest Matte series – OBDIIB':            'TVS Scooty Zest',
+    'SPORT ELS REFRESH OBDIIB':                         'TVS Sport',
+    'SPORT ES OBDIIB':                                  'TVS Sport',
+    'TVS Apache RR 310':                                'TVS Apache RTR / RR 310 Family',
+    'TVS Apache RTR 160':                               'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR 160 2V DC ABS':                     'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RTR 160 4V':                            'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR 160 4V - 2CH ABS BT':               'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR 160 4V - RM DISC':                  'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR 160 4V - RM SPL ED':                'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR 160-2V RM OBDIIA DRUM B.E':         'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR 1604V-OBDIIB DISC BLK.EDI':         'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR 160-OBDIIB 2V DC ABS':              'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RTR 180':                               'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RTR 200 4V':                            'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RTR 310':                               'TVS Apache RTR / RR 310 Family',
+    'TVS APACHE RTR160-OBDIIB 2V DISC':                 'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR160-OBDIIB 2V DISC BT':              'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR160-OBDIIB 2V DRUM':                 'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR160-OBDIIB 2V DRUM BLK.EDI':         'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR160-OBDIIB 2V RAC ED':               'TVS Apache RTR 160 - 200 Family',
+    'TVS APACHE RTR180-OBDIIB DISC':                    'TVS Apache RTR 160 - 200 Family',
+    'TVS iQube':                                        'TVS iQube',
+    'TVS iQube 11 Fr. Disc Beige':                      'TVS iQube',
+    'TVS iQube 11 Fr. Disc black':                      'TVS iQube',
+    'TVS IQUBE ELECTRIC 9':                             'TVS iQube',
+    'TVS iQube S':                                      'TVS iQube',
+    'TVS iQUBE S15 BEIGE Fr Disc':                      'TVS iQube',
+    'TVS iQUBE S15 BLACK Fr Disc':                      'TVS iQube',
+    'TVS IQube SmartXconnect - o9 LCD Drum':            'TVS iQube',
+    'TVS iQUBE SMARTXONNECT UG ME':                     'TVS iQube',
+    'TVS iQube ST':                                     'TVS iQube',
+    'TVS IQUBE ST 17':                                  'TVS iQube',
+    'TVS IQUBE ST 17-Beige':                            'TVS iQube',
+    'TVS IQube UG-Beige':                               'TVS iQube',
+    'TVS IQube UG-New':                                 'TVS iQube',
+    'TVS Jupiter':                                      'TVS Jupiter Family',
+    'TVS Jupiter 110cc':                                'TVS Jupiter Family',
+    'TVS Jupiter 125':                                  'TVS Jupiter Family',
+    'TVS JUPITER 125 DISC DT SXC OBDIIB':               'TVS Jupiter Family',
+    'TVS JUPITER 125 DISC OBDIIB':                      'TVS Jupiter Family',
+    'TVS JUPITER 125 DISC SXC OBDIIB':                  'TVS Jupiter Family',
+    'TVS JUPITER 125 DRUM OBDIIB':                      'TVS Jupiter Family',
+    'TVS JUPITER110 DISC ALLOY SXC':                    'TVS Jupiter Family',
+    'TVS JUPITER110 DISC ALLOY SXC OBDIIB':             'TVS Jupiter Family',
+    'TVS JUPITER110 DRUM ALLOY OBDIIB':                 'TVS Jupiter Family',
+    'TVS JUPITER110 DRUM ALLOY SXC OBDIIB':             'TVS Jupiter Family',
+    'TVS JUPITER110 DRUM OBDIIB':                       'TVS Jupiter Family',
+    'TVS JUPITER110 DRUM SMW OBDIIB':                   'TVS Jupiter Family',
+    'TVS NTORQ 125':                                    'TVS NTORQ 125 - 150 Family',
+    'TVS NTORQ 125 DISC BSVI':                          'TVS NTORQ 125 - 150 Family',
+    'TVS NTORQ 125 DISC BSVI OBDIIB':                   'TVS NTORQ 125 - 150 Family',
+    'TVS NTORQ 125 RACE EDT  BSVI OBDIIB':              'TVS NTORQ 125 - 150 Family',
+    'TVS NTORQ 125 RACE XP BSVI OBDIIB':                'TVS NTORQ 125 - 150 Family',
+    'TVS NTORQ 125 SUPER SQUAD BSVI OBDIIB':            'TVS NTORQ 125 - 150 Family',
+    'TVS NTORQ 125 XT BSVI OBDIIB':                     'TVS NTORQ 125 - 150 Family',
+    'TVS NTorq 150':                                    'TVS NTORQ 125 - 150 Family',
+    'TVS Ntorq 150 ABS OBDIIB':                         'TVS NTORQ 125 - 150 Family',
+    'TVS Ntorq 150 TFT ABS OBDIIB':                     'TVS NTORQ 125 - 150 Family',
+    'TVS Orbiter V1':                                   'TVS Orbiter',
+    'TVS Orbiter V2':                                   'TVS Orbiter',
+    'TVS Radeon':                                       'TVS Radeon',
+    'TVS RADEON - DIGI DRUM':                           'TVS Radeon',
+    'TVS RADEON 110 ES MAG BSVI':                       'TVS Radeon',
+    'TVS Raider':                                       'TVS Raider',
+    'TVS Raider 150':                                   'TVS Raider',
+    'TVS RAIDER DISC':                                  'TVS Raider',
+    'TVS RAIDER DISC - SS':                             'TVS Raider',
+    'TVS RAIDER DISC - SSE':                            'TVS Raider',
+    'TVS RAIDER DISC CONNECTED':                        'TVS Raider',
+    'TVS RAIDER DRUM':                                  'TVS Raider',
+    'TVS Ronin':                                        'TVS Ronin',
+    'TVS RONIN 1CH BASE-FL RED - OBDIIB':               'TVS Ronin',
+    'TVS RONIN 1CH BASE-LNG Black - OBDIIB':            'TVS Ronin',
+    'TVS RONIN 2CH MID SPECIAL EDI OBDIIB':             'TVS Ronin',
+    'TVS RONIN BASE OBIIB 1CH – MATTE WHITE':       'TVS Ronin',
+    'TVS RONIN MID 2CH – CHARCOAL EMBR OBDIIB':     'TVS Ronin',
+    'TVS RONIN MID 2CH – GLACIER SILVR OBDIIB':     'TVS Ronin',
+    'TVS Scooty Zest':                                  'TVS Scooty Zest',
+    'TVS Sport':                                        'TVS Sport',
+    'TVS SPORT ELS BSVI':                               'TVS Sport',
+    'TVS SPORT ES-U559':                                'TVS Sport',
+    'TVS XL 100 COM iTs-BSVI':                          'TVS XL100',
+    'TVS XL 100 HD iTs – SBS Spl. Edition':         'TVS XL100',
+    'TVS XL 100 HD iTs BSVI':                           'TVS XL100',
+    'TVS XL 100 HD OBDIIB':                             'TVS XL100',
+    'TVS XL 100 HEAVY DUTY ES':                         'TVS XL100',
+    'TVS XL100':                                        'TVS XL100',
+    'TVS ZEST - OBDIIB SXC BLACK':                      'TVS Scooty Zest',
+    'TVS ZEST - OBDIIB SXC NARDO GREY':                 'TVS Scooty Zest',
+    'TVS Zest 110':                                     'TVS Scooty Zest',
+    'TVSAPACHERTR1604V–OBDIIB 2CH USD':             'TVS Apache RTR 160 - 200 Family',
+    'U546 V2':                                          'TVS Orbiter',
+    'U759 iQUBE':                                       'TVS iQube',
+    'U759 iQUBE 11 Black':                              'TVS iQube',
+}
+
+# Maps canonical model names (from normalize_purchased_model) → Retail Dispersion family.
+# Used to build maps.mdl_disp in the payload, so the frontend can detect same/cross
+# retails even when the enquired-model dimension uses canonical names.
+CANONICAL_TO_DISP_FAMILY: dict[str, str] = {
+    'TVS Apache RTR 160':     'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RTR 160 4V':  'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RTR 180':     'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RTR 200 4V':  'TVS Apache RTR 160 - 200 Family',
+    'TVS Apache RR 310':      'TVS Apache RTR / RR 310 Family',
+    'TVS Apache RTR 310':     'TVS Apache RTR / RR 310 Family',
+    'TVS Jupiter':            'TVS Jupiter Family',
+    'TVS Jupiter 125':        'TVS Jupiter Family',
+    'TVS NTORQ 125':          'TVS NTORQ 125 - 150 Family',
+    'TVS iQube':              'TVS iQube',
+    'TVS Raider':             'TVS Raider',
+    'TVS Radeon':             'TVS Radeon',
+    'TVS Ronin':              'TVS Ronin',
+    'TVS Scooty Zest':        'TVS Scooty Zest',
+    'TVS Sport':              'TVS Sport',
+    'TVS XL100':              'TVS XL100',
+    'TVS Star City Plus':     'TVS Star City Plus',
+    'TVS Orbiter':            'TVS Orbiter',
+}
+
 # Diagnostic: tracks raw model values that normalize to 'Unknown'.
 # Populated by normalize_purchased_model (reason) and the main aggregation loop (context).
 # Cleared implicitly on each fresh process start; never written to production payload.
@@ -969,6 +1142,20 @@ def normalize_purchased_model(pm):
     if 'STAR CITY' in pu or 'STARCITY' in pu or 'CITY+' in pu:  return 'TVS Star City Plus'
     _unk_mdl_reasons[pm] = 'CATCH_ALL'
     return 'Unknown'
+
+
+def normalize_disp_model(pm):
+    """Map raw purchasedModel → Retail Dispersion Model using the exact supplied mapping.
+
+    Uses RETAIL_DISPERSION_MAP exclusively — no keyword inference, no fuzzy matching.
+    Unmapped raw values are returned verbatim so they appear as distinct buckets in
+    the Retail Dispersion matrix (never silently merged into a family).
+    """
+    pm = str(pm or '').strip()
+    if not pm:
+        return 'Unknown'
+    return RETAIL_DISPERSION_MAP.get(pm, pm)
+
 
 LEAD_COL_MAP = {
     'opty_id':     'SorceLeadId',
@@ -1992,7 +2179,8 @@ def build_payload(all_leads, retail_map):
     stdm, u_stdm = {}, {}   # state × dealer × month
     mxdl, u_mxdl = {}, {}  # model × dealer × month
     ltdl, u_ltdl = {}, {}  # lead-type × dealer × month
-    disp, u_disp = {}, {}   # enquired_model × purchased_model × month (retails only)
+    disp, u_disp = {}, {}   # enquired_model × disp_purchased_model × month (retails only)
+    disp_mdl_idx, disp_mdl_arr = {}, []   # separate dimension: Retail Dispersion family names
     pmr,  u_pmr  = {}, {}   # purch_model × enq_model × src × month → [R, R_dms, R_co] (retails only)
     cdm, csm, cdsm = {},{},{}
     dl_sn = {}  # city × dealer × lead-month → [L_open, L_booking, L_lost]
@@ -2163,10 +2351,14 @@ def build_payload(all_leads, retail_map):
             ubump(u_cdsm, f"{cti}|{dli}|{si}|{li}", f"{cti}|{dli}|{si}|{uli}", is_ret, rtype)
 
         if is_ret:
-            pm  = normalize_purchased_model(retail_map[lid].get('pm', '')) or 'Unknown'
-            pmi = ix(mdl_idx, mdl_arr, pm)   # purchased model uses same mdl index
-            disp[f"{mi}|{pmi}|{li}"]   = disp.get(f"{mi}|{pmi}|{li}",   0) + 1
-            u_disp[f"{mi}|{pmi}|{uli}"] = u_disp.get(f"{mi}|{pmi}|{uli}", 0) + 1
+            raw_pm = retail_map[lid].get('pm', '') or ''
+            pm  = normalize_purchased_model(raw_pm) or 'Unknown'
+            pmi = ix(mdl_idx, mdl_arr, pm)        # canonical purchased model (for pmr)
+            # Retail Dispersion uses a separate standardisation: exact RETAIL_DISPERSION_MAP
+            dm  = normalize_disp_model(raw_pm)
+            dmi = ix(disp_mdl_idx, disp_mdl_arr, dm)
+            disp[f"{mi}|{dmi}|{li}"]   = disp.get(f"{mi}|{dmi}|{li}",   0) + 1
+            u_disp[f"{mi}|{dmi}|{uli}"] = u_disp.get(f"{mi}|{dmi}|{uli}", 0) + 1
 
             # pmr / u_pmr: retail-only [pmi, mi, si, li, R, R_dms, R_co]
             _rt_u2 = rtype.upper()
@@ -2222,6 +2414,12 @@ def build_payload(all_leads, retail_map):
         'st': st_arr, 'zone': zone_arr, 'city': city_arr,
         'city_state': city_state_arr,
         'ab': _AGE_BUCKET_LABELS,
+        # Retail Dispersion purchased-model dimension (separate from mdl).
+        # dlm[i] is the Retail Dispersion family name for disp row column 1.
+        'dlm': disp_mdl_arr,
+        # Parallel to mdl: maps each canonical enquired-model name to its
+        # Retail Dispersion family (for same/cross detection in the frontend).
+        'mdl_disp': [CANONICAL_TO_DISP_FAMILY.get(m, m) for m in mdl_arr],
     }
     if dl_col and dl_arr:
         maps_payload['dl'] = dl_arr

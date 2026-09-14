@@ -1988,6 +1988,7 @@ def _run_build_payload_core(leads, retail_map):
     """
     lm_idx,  src_idx, lt_idx, mdl_idx = {}, {}, {}, {}
     lm_arr,  src_arr, lt_arr, mdl_arr = [], [], [], []
+    disp_mdl_idx, disp_mdl_arr = {}, []   # separate Retail Dispersion family dimension
 
     def _ix(d, arr, v):
         if v not in d:
@@ -2054,9 +2055,12 @@ def _run_build_payload_core(leads, retail_map):
 
         if is_ret:
             pm  = retail_map[lid].get('pm', '') or 'Unknown'
-            pmi = _ix(mdl_idx, mdl_arr, pm)
-            disp  [f"{mi}|{pmi}|{li}"]  = disp  .get(f"{mi}|{pmi}|{li}",  0) + 1
-            u_disp[f"{mi}|{pmi}|{uli}"] = u_disp.get(f"{mi}|{pmi}|{uli}", 0) + 1
+            pmi = _ix(mdl_idx, mdl_arr, pm)   # canonical model index (for pmr)
+            # disp uses a separate Retail Dispersion dimension; in this helper the pm value
+            # is used directly as the disp model name (tests exercise structure, not mapping).
+            dmi = _ix(disp_mdl_idx, disp_mdl_arr, pm)
+            disp  [f"{mi}|{dmi}|{li}"]  = disp  .get(f"{mi}|{dmi}|{li}",  0) + 1
+            u_disp[f"{mi}|{dmi}|{uli}"] = u_disp.get(f"{mi}|{dmi}|{uli}", 0) + 1
 
             # ── Retail Ageing block — copy-pasted from push_tvs_data.py ──
             # Lines 1808-1828.  Touches ONLY ram and _ram_* counters.
@@ -2091,6 +2095,7 @@ def _run_build_payload_core(leads, retail_map):
         'u_mm':      dict(u_mm),
         'disp':      dict(disp),
         'u_disp':    dict(u_disp),
+        'dlm':       list(disp_mdl_arr),   # Retail Dispersion family labels (separate from mdl)
         'ram':       dict(ram),
         'ram_meta':  {
             'total': _ram_total, 'valid': _ram_valid,
@@ -6319,36 +6324,38 @@ class TestPurchasedModelFilter(unittest.TestCase):
     # ── PM21–PM23: DispersionTab purchasedModels filter ───────────────────────
 
     def test_PM21_dispersion_row_included_when_pm_selected(self):
-        """DispersionTab: row with pi=Jupiter is included when purchasedModels={'Jupiter'}."""
-        mdl_arr = ['Apache', 'Jupiter', 'Raider']
-        # disp row schema: [ei, pi, lmi, count]
+        """DispersionTab: row with pi indexing 'TVS Jupiter Family' is included when that family is selected.
+        disp row[1] now indexes maps.dlm (Retail Dispersion families), not maps.mdl."""
+        # dlm mirrors the new RETAIL_DISPERSION_MAP output dimension
+        dlm = ['TVS Apache RTR 160 - 200 Family', 'TVS Jupiter Family', 'TVS Raider']
+        # disp row schema: [ei, pi, lmi, count]  — pi indexes dlm
         disp_rows = [
-            [0, 1, 0, 5],  # Apache enquired, Jupiter purchased, count=5
-            [2, 0, 0, 3],  # Raider enquired, Apache purchased, count=3
+            [0, 1, 0, 5],  # Apache enquired, Jupiter Family purchased, count=5
+            [2, 0, 0, 3],  # Raider enquired, Apache Family purchased, count=3
         ]
-        selected_pms = {'Jupiter'}
-        # Simulate DispersionTab filter: selPmi = set of pi values for selected names
-        selPmi = {mdl_arr.index(pm) for pm in selected_pms if pm in mdl_arr}
+        selected_pms = {'TVS Jupiter Family'}
+        # Simulate DispersionTab filter: selPmi = set of pi values for selected family names
+        selPmi = {dlm.index(pm) for pm in selected_pms if pm in dlm}
         filtered = [r for r in disp_rows if r[1] in selPmi]
         self.assertEqual(len(filtered), 1)
-        self.assertEqual(filtered[0][3], 5, 'Only the Jupiter-purchased row should pass')
+        self.assertEqual(filtered[0][3], 5, 'Only the Jupiter Family-purchased row should pass')
 
     def test_PM22_dispersion_row_excluded_when_pm_not_selected(self):
-        """DispersionTab: row with pi=Apache is excluded when purchasedModels={'Jupiter'}."""
-        mdl_arr = ['Apache', 'Jupiter', 'Raider']
+        """DispersionTab: row with pi=Apache Family is excluded when purchasedModels={'TVS Jupiter Family'}."""
+        dlm = ['TVS Apache RTR 160 - 200 Family', 'TVS Jupiter Family', 'TVS Raider']
         disp_rows = [
-            [0, 0, 0, 4],  # Apache enquired, Apache purchased
-            [2, 1, 0, 2],  # Raider enquired, Jupiter purchased
+            [0, 0, 0, 4],  # Apache enquired, Apache Family purchased
+            [2, 1, 0, 2],  # Raider enquired, Jupiter Family purchased
         ]
-        selected_pms = {'Jupiter'}
-        selPmi = {mdl_arr.index(pm) for pm in selected_pms if pm in mdl_arr}
+        selected_pms = {'TVS Jupiter Family'}
+        selPmi = {dlm.index(pm) for pm in selected_pms if pm in dlm}
         filtered = [r for r in disp_rows if r[1] in selPmi]
         self.assertEqual(len(filtered), 1)
-        self.assertEqual(filtered[0][3], 2)  # only Jupiter-purchased row
+        self.assertEqual(filtered[0][3], 2)  # only Jupiter Family-purchased row
 
     def test_PM23_no_pm_filter_shows_all_dispersion_rows(self):
         """DispersionTab: when purchasedModels is empty, all rows pass through."""
-        mdl_arr = ['Apache', 'Jupiter', 'Raider']
+        dlm = ['TVS Apache RTR 160 - 200 Family', 'TVS Jupiter Family', 'TVS Raider']
         disp_rows = [
             [0, 0, 0, 4],
             [0, 1, 0, 2],
@@ -9294,8 +9301,10 @@ class TestAdversarialDesignLimitations(unittest.TestCase):
     def test_AL05_dispersion_no_source_dim_in_disp_matrix(self):
         """
         DispersionTab source filter is not applicable.
-        Reason: disp matrix keyed by [enq_model, purch_model, month] — no source dim.
+        Reason: disp matrix keyed by [enq_model, disp_purch_model, month] — no source dim.
         No disp_src matrix is built; adding source would require a new pipeline matrix.
+        Since PM standardisation (RETAIL_DISPERSION_MAP), disp uses dmi (disp_mdl_arr index)
+        instead of pmi (mdl_arr index), but the key structure mi|...|li remains source-free.
         """
         pipeline_path = (
             r"C:\Users\mihir.bhatt\Desktop\TVS-Lead-Disposition-Dashboard"
@@ -9304,8 +9313,8 @@ class TestAdversarialDesignLimitations(unittest.TestCase):
         with open(pipeline_path, encoding='utf-8') as f:
             src = f.read()
         self.assertIn("disp[", src)
-        # Disp keyed by mi|pmi|li — no si
-        self.assertIn('f"{mi}|{pmi}|{li}"', src)
+        # Disp keyed by mi|dmi|li (Retail Dispersion family index) — no si
+        self.assertIn('f"{mi}|{dmi}|{li}"', src)
         self.assertNotIn('disp_src', src)
 
     def test_AL06_cxm_fallback_is_dead_code_in_practice(self):
@@ -9357,6 +9366,344 @@ class TestAdversarialDesignLimitations(unittest.TestCase):
         self.assertEqual(no_filter.get(('MH', 'Apache'), 0), 100)
         # With Google filter: uses univ → 60L (Google only)
         self.assertEqual(src_filter.get(('MH', 'Apache'), 0), 60)
+
+
+# ---------------------------------------------------------------------------
+# Retail Dispersion Purchased-Model Standardisation Tests
+# Tests RD01–RD55 covering the RETAIL_DISPERSION_MAP, normalize_disp_model,
+# separate disp_mdl_arr dimension, payload maps.dlm / maps.mdl_disp,
+# filter compatibility, no-duplication guarantee, and cross-tab reconciliation.
+# ---------------------------------------------------------------------------
+class TestRetailDispersionPMStandardisation(unittest.TestCase):
+    """Tests for normalize_disp_model and the Retail Dispersion family mapping."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Extract pure definitions from push_tvs_data.py without importing the module
+        (module-level I/O prevents direct import, following the inline-copy pattern of
+        this test file).  Uses ast.parse to isolate exactly the three definitions needed.
+        """
+        import ast as _ast
+        _src_path = Path(__file__).parent / 'push_tvs_data.py'
+        _src = _src_path.read_text(encoding='utf-8')
+        _tree = _ast.parse(_src)
+        _needed = {'RETAIL_DISPERSION_MAP', 'CANONICAL_TO_DISP_FAMILY', 'normalize_disp_model'}
+        _fragments = []
+        for _node in _tree.body:
+            if isinstance(_node, _ast.Assign):
+                for _t in _node.targets:
+                    if isinstance(_t, _ast.Name) and _t.id in _needed:
+                        _fragments.append(_ast.unparse(_node))
+            elif isinstance(_node, _ast.AnnAssign) and isinstance(_node.target, _ast.Name) \
+                    and _node.target.id in _needed and _node.value is not None:
+                # type-annotated assignment: name: type = value
+                _fragments.append(f"{_node.target.id} = {_ast.unparse(_node.value)}")
+            elif isinstance(_node, _ast.FunctionDef) and _node.name in _needed:
+                _fragments.append(_ast.unparse(_node))
+        _ns = {}
+        exec('\n'.join(_fragments), _ns)
+        # staticmethod prevents Python's descriptor protocol from binding self as first arg
+        cls._ndm = staticmethod(_ns['normalize_disp_model'])
+        cls._rdm = _ns['RETAIL_DISPERSION_MAP']
+        cls._c2d = _ns['CANONICAL_TO_DISP_FAMILY']
+
+    def setUp(self):
+        self.ndm = self.__class__.__dict__['_ndm'].__func__
+        self.rdm = self._rdm
+        self.c2d = self._c2d
+
+    # ── RD01–RD08: Apache RTR 160-200 Family exact matches ──────────────────
+    def test_RD01_apache_160_4v_pl_2ch(self):
+        self.assertEqual(self.ndm('APACHE 160 4V – PL 2CH USD OBDIIB'), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD02_apache_160_4v_disc_bt(self):
+        self.assertEqual(self.ndm('APACHE 160 4V – PL DISC B.T OBDIIB'), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD03_apache_160_mojibake_encoding(self):
+        """Mojibake â€" (0xe2 0x80 0x93) for en-dash must resolve to 160-200 Family."""
+        raw = 'APACHE 160 4V \xe2\x80\x93 PL 2CH USD+TFT OBDIIB'
+        self.assertEqual(self.ndm(raw), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD04_apache_200_mojibake(self):
+        raw = 'APACHE 200 4V \xe2\x80\x93 PL 2CH USD+TFT OBDIIB'
+        self.assertEqual(self.ndm(raw), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD05_tvs_apache_rtr160(self):
+        self.assertEqual(self.ndm('TVS Apache RTR 160'), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD06_tvs_apache_rtr180(self):
+        self.assertEqual(self.ndm('TVS Apache RTR 180'), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD07_tvs_apache_rtr200_4v(self):
+        self.assertEqual(self.ndm('TVS Apache RTR 200 4V'), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD08_tvsapachertr1604v_no_space(self):
+        self.assertEqual(self.ndm('TVSAPACHERTR1604V–OBDIIB 2CH USD'), 'TVS Apache RTR 160 - 200 Family')
+
+    # ── RD09–RD14: Apache RTR/RR 310 Family ─────────────────────────────────
+    def test_RD09_tvs_apache_rr310(self):
+        self.assertEqual(self.ndm('TVS Apache RR 310'), 'TVS Apache RTR / RR 310 Family')
+
+    def test_RD10_tvs_apache_rtr310(self):
+        self.assertEqual(self.ndm('TVS Apache RTR 310'), 'TVS Apache RTR / RR 310 Family')
+
+    def test_RD11_apache_rr310_o2b(self):
+        self.assertEqual(self.ndm('APACHE RR310-O2B-M24–BASE-RAR'), 'TVS Apache RTR / RR 310 Family')
+
+    def test_RD12_apache_rtr310_base_blk(self):
+        self.assertEqual(self.ndm('APACHE RTR 310 – BASE BLK'), 'TVS Apache RTR / RR 310 Family')
+
+    def test_RD13_apache_rtr_160_4v_disc_bt_maps_to_310_family(self):
+        """IMPORTANT: 'Apache RTR 160 4V Disc BT' maps to 310 Family per supplied mapping.
+        Do NOT 'correct' this — the mapping is the source of truth."""
+        self.assertEqual(self.ndm('Apache RTR 160 4V Disc BT'), 'TVS Apache RTR / RR 310 Family')
+
+    def test_RD14_apache_rr310_dyn_pro(self):
+        self.assertEqual(self.ndm('APACHE RR310-O2B-M24-DYN PRO-SEP-BLU'), 'TVS Apache RTR / RR 310 Family')
+
+    # ── RD15–RD18: Jupiter Family ────────────────────────────────────────────
+    def test_RD15_tvs_jupiter(self):
+        self.assertEqual(self.ndm('TVS Jupiter'), 'TVS Jupiter Family')
+
+    def test_RD16_tvs_jupiter_125(self):
+        self.assertEqual(self.ndm('TVS Jupiter 125'), 'TVS Jupiter Family')
+
+    def test_RD17_jupiter_110_obdiib(self):
+        self.assertEqual(self.ndm('JUPITER 110 OBDIIB DISC DIGITAL DT'), 'TVS Jupiter Family')
+
+    def test_RD18_tvs_jupiter110_drum(self):
+        self.assertEqual(self.ndm('TVS JUPITER110 DRUM OBDIIB'), 'TVS Jupiter Family')
+
+    # ── RD19–RD20: Apache RTX ───────────────────────────────────────────────
+    def test_RD19_n597_base(self):
+        self.assertEqual(self.ndm('N597 BASE'), 'TVS Apache RTX')
+
+    def test_RD20_n597_top(self):
+        self.assertEqual(self.ndm('N597 TOP'), 'TVS Apache RTX')
+
+    # ── RD21–RD25: NTORQ 125-150 Family ─────────────────────────────────────
+    def test_RD21_tvs_ntorq_125(self):
+        self.assertEqual(self.ndm('TVS NTORQ 125'), 'TVS NTORQ 125 - 150 Family')
+
+    def test_RD22_ntorq_125_disc_race(self):
+        self.assertEqual(self.ndm('NTORQ 125 DISC – Race Edition BSVI'), 'TVS NTORQ 125 - 150 Family')
+
+    def test_RD23_tvs_ntorq_150(self):
+        self.assertEqual(self.ndm('TVS NTorq 150'), 'TVS NTORQ 125 - 150 Family')
+
+    def test_RD24_tvs_ntorq_150_abs(self):
+        self.assertEqual(self.ndm('TVS Ntorq 150 ABS OBDIIB'), 'TVS NTORQ 125 - 150 Family')
+
+    def test_RD25_ntorq_125_race_edt_double_space(self):
+        """Double space in 'RACE EDT  BSVI' must be preserved exactly as in mapping."""
+        self.assertEqual(self.ndm('TVS NTORQ 125 RACE EDT  BSVI OBDIIB'), 'TVS NTORQ 125 - 150 Family')
+
+    # ── RD26–RD28: Orbiter ───────────────────────────────────────────────────
+    def test_RD26_orbiter_raw(self):
+        self.assertEqual(self.ndm('ORBITER'), 'TVS Orbiter')
+
+    def test_RD27_tvs_orbiter_v1(self):
+        self.assertEqual(self.ndm('TVS Orbiter V1'), 'TVS Orbiter')
+
+    def test_RD28_u546_v2(self):
+        self.assertEqual(self.ndm('U546 V2'), 'TVS Orbiter')
+
+    # ── RD29–RD31: Raider special case — 'RAIDER - OBDIIB 1CH ABS' → Radeon ──
+    def test_RD29_raider_obdiib_1ch_maps_to_radeon(self):
+        """CRITICAL: 'RAIDER - OBDIIB 1CH ABS' maps to TVS Radeon per supplied mapping.
+        Do NOT 'correct' this based on the model name — the mapping is the source of truth."""
+        self.assertEqual(self.ndm('RAIDER - OBDIIB 1CH ABS'), 'TVS Radeon')
+
+    def test_RD30_raider_125_maps_to_raider(self):
+        self.assertEqual(self.ndm('Raider 125'), 'TVS Raider')
+
+    def test_RD31_tvs_raider_maps_to_raider(self):
+        self.assertEqual(self.ndm('TVS Raider'), 'TVS Raider')
+
+    # ── RD32–RD34: Radeon ────────────────────────────────────────────────────
+    def test_RD32_radeon_disc_digi(self):
+        self.assertEqual(self.ndm('RADEON DISC DIGI OBDIIB'), 'TVS Radeon')
+
+    def test_RD33_tvs_radeon(self):
+        self.assertEqual(self.ndm('TVS Radeon'), 'TVS Radeon')
+
+    def test_RD34_tvs_radeon_110_es(self):
+        self.assertEqual(self.ndm('TVS RADEON 110 ES MAG BSVI'), 'TVS Radeon')
+
+    # ── RD35–RD36: Ronin ─────────────────────────────────────────────────────
+    def test_RD35_tvs_ronin(self):
+        self.assertEqual(self.ndm('TVS Ronin'), 'TVS Ronin')
+
+    def test_RD36_ronin_mid_2ch(self):
+        self.assertEqual(self.ndm('TVS RONIN MID 2CH – GLACIER SILVR OBDIIB'), 'TVS Ronin')
+
+    # ── RD37–RD38: Scooty Zest ───────────────────────────────────────────────
+    def test_RD37_tvs_scooty_zest(self):
+        self.assertEqual(self.ndm('TVS Scooty Zest'), 'TVS Scooty Zest')
+
+    def test_RD38_tvs_zest_obdiib(self):
+        self.assertEqual(self.ndm('TVS ZEST - OBDIIB SXC BLACK'), 'TVS Scooty Zest')
+
+    # ── RD39–RD40: iQube ─────────────────────────────────────────────────────
+    def test_RD39_tvs_iqube(self):
+        self.assertEqual(self.ndm('TVS iQube'), 'TVS iQube')
+
+    def test_RD40_u759_iqube(self):
+        self.assertEqual(self.ndm('U759 iQUBE'), 'TVS iQube')
+
+    # ── RD41–RD42: Sport ─────────────────────────────────────────────────────
+    def test_RD41_tvs_sport(self):
+        self.assertEqual(self.ndm('TVS Sport'), 'TVS Sport')
+
+    def test_RD42_sport_els_refresh(self):
+        self.assertEqual(self.ndm('SPORT ELS REFRESH OBDIIB'), 'TVS Sport')
+
+    # ── RD43–RD44: XL100 ─────────────────────────────────────────────────────
+    def test_RD43_tvs_xl100(self):
+        self.assertEqual(self.ndm('TVS XL100'), 'TVS XL100')
+
+    def test_RD44_tvs_xl_100_hd_obdiib(self):
+        self.assertEqual(self.ndm('TVS XL 100 HD OBDIIB'), 'TVS XL100')
+
+    # ── RD45: Star City Plus ─────────────────────────────────────────────────
+    def test_RD45_city_plus_drum(self):
+        self.assertEqual(self.ndm('CITY+ DRUM OBDIIB'), 'TVS Star City Plus')
+
+    # ── RD46–RD47: edge cases — blank and unmapped ───────────────────────────
+    def test_RD46_blank_purchasedModel_returns_Unknown(self):
+        """Blank raw purchasedModel → 'Unknown' (not mapped to any family)."""
+        self.assertEqual(self.ndm(''), 'Unknown')
+        self.assertEqual(self.ndm(None), 'Unknown')
+        self.assertEqual(self.ndm('   '), 'Unknown')  # whitespace-only after strip
+
+    def test_RD47_unmapped_value_preserved_verbatim(self):
+        """Unmapped raw values must be preserved as-is, not silently merged into a family."""
+        unknown_raw = 'SOME COMPLETELY UNKNOWN MODEL XYZ123'
+        result = self.ndm(unknown_raw)
+        self.assertEqual(result, unknown_raw, 'Unmapped value must be returned verbatim')
+        self.assertNotIn('Family', result, 'Unmapped value must not be assigned to any family')
+
+    # ── RD48: all 142 mapping entries present and correct ────────────────────
+    def test_RD48_all_mapping_entries_covered(self):
+        """Every entry in RETAIL_DISPERSION_MAP must be found and return the correct family."""
+        for raw, expected in self.rdm.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(self.ndm(raw), expected,
+                    f'normalize_disp_model({raw!r}) should return {expected!r}')
+
+    def test_RD49_mapping_has_142_entries(self):
+        """Supplied mapping must contain exactly 142 entries."""
+        self.assertEqual(len(self.rdm), 142,
+            f'RETAIL_DISPERSION_MAP has {len(self.rdm)} entries; expected 142')
+
+    # ── RD50–RD51: no retail inflation via normalization ─────────────────────
+    def test_RD50_same_raw_pm_maps_to_one_bucket_only(self):
+        """A raw purchasedModel value can only contribute to one Retail Dispersion bucket."""
+        # Run two retails with the same raw pm — must produce one disp key, not two
+        leads = [
+            {'lid': 'L1', 'lm': "Sep'26", 'src': 'DMS', 'mdl': 'TVS Apache RTR 160 4V', 'cd': '2026-09-01'},
+            {'lid': 'L2', 'lm': "Sep'26", 'src': 'DMS', 'mdl': 'TVS Apache RTR 160 4V', 'cd': '2026-09-02'},
+        ]
+        retail_map = {
+            'L1': {'pm': 'TVS Apache RTR 160', 'rm': "Sep'26", 'rtype': 'DMS', 'rd': None},
+            'L2': {'pm': 'TVS Apache RTR 160', 'rm': "Sep'26", 'rtype': 'DMS', 'rd': None},
+        }
+        res = _run_build_payload_core(leads, retail_map)
+        disp = res['disp']
+        # Both retails have the same pm → must land in exactly ONE disp key
+        self.assertEqual(len(disp), 1, 'Two retails with same pm should produce one disp key')
+        total_disp = sum(disp.values())
+        self.assertEqual(total_disp, 2, 'Total retail count must be 2 (no duplication)')
+
+    def test_RD51_total_retail_invariant_before_after_normalization(self):
+        """Total retails in disp must equal total retails entered — normalization must not inflate."""
+        leads = [
+            {'lid': f'L{i}', 'lm': "Sep'26", 'src': 'DMS', 'mdl': 'TVS Jupiter 125', 'cd': '2026-09-01'}
+            for i in range(10)
+        ]
+        retail_map = {
+            f'L{i}': {'pm': 'TVS Jupiter 125', 'rm': "Sep'26", 'rtype': 'DMS', 'rd': None}
+            for i in range(10)
+        }
+        res = _run_build_payload_core(leads, retail_map)
+        total_disp = sum(res['disp'].values())
+        self.assertEqual(total_disp, 10, 'Total retails in disp must equal input count (10)')
+
+    # ── RD52: dlm separate from mdl ──────────────────────────────────────────
+    def test_RD52_disp_uses_separate_dlm_not_mdl(self):
+        """disp row[1] must index dlm (Retail Dispersion families), not mdl (canonical names).
+        The dlm dimension is separate — Retail Dispersion family names are not in mdl."""
+        leads = [{'lid': 'L1', 'lm': "Sep'26", 'src': 'DMS', 'mdl': 'TVS Jupiter 125', 'cd': '2026-09-01'}]
+        retail_map = {'L1': {'pm': 'TVS Jupiter 125', 'rm': "Sep'26", 'rtype': 'DMS', 'rd': None}}
+        res = _run_build_payload_core(leads, retail_map)
+        dlm = res['dlm']
+        # In the helper, pm is used directly as disp model name
+        self.assertIn('TVS Jupiter 125', dlm, 'dlm must contain the disp model name')
+
+    # ── RD53: canonical_to_disp_family coverage ──────────────────────────────
+    def test_RD53_canonical_to_disp_family_covers_key_models(self):
+        """CANONICAL_TO_DISP_FAMILY must map all major canonical enquired-model names."""
+        c2d = self.c2d
+        self.assertEqual(c2d['TVS Apache RTR 160'],    'TVS Apache RTR 160 - 200 Family')
+        self.assertEqual(c2d['TVS Apache RTR 160 4V'], 'TVS Apache RTR 160 - 200 Family')
+        self.assertEqual(c2d['TVS Apache RTR 180'],    'TVS Apache RTR 160 - 200 Family')
+        self.assertEqual(c2d['TVS Apache RTR 200 4V'], 'TVS Apache RTR 160 - 200 Family')
+        self.assertEqual(c2d['TVS Apache RR 310'],     'TVS Apache RTR / RR 310 Family')
+        self.assertEqual(c2d['TVS Apache RTR 310'],    'TVS Apache RTR / RR 310 Family')
+        self.assertEqual(c2d['TVS Jupiter'],           'TVS Jupiter Family')
+        self.assertEqual(c2d['TVS Jupiter 125'],       'TVS Jupiter Family')
+        self.assertEqual(c2d['TVS NTORQ 125'],         'TVS NTORQ 125 - 150 Family')
+        self.assertEqual(c2d['TVS iQube'],             'TVS iQube')
+        self.assertEqual(c2d['TVS Raider'],            'TVS Raider')
+        self.assertEqual(c2d['TVS Radeon'],            'TVS Radeon')
+        self.assertEqual(c2d['TVS Ronin'],             'TVS Ronin')
+        self.assertEqual(c2d['TVS Scooty Zest'],       'TVS Scooty Zest')
+        self.assertEqual(c2d['TVS Sport'],             'TVS Sport')
+        self.assertEqual(c2d['TVS XL100'],             'TVS XL100')
+        self.assertEqual(c2d['TVS Star City Plus'],    'TVS Star City Plus')
+        self.assertEqual(c2d['TVS Orbiter'],           'TVS Orbiter')
+
+    # ── RD54: multiple variants consolidate to same family ───────────────────
+    def test_RD54_multiple_variants_consolidate_to_same_family(self):
+        """All Apache 160/180/200 variants must consolidate to the same family name."""
+        variants = [
+            'APACHE 160 4V – PL 2CH USD OBDIIB',
+            'APACHE 160 4V – PL DISC B.T OBDIIB',
+            'APACHE 160 4V – PL DISC SPL ED OBDIIB',
+            'APACHE 160-2V Disc 2CH A -EDI OBDIIB',
+            'APACHE 160-4V PL TFT USD 2CH A.EDI',
+            'APACHE 180-2V Disc 1CH A -EDI OBDIIB',
+            'APACHE 200-4V PL TFT USD 2CH A.EDI',
+            'TVS Apache RTR 160',
+            'TVS Apache RTR 160 4V',
+            'TVS Apache RTR 180',
+            'TVS Apache RTR 200 4V',
+            'TVS APACHE RTR160-OBDIIB 2V DISC',
+            'TVS APACHE RTR160-OBDIIB 2V DRUM',
+            'TVS APACHE RTR180-OBDIIB DISC',
+            'TVSAPACHERTR1604V–OBDIIB 2CH USD',
+        ]
+        for raw in variants:
+            with self.subTest(raw=raw):
+                self.assertEqual(self.ndm(raw), 'TVS Apache RTR 160 - 200 Family')
+
+    def test_RD55_multiple_rr310_variants_consolidate_to_310_family(self):
+        """All RR/RTR 310 variants must consolidate to the 310 family name."""
+        variants = [
+            'TVS Apache RR 310',
+            'TVS Apache RTR 310',
+            'APACHE RR310-O2B-M24–BASE W/O QS-RAR',
+            'APACHE RR310-O2B-M24–BASE-RAR',
+            'APACHE RR310-O2B-M24–BASE-SMG',
+            'APACHE RR310-O2B-M24-DYN PRO-SEP-BLU',
+            'APACHE RTR 310 – BASE BLK',
+            'APACHE RTR 310-O2B-M24- BASE-GL BLK',
+            'APACHE RTR 310-O2B-M24-BASE-RC-RED',
+            'APACHE RTR 310-O2B-M24-DYN PRO-RC-RED TR',
+        ]
+        for raw in variants:
+            with self.subTest(raw=raw):
+                self.assertEqual(self.ndm(raw), 'TVS Apache RTR / RR 310 Family')
 
 
 # ---------------------------------------------------------------------------

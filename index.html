@@ -1573,8 +1573,11 @@ const ModelSourceTab = React.memo(function ModelSourceTab({ data, filters, month
      PM filter restricts which pmi values are eligible; if PM≠row-model, retail = 0.
      PM standardisation is identical to pmr/Dispersion: pmi indices from maps.mdl. */
   const pmiSiLi = useMemo(() => {
+    // PM filter now uses Retail Dispersion family names (maps.mdl_disp maps canonical → family).
+    // Expand each selected family to all pmi indices whose canonical model belongs to it.
+    const mdl_disp = maps.mdl_disp || maps.mdl;
     const selPmiSet = (filters.purchasedModels && filters.purchasedModels.size > 0)
-      ? new Set([...filters.purchasedModels].map(pm => maps.mdl.indexOf(pm)).filter(i => i >= 0))
+      ? new Set(maps.mdl.map((_, i) => i).filter(i => filters.purchasedModels.has(mdl_disp[i])))
       : null;
     const m = new Map();
     for (const row of pmr) {
@@ -2189,7 +2192,8 @@ const FilterBar = React.memo(function FilterBar({ data, filters, onFiltersChange
   const cities    = useMemo(() => maps.city ? [...new Set(maps.city)].sort() : [], [maps]);
   const purchasedModels = useMemo(() => {
     const pm = new Set();
-    for (const row of (data.disp || [])) { const n = maps.mdl[row[1]]; if (n) pm.add(n); }
+    const dlm = maps.dlm || maps.mdl;   // Retail Dispersion family names
+    for (const row of (data.disp || [])) { const n = dlm[row[1]]; if (n) pm.add(n); }
     return [...pm].sort();
   }, [data.disp, maps]);
 
@@ -3936,6 +3940,12 @@ const RetailAgeingTab = React.memo(function RetailAgeingTab({ data, filters, mon
    ════════════════════════════════════════════════════════════════════ */
 const DispersionTab = React.memo(function DispersionTab({ data, filters, months, RT }) {
   const { maps, disp } = data;
+  // dlm: Retail Dispersion family labels for the purchased-model axis (row[1] indexes dlm).
+  // Falls back to maps.mdl for payloads generated before this standardisation was deployed.
+  const dlm = maps.dlm || maps.mdl;
+  // mdl_disp: maps enquired-model canonical name index → Retail Dispersion family,
+  // used for same/cross-sell detection when comparing enquired vs purchased dimensions.
+  const mdl_disp = maps.mdl_disp || maps.mdl;
 
   // group by retail-attribution month → enquired_model_idx → purchased_model_idx → count
   const byMonth = useMemo(() => {
@@ -3943,9 +3953,9 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     const allM   = !filters.months || filters.months.size === 0;
     const allMdl = !filters.models || filters.models.size === 0;
     const allPM  = !filters.purchasedModels || filters.purchasedModels.size === 0;
-    // Build pmi set for purchasedModels filter
+    // Build pmi set for purchasedModels filter — index into dlm (Retail Dispersion families)
     const selPmi = allPM ? null : new Set(
-      [...filters.purchasedModels].map(pm => maps.mdl.indexOf(pm)).filter(i => i >= 0)
+      [...filters.purchasedModels].map(pm => dlm.indexOf(pm)).filter(i => i >= 0)
     );
 
     const map = new Map(); // month → Map(ei → Map(pi → count))
@@ -3975,13 +3985,14 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     for (const [,mMap] of byMonth) {
       for (const [ei, piMap] of mMap) {
         for (const [pi, cnt] of piMap) {
-          if (maps.mdl[pi] === maps.mdl[ei]) same += cnt; else cross += cnt;
+          // Compare purchased Retail Dispersion family vs enquired model's family
+          if (dlm[pi] !== 'Unknown' && dlm[pi] === mdl_disp[ei]) same += cnt; else cross += cnt;
         }
       }
     }
     const total = same + cross;
     return { same, cross, total, disp: total > 0 ? cross/total*100 : 0 };
-  }, [byMonth, maps]);
+  }, [byMonth, maps, dlm, mdl_disp]);
 
   if (!disp || disp.length === 0) return ce('div', {
     className:'fs-14',style:{textAlign:'center',padding:60,color:'#94A3B8'}
@@ -4006,9 +4017,10 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     const tableRows = [];
     for (const [ei, piMap] of mMap.entries()) {
       const enquiredMdl = maps.mdl[ei];
+      const enquiredDispFam = mdl_disp[ei];
       let same = 0, cross = 0;
       for (const [pi, cnt] of piMap.entries()) {
-        if (maps.mdl[pi] === enquiredMdl) same += cnt; else cross += cnt;
+        if (dlm[pi] !== 'Unknown' && dlm[pi] === enquiredDispFam) same += cnt; else cross += cnt;
       }
       const total = same + cross;
       if (total === 0) continue;
@@ -4025,7 +4037,7 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
     const allPiSet = new Set();
     for (const pm of mMap.values()) for (const pi of pm.keys()) allPiSet.add(pi);
     // Find the index of "Unknown" so we can pin it last
-    const unknownPi = [...allPiSet].find(pi => maps.mdl[pi] === 'Unknown');
+    const unknownPi = [...allPiSet].find(pi => dlm[pi] === 'Unknown');
     // X-axis (purchased): sort by column total desc, Unknown pinned to far right
     const sortedPi = [...allPiSet]
       .filter(pi => pi !== unknownPi)
@@ -4044,7 +4056,7 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
       const sum = [['Enquired Model','Same','Cross','Total','Dispersion%']];
       for (const r of tableRows) sum.push([r.enquiredMdl, r.same, r.cross, r.total, +r.disp.toFixed(1)]);
       sum.push(['∑ Total', totSame, totCross, totTotal, +totDisp.toFixed(1)]);
-      const mat = [['Enquired ↓ / Purchased →', ...sortedPi.map(pi=>maps.mdl[pi])]];
+      const mat = [['Enquired ↓ / Purchased →', ...sortedPi.map(pi=>dlm[pi])]];
       for (const ei of sortedEi) {
         const pm = mMap.get(ei);
         mat.push([maps.mdl[ei], ...sortedPi.map(pi => pm?.get(pi)||0)]);
@@ -4122,7 +4134,7 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
                     color: isUnk ? '#94A3B8' : '#334155',
                     background: isUnk ? '#F8F8F8' : '#F8FAFC',
                     borderLeft: isUnk ? '2px dashed #E2E8F0' : undefined,
-                  }}, maps.mdl[pi]);
+                  }}, dlm[pi]);
                 })
               )
             ),
@@ -4136,7 +4148,7 @@ const DispersionTab = React.memo(function DispersionTab({ data, filters, months,
                                      whiteSpace:'nowrap' }}, maps.mdl[ei]),
                   ...sortedPi.map(pi => {
                     const cnt = pm?.get(pi) || 0;
-                    const isSame  = ei === pi;
+                    const isSame  = dlm[pi] !== 'Unknown' && dlm[pi] === mdl_disp[ei];
                     const isUnk   = pi === unknownPi;
                     const intensity = cnt / maxCell;
                     let bg, color;
